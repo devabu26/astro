@@ -1,0 +1,22 @@
+# Clickable / CMake build output
+build/
+build-*/
+.clickable/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Qt / generated files
+*.qmlc
+*.jsc
+.moc/
+.qm/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
