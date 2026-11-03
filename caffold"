@@ -1,0 +1,13 @@
+ .gitignore          |  22 [32m++[m
+ CMakeLists.txt      |  65 [32m++++++[m
+ LICENSE             | 708 [32m+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++[m
+ README.md           |  19 [32m++[m
+ assets/logo.svg     |  24 [32m++[m
+ astro.apparmor      |   4 [32m+[m
+ astro.desktop.in    |   7 [32m+[m
+ clickable.yaml      |   3 [32m+[m
+ manifest.json.in    |  15 [32m++[m
+ po/CMakeLists.txt   |  35 [32m+++[m
+ po/astro.madabu.pot |  24 [32m++[m
+ qml/Main.qml        |  52 [32m+++++[m
+ 12 files changed, 978 insertions(+)
