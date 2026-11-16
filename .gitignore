@@ -7,15 +7,26 @@ CMakeCache.txt
 cmake_install.cmake
 Makefile
 
-# Qt / generated files
+# Rust build output
+target/
+**/target/
+
+# Qt generated files
 *.qmlc
 *.jsc
 .moc/
-.qm/
+*.qm/
+
+# Generated Clickable packages
+*.click
 
 # IDE
 .vscode/
 .idea/
+
+# Editor and temporary files
+*~
+*.swp
 
 # OS
 .DS_Store

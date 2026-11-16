@@ -63,3 +63,89 @@ file(GLOB_RECURSE PROJECT_SRC_FILES
 
 add_custom_target(${PROJECT_NAME}_FILES ALL SOURCES ${PROJECT_SRC_FILES})
 
+
+# Astro C++ QML backend
+find_package(Qt5 5.12 REQUIRED COMPONENTS Core Qml)
+
+add_library(AstroBackend MODULE
+    backend/Backend.cpp
+    backend/Backend.h
+    backend/plugin.cpp
+    backend/plugin.h
+)
+
+target_link_libraries(AstroBackend
+    PRIVATE
+        Qt5::Core
+        Qt5::Qml
+)
+
+install(
+    TARGETS AstroBackend
+    LIBRARY DESTINATION ${QT_IMPORTS_DIR}/Astro/Backend
+)
+
+install(
+    FILES backend/qmldir
+    DESTINATION ${QT_IMPORTS_DIR}/Astro/Backend
+)
+# Build the Astro Rust core as an ARM64 static library
+set(RUST_TARGET "$ENV{ARCH_RUST}")
+
+if(NOT RUST_TARGET)
+    message(FATAL_ERROR "ARCH_RUST is not set by the Clickable build environment")
+endif()
+
+find_program(CARGO_EXECUTABLE cargo)
+
+if(NOT CARGO_EXECUTABLE)
+    message(FATAL_ERROR "Cargo was not found in the Clickable build environment")
+endif()
+
+set(RUST_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/cargo-target")
+set(RUST_STATIC_LIBRARY
+    "${RUST_TARGET_DIR}/${RUST_TARGET}/release/libastro_core.a"
+)
+
+add_custom_command(
+    OUTPUT "${RUST_STATIC_LIBRARY}"
+
+    COMMAND ${CMAKE_COMMAND} -E env
+        "CARGO_TARGET_DIR=${RUST_TARGET_DIR}"
+        "${CARGO_EXECUTABLE}" build
+        --manifest-path "${CMAKE_SOURCE_DIR}/backend/astro-core/Cargo.toml"
+        --target "${RUST_TARGET}"
+        --release
+
+    DEPENDS
+        backend/astro-core/Cargo.toml
+        backend/astro-core/src/lib.rs
+
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/backend/astro-core"
+    COMMENT "Building Astro Rust core for ${RUST_TARGET}"
+    VERBATIM
+)
+
+add_custom_target(astro_rust_build ALL
+    DEPENDS "${RUST_STATIC_LIBRARY}"
+)
+
+# Link the Rust static library into the C++ QML backend
+add_library(astro_core STATIC IMPORTED GLOBAL)
+
+set_target_properties(astro_core PROPERTIES
+    IMPORTED_LOCATION "${RUST_STATIC_LIBRARY}"
+)
+
+add_dependencies(AstroBackend astro_rust_build)
+
+target_link_libraries(AstroBackend
+    PRIVATE
+        astro_core
+        ${CMAKE_DL_LIBS}
+        pthread
+        m
+        gcc_s
+        util
+        rt
+)

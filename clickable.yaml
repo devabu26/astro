@@ -1,3 +1,8 @@
 clickable_minimum_required: 8.8.0
-builder: pure-qml-cmake
+builder: cmake
 kill: qmlscene
+
+image_setup:
+  run:
+    - rustup toolchain install 1.96.0 --profile minimal --target aarch64-unknown-linux-gnu
+    - rustup default 1.96.0

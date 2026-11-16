@@ -1,0 +1,12 @@
+
+[package]
+name = "astro-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "astro_core"
+crate-type = ["staticlib"]
+
+[dependencies]
+matrix-sdk = "=0.19.1"
