@@ -1,0 +1,38 @@
+# Clickable build output
+build/
+
+# Rust build output
+target/
+**/target/
+
+# Generated Clickable packages
+*.click
+
+# Editor and temporary files
+.vscode/
+*~
+*.swp
+
+# Local Matrix credentials and encrypted session data
+astro-session.bin
+**/astro-session.bin
+matrix-stores/
+**/matrix-stores/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Private keys and local secrets
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local logs
+*.log
+.clickable/
+scaffold"

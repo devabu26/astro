@@ -1,0 +1,15 @@
+{
+    "name": "astro.madabu",
+    "description": "Matrix Client For Ubuntu Touch",
+    "architecture": "$ENV{ARCH}",
+    "title": "astro",
+    "hooks": {
+        "astro": {
+            "apparmor": "astro.apparmor",
+            "desktop":  "astro.desktop"
+        }
+    },
+    "version": "1.0.1",
+    "maintainer": "Madabu <email@domain.org>",
+    "framework" : "$ENV{CLICK_FRAMEWORK}"
+}

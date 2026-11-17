@@ -1,0 +1,219 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="512"
+   height="512"
+   viewBox="0 0 512 512"
+   role="img"
+   aria-labelledby="title desc"
+   version="1.1"
+   id="svg16"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <title
+     id="title">Astro</title>
+  <desc
+     id="desc">Minimal line-art satellite symbol on a softly shaded purple background.</desc>
+  <defs
+     id="defs9">
+    <radialGradient
+       id="background"
+       cx="399.35999"
+       cy="81.919998"
+       r="512"
+       fx="399.35999"
+       fy="81.919998"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#8d16a6"
+         id="stop1" />
+      <stop
+         offset="0.48"
+         stop-color="#720080"
+         id="stop2" />
+      <stop
+         offset="1"
+         stop-color="#3b075d"
+         id="stop3" />
+    </radialGradient>
+    <linearGradient
+       id="line"
+       x1="0"
+       y1="0"
+       x2="1"
+       y2="1">
+      <stop
+         offset="0"
+         stop-color="#fff2f3"
+         id="stop4" />
+      <stop
+         offset="0.55"
+         stop-color="#f7dce9"
+         id="stop5" />
+      <stop
+         offset="1"
+         stop-color="#eac9f4"
+         id="stop6" />
+    </linearGradient>
+    <linearGradient
+       id="orbit"
+       x1="26.265139"
+       y1="75.04129"
+       x2="378.48944"
+       y2="427.26559"
+       gradientTransform="scale(1.2526109,0.7983325)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#e8a2f4"
+         stop-opacity=".04"
+         id="stop7" />
+      <stop
+         offset=".5"
+         stop-color="#d78bea"
+         stop-opacity=".38"
+         id="stop8" />
+      <stop
+         offset="1"
+         stop-color="#e8a2f4"
+         stop-opacity=".03"
+         id="stop9" />
+    </linearGradient>
+    <linearGradient
+       xlink:href="#line"
+       id="linearGradient2"
+       x1="34.752857"
+       y1="181.97064"
+       x2="171.72002"
+       y2="318.93781"
+       gradientTransform="scale(0.97833678,1.0221429)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       xlink:href="#line"
+       id="linearGradient3"
+       x1="35.786613"
+       y1="182.8896"
+       x2="170.75328"
+       y2="317.85626"
+       gradientTransform="scale(0.97801929,1.0224747)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       xlink:href="#line"
+       id="linearGradient4"
+       x1="351.61716"
+       y1="181.97064"
+       x2="488.58432"
+       y2="318.93781"
+       gradientTransform="scale(0.97833678,1.0221429)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       xlink:href="#line"
+       id="linearGradient5"
+       x1="352.75378"
+       y1="182.8896"
+       x2="487.72043"
+       y2="317.85626"
+       gradientTransform="scale(0.97801929,1.0224747)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       xlink:href="#line"
+       id="linearGradient6"
+       x1="30.726095"
+       y1="1318.9521"
+       x2="67.291107"
+       y2="1355.5172"
+       gradientTransform="scale(5.2235729,0.19143985)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       xlink:href="#line"
+       id="linearGradient7"
+       x1="172.74867"
+       y1="193.80756"
+       x2="318.62534"
+       y2="339.68423"
+       gradientTransform="scale(1.0419761,0.95971487)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       xlink:href="#line"
+       id="linearGradient8"
+       x1="19.092001"
+       y1="331.23819"
+       x2="268.41107"
+       y2="580.55725"
+       gradientTransform="scale(1.7808505,0.56152944)"
+       gradientUnits="userSpaceOnUse" />
+  </defs>
+  <rect
+     width="512"
+     height="512"
+     rx="0"
+     fill="url(#background)"
+     id="rect9"
+     x="0"
+     y="0"
+     style="fill:url(#background)" />
+  <path
+     d="M 34,340 C 77.662345,210.51856 183.66239,119.00643 324.2701,88.07433 337.35277,85.196291 349.745,62.756556 361.91756,61.088106 372.60736,59.622892 383.20123,78.806473 392.94051,78.073082 418.78481,76.126944 445.51784,76.064637 473,78"
+     fill="none"
+     stroke="url(#orbit)"
+     stroke-width="2.2"
+     stroke-linecap="round"
+     id="path9"
+     style="stroke:url(#orbit)" />
+  <g
+     transform="rotate(-45,256,256)"
+     fill="none"
+     stroke="url(#line)"
+     stroke-width="8"
+     stroke-linecap="round"
+     stroke-linejoin="round"
+     id="g16"
+     style="stroke:url(#linearGradient8)">
+    <!-- Left solar array -->
+    <rect
+       x="38"
+       y="190"
+       width="126"
+       height="132"
+       rx="10"
+       id="rect10"
+       style="stroke:url(#linearGradient2)" />
+    <path
+       d="M 80,190 V 322 M 122,190 V 322 M 38,234 H 164 M 38,278 h 126"
+       stroke-width="6"
+       id="path10"
+       style="stroke:url(#linearGradient3)" />
+    <!-- Right solar array -->
+    <rect
+       x="348"
+       y="190"
+       width="126"
+       height="132"
+       rx="10"
+       id="rect11"
+       style="stroke:url(#linearGradient4)" />
+    <path
+       d="M 390,190 V 322 M 432,190 V 322 M 348,234 H 474 M 348,278 H 474"
+       stroke-width="6"
+       id="path11"
+       style="stroke:url(#linearGradient5)" />
+    <!-- Short connecting booms -->
+    <path
+       d="m 164,256 h 20 m 144,0 h 20"
+       stroke-width="7"
+       id="path12"
+       style="stroke:url(#linearGradient6)" />
+    <!-- Main satellite body -->
+    <rect
+       x="184"
+       y="190"
+       width="144"
+       height="132"
+       rx="12"
+       id="rect12"
+       style="stroke:url(#linearGradient7)" />
+    <!-- Antenna loop -->
+    <!-- Dish antenna -->
+  </g>
+</svg>

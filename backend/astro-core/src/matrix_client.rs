@@ -1,0 +1,256 @@
+use matrix_sdk::{store::RoomLoadSettings, Client, SqliteStoreConfig};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::runtime::{Builder, Runtime};
+
+use crate::session_storage::{delete_session, load_session, save_session};
+
+static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub struct MatrixClientManager {
+    client: Option<Client>,
+    runtime: Runtime,
+    session_path: PathBuf,
+}
+
+fn create_new_store(database_path: &Path) -> Result<(String, PathBuf), String> {
+    let stores_root = database_path.join("matrix-stores");
+
+    fs::create_dir_all(&stores_root)
+        .map_err(|error| format!("Could not create Matrix store directory: {error}"))?;
+
+    for _ in 0..10 {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("System clock error: {error}"))?
+            .as_nanos();
+
+        let counter = STORE_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        let store_id = format!("{:x}-{:x}-{:x}", timestamp, std::process::id(), counter);
+
+        let store_path = stores_root.join(&store_id);
+
+        match fs::create_dir(&store_path) {
+            Ok(()) => return Ok((store_id, store_path)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                continue;
+            }
+            Err(error) => {
+                return Err(format!("Could not create Matrix store: {error}"));
+            }
+        }
+    }
+
+    Err("Could not generate a unique Matrix store directory".into())
+}
+
+impl MatrixClientManager {
+    fn create(
+        database_path: &Path,
+        passphrase: &str,
+        homeserver: &str,
+        session_path: PathBuf,
+    ) -> Result<Self, String> {
+        eprintln!("ASTRO DEBUG: Creating Tokio runtime");
+
+        let runtime = Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("Could not create Tokio runtime: {e}"))?;
+
+        eprintln!("ASTRO DEBUG: Tokio runtime created");
+
+        let config =
+            SqliteStoreConfig::with_low_memory_config(database_path).passphrase(Some(passphrase));
+
+        eprintln!("ASTRO DEBUG: Starting Matrix client build");
+
+        let client = runtime.block_on(async {
+            Client::builder()
+                .homeserver_url(homeserver)
+                .handle_refresh_tokens()
+                .sqlite_store_with_config_and_cache_path(config, Some(database_path))
+                .build()
+                .await
+                .map_err(|e| format!("Could not create Matrix client: {e}"))
+        })?;
+
+        eprintln!("ASTRO DEBUG: Matrix client build completed");
+
+        Ok(Self {
+            client: Some(client),
+            runtime,
+            session_path,
+        })
+    }
+
+    pub fn login(
+        database_path: &Path,
+        passphrase: &str,
+        homeserver: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<Self, String> {
+        eprintln!("ASTRO DEBUG: Starting Matrix login");
+
+        // Every new login gets a separate SDK store and device identity.
+        let (store_id, store_path) = create_new_store(database_path)?;
+
+        eprintln!("ASTRO DEBUG: Created a new Matrix store");
+
+        let session_path = database_path.join("astro-session.bin");
+
+        let manager = Self::create(&store_path, passphrase, homeserver, session_path)?;
+
+        eprintln!("ASTRO DEBUG: Matrix client created for login");
+
+        let client = manager.client.as_ref().unwrap();
+
+        let login_result = manager.runtime.block_on(async {
+            eprintln!("ASTRO DEBUG: Sending Matrix login request");
+
+            client
+                .matrix_auth()
+                .login_username(username, password)
+                .initial_device_display_name("Astro")
+                .request_refresh_token()
+                .send()
+                .await
+        });
+
+        match login_result {
+            Ok(response) => {
+                eprintln!("ASTRO DEBUG: Matrix login request completed");
+
+                // Do not log the response: it may contain session credentials.
+                drop(response);
+            }
+            Err(error) => {
+                eprintln!("ASTRO DEBUG: Matrix login request returned an error: {error}");
+                return Err(format!("Matrix login failed: {error}"));
+            }
+        }
+
+        let session = client
+            .matrix_auth()
+            .session()
+            .ok_or_else(|| "Matrix login returned no session".to_string())?;
+
+        eprintln!("ASTRO DEBUG: Matrix session obtained");
+
+        manager.runtime.block_on(async {
+            save_session(
+                &manager.session_path,
+                passphrase,
+                homeserver,
+                &store_id,
+                &session,
+            )
+        })?;
+
+        eprintln!("ASTRO DEBUG: Matrix session saved");
+        eprintln!("ASTRO DEBUG: Matrix login completed successfully");
+
+        Ok(manager)
+    }
+
+    pub fn restore(database_path: &Path, passphrase: &str) -> Result<Option<Self>, String> {
+        eprintln!("ASTRO DEBUG: Checking for saved Matrix session");
+
+        let session_path = database_path.join("astro-session.bin");
+
+        let saved = load_session(&session_path, passphrase)?;
+
+        let Some(saved) = saved else {
+            eprintln!("ASTRO DEBUG: No saved Matrix session found");
+            return Ok(None);
+        };
+
+        eprintln!("ASTRO DEBUG: Saved Matrix session found");
+
+        // Version 2 sessions use the original database path.
+        // Version 3 sessions use their own isolated store directory.
+        let store_path = match saved.store_id.as_deref() {
+            Some(store_id) => {
+                let path = database_path.join("matrix-stores").join(store_id);
+
+                if !path.is_dir() {
+                    return Err("The Matrix store associated with this session is missing".into());
+                }
+
+                path
+            }
+            None => database_path.to_path_buf(),
+        };
+
+        let manager = Self::create(&store_path, passphrase, &saved.homeserver, session_path)?;
+
+        eprintln!("ASTRO DEBUG: Restoring Matrix session");
+
+        let client = manager.client.as_ref().unwrap();
+
+        manager.runtime.block_on(async {
+            client
+                .matrix_auth()
+                .restore_session(saved.session, RoomLoadSettings::default())
+                .await
+                .map_err(|e| format!("Could not restore Matrix session: {e}"))
+        })?;
+
+        eprintln!("ASTRO DEBUG: Matrix session restored");
+
+        Ok(Some(manager))
+    }
+
+    pub fn logout(&mut self) -> Result<(), String> {
+        eprintln!("ASTRO DEBUG: Starting Matrix logout");
+
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?;
+
+        self.runtime.block_on(async {
+            client
+                .logout()
+                .await
+                .map_err(|e| format!("Matrix logout failed: {e}"))
+        })?;
+
+        eprintln!("ASTRO DEBUG: Server logout completed");
+
+        // Remove the saved login, but retain the encrypted SDK store.
+        delete_session(&self.session_path)?;
+
+        eprintln!("ASTRO DEBUG: Saved Matrix session deleted");
+
+        // Destroy the client while its Tokio runtime is active.
+        let _runtime_guard = self.runtime.enter();
+        drop(self.client.take());
+
+        eprintln!("ASTRO DEBUG: Matrix client destroyed");
+
+        Ok(())
+    }
+
+    pub fn client(&self) -> &Client {
+        self.client.as_ref().unwrap()
+    }
+}
+
+impl Drop for MatrixClientManager {
+    fn drop(&mut self) {
+        // Make this runtime the current Tokio context while
+        // Matrix SDK and SQLite resources are being destroyed.
+        let _runtime_guard = self.runtime.enter();
+
+        eprintln!("ASTRO DEBUG: Dropping Matrix client manager");
+
+        drop(self.client.take());
+
+        eprintln!("ASTRO DEBUG: Matrix client manager cleanup completed");
+    }
+}
