@@ -1,4 +1,5 @@
 
+
 #include "Backend.h"
 #include "StorageWorker.h"
 
@@ -166,6 +167,53 @@ Backend::Backend(QObject *parent)
        &StorageWorker::syncMatrixRooms,
        Qt::QueuedConnection
    );
+
+   // Matrix room timeline request connection.
+   connect(
+       this,
+       &Backend::requestFetchRoomTimeline,
+       m_storageWorker,
+       &StorageWorker::fetchRoomTimeline,
+       Qt::QueuedConnection
+   );
+
+   connect(
+        this,
+        &Backend::requestPaginateRoomTimeline,
+        m_storageWorker,
+        &StorageWorker::paginateRoomTimeline,
+        Qt::QueuedConnection
+    );
+
+   // Forward room timeline results to QML.
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixTimelineUpdated,
+       this,
+       [this](
+           const QString &roomId,
+           const QString &json,
+           const QString &error
+       )
+       {
+           emit matrixTimelineRetrieved(roomId, json, error);
+       }
+   );
+
+   connect(
+        m_storageWorker,
+        &StorageWorker::matrixOlderTimelineUpdated,
+        this,
+        [this](
+            const QString &roomId,
+            const QString &json,
+            const QString &error
+        )
+        {
+            emit matrixOlderTimelineRetrieved(roomId, json, error);
+        }
+    );
+
 
    // Matrix media request connections
     // ---------------------------------------------------------
@@ -1072,6 +1120,54 @@ void Backend::requestRoomAvatar(
 // =============================================================
 // Matrix logout
 // =============================================================
+
+// Request a room's initial message timeline.
+void Backend::requestRoomTimeline(const QString &roomId)
+{
+    if (!m_storageReady) {
+        emit matrixTimelineRetrieved(
+            roomId,
+            QString(),
+            QStringLiteral("Encrypted storage is not open")
+        );
+        return;
+    }
+
+    if (roomId.isEmpty()) {
+        emit matrixTimelineRetrieved(
+            roomId,
+            QString(),
+            QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    emit requestFetchRoomTimeline(roomId);
+}
+
+// Request another batch of older messages for an existing room timeline.
+void Backend::requestOlderRoomTimeline(const QString &roomId)
+{
+    if (!m_storageReady) {
+        emit matrixOlderTimelineRetrieved(
+            roomId,
+            QString(),
+            QStringLiteral("Encrypted storage is not open")
+        );
+        return;
+    }
+
+    if (roomId.isEmpty()) {
+        emit matrixOlderTimelineRetrieved(
+            roomId,
+            QString(),
+            QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    emit requestPaginateRoomTimeline(roomId);
+}
 
 void Backend::logoutMatrix()
 {

@@ -1,0 +1,729 @@
+
+import QtQuick 2.7
+import Lomiri.Components 1.3
+import "Components"
+
+Item {
+    id: root
+
+    property var backend
+    property string roomId: ""
+    property string roomName: "Welcome to Astro"
+    property string avatarUrl: ""
+    property bool wideLayout: false
+
+    // Timeline loading state.
+    property bool isLoadingInitial: roomId !== ""
+    property bool isLoadingOlder: false
+    property bool hasMoreHistory: true
+    property bool pendingInitialScroll: false
+
+    // Scroll state.
+    property bool isAtBottom: true
+
+    signal backRequested()
+    signal sendMessageRequested(string roomId, string message)
+
+    // =====================================
+    // Scroll to bottom
+    // =====================================
+
+    function scrollToBottom() {
+        var bottomPosition = Math.max(
+            0,
+            messageList.contentHeight - messageList.height
+        )
+
+        bottomScrollAnimation.stop()
+        bottomScrollAnimation.to = bottomPosition
+        bottomScrollAnimation.start()
+    }
+
+    function updateBottomState() {
+        var bottomPosition = Math.max(
+            0,
+            messageList.contentHeight - messageList.height
+        )
+
+        root.isAtBottom =
+            messageList.contentY >= bottomPosition - units.gu(5)
+    }
+
+    // =====================================
+    // Initial room scroll
+    // =====================================
+
+    function finishInitialScroll() {
+        if (!root.pendingInitialScroll)
+            return
+
+        if (root.isLoadingInitial)
+            return
+
+        var bottomPosition = Math.max(
+            0,
+            messageList.contentHeight - messageList.height
+        )
+
+        messageList.contentY = bottomPosition
+
+        root.pendingInitialScroll = false
+        root.updateBottomState()
+
+        console.log(
+            "ASTRO: Initial scroll completed. contentY:",
+            messageList.contentY,
+            "bottom:",
+            bottomPosition
+        )
+
+        // Older-history pagination can start only after
+        // the initial scroll has completed.
+        root.maybeLoadOlderMessages()
+    }
+
+    // =====================================
+    // Older-message pagination
+    // =====================================
+
+    function maybeLoadOlderMessages() {
+        if (!root.backend)
+            return
+
+        if (root.roomId === "")
+            return
+
+        if (root.isLoadingInitial || root.pendingInitialScroll)
+            return
+
+        if (root.isLoadingOlder)
+            return
+
+        if (!root.hasMoreHistory || messageModel.count === 0)
+            return
+
+        if (messageList.contentY <= units.gu(6)) {
+            root.isLoadingOlder = true
+
+            console.log(
+                "ASTRO: Requesting older messages for",
+                root.roomId
+            )
+
+            root.backend.requestOlderRoomTimeline(root.roomId)
+        }
+    }
+
+    // =====================================
+    // Message model
+    // =====================================
+
+    ListModel {
+        id: messageModel
+    }
+
+    // =====================================
+    // Room switching
+    // =====================================
+
+    onRoomIdChanged: {
+        bottomScrollAnimation.stop()
+
+        messageModel.clear()
+        messageComposer.clearInput()
+
+        // Reset the old room's scroll position.
+        messageList.contentY = 0
+
+        hasMoreHistory = true
+        isLoadingOlder = false
+        isLoadingInitial = roomId !== ""
+        isAtBottom = true
+        pendingInitialScroll = false
+    }
+
+    // =====================================
+    // Backend connections
+    // =====================================
+
+    Connections {
+        target: root.backend
+
+        // =====================================
+        // Initial timeline response
+        // =====================================
+
+        onMatrixTimelineRetrieved: {
+            if (roomId !== root.roomId)
+                return
+
+            if (error !== "") {
+                root.isLoadingInitial = false
+                root.pendingInitialScroll = false
+
+                console.log(
+                    "ASTRO: Timeline retrieval failed:",
+                    error
+                )
+                return
+            }
+
+            try {
+                var result = JSON.parse(json)
+                var messages = result.messages || []
+
+                messageModel.clear()
+
+                root.hasMoreHistory =
+                    result.reached_start !== true
+
+                root.isLoadingOlder = false
+
+                // Keep the initial-loading state active until
+                // the message layout is ready for scrolling.
+                root.pendingInitialScroll = true
+
+                for (var i = 0; i < messages.length; i++) {
+                    var message = messages[i]
+
+                    console.log(
+                        "ASTRO DEBUG: Timeline message:",
+                        "sender =", message.sender,
+                        "encrypted =", message.is_encrypted,
+                        "body =", message.body
+                    )
+
+                    var date = new Date(
+                        Number(message.timestamp)
+                    )
+
+                    messageModel.append({
+                        eventId: message.event_id || "",
+                        sender: message.sender || "",
+                        body: message.body || "",
+                        timestamp: date.toLocaleTimeString(),
+                        isOwn: message.is_own === true,
+                        isEncrypted: message.is_encrypted === true
+                    })
+                }
+
+                console.log(
+                    "ASTRO: Loaded",
+                    messageModel.count,
+                    "messages for",
+                    roomId
+                )
+
+                // Allow the Flickable and delegates to finish
+                // their initial layout before scrolling.
+                Qt.callLater(function() {
+                    if (root.roomId !== roomId)
+                        return
+
+                    root.isLoadingInitial = false
+                    root.finishInitialScroll()
+                })
+
+            } catch (parseError) {
+                root.isLoadingInitial = false
+                root.pendingInitialScroll = false
+
+                console.log(
+                    "ASTRO: Could not parse room timeline:",
+                    parseError
+                )
+            }
+        }
+
+        // =====================================
+        // Older timeline response
+        // =====================================
+
+        onMatrixOlderTimelineRetrieved: {
+            if (roomId !== root.roomId)
+                return
+
+            if (error !== "") {
+                root.isLoadingOlder = false
+
+                console.log(
+                    "ASTRO: Older timeline retrieval failed:",
+                    error
+                )
+                return
+            }
+
+            try {
+                var result = JSON.parse(json)
+                var messages = result.messages || []
+
+                var oldContentHeight = messageList.contentHeight
+                var oldContentY = messageList.contentY
+
+                // Record all currently displayed event IDs.
+                var seenEventIds = ({})
+
+                for (var i = 0; i < messageModel.count; i++) {
+                    var existingId = messageModel.get(i).eventId
+
+                    if (existingId !== "")
+                        seenEventIds[existingId] = true
+                }
+
+                // Find the first existing event in the
+                // updated complete timeline.
+                var firstLoadedIndex = -1
+
+                for (var j = 0; j < messages.length; j++) {
+                    var candidateId =
+                        messages[j].event_id || ""
+
+                    if (
+                        candidateId !== "" &&
+                        seenEventIds[candidateId] === true
+                    ) {
+                        firstLoadedIndex = j
+                        break
+                    }
+                }
+
+                var insertedCount = 0
+
+                if (firstLoadedIndex >= 0) {
+                    // Insert older events in chronological order.
+                    for (var k = 0; k < firstLoadedIndex; k++) {
+                        var message = messages[k]
+                        var eventId = message.event_id || ""
+
+                        if (
+                            eventId === "" ||
+                            seenEventIds[eventId] === true
+                        ) {
+                            continue
+                        }
+
+                        var date = new Date(
+                            Number(message.timestamp)
+                        )
+
+                        messageModel.insert(insertedCount, {
+                            eventId: eventId,
+                            sender: message.sender || "",
+                            body: message.body || "",
+                            timestamp: date.toLocaleTimeString(),
+                            isOwn: message.is_own === true,
+                            isEncrypted: message.is_encrypted === true
+                        })
+
+                        seenEventIds[eventId] = true
+                        insertedCount++
+                    }
+
+                } else {
+                    console.log(
+                        "ASTRO: Could not find an overlap between loaded messages and the updated timeline"
+                    )
+                }
+
+                // Stop when the beginning has been reached,
+                // or when no additional messages were inserted.
+                root.hasMoreHistory =
+                    result.reached_start !== true &&
+                    insertedCount > 0
+
+                console.log(
+                    "ASTRO: Inserted",
+                    insertedCount,
+                    "older messages for",
+                    root.roomId
+                )
+
+                Qt.callLater(function() {
+                    if (root.roomId !== roomId)
+                        return
+
+                    root.isLoadingOlder = false
+
+                    Qt.callLater(function() {
+                        if (root.roomId !== roomId)
+                            return
+
+                        // Account for the newly inserted messages
+                        // and the disappearing loading indicator.
+                        var heightDifference =
+                            messageList.contentHeight -
+                            oldContentHeight
+
+                        // Preserve the visible reading position.
+                        messageList.contentY = Math.max(
+                            0,
+                            oldContentY + heightDifference
+                        )
+
+                        root.updateBottomState()
+                        root.maybeLoadOlderMessages()
+                    })
+                })
+
+            } catch (parseError) {
+                root.isLoadingOlder = false
+
+                console.log(
+                    "ASTRO: Could not parse older timeline:",
+                    parseError
+                )
+            }
+        }
+    }
+
+    // =====================================
+    // Smooth scroll animation
+    // =====================================
+
+    NumberAnimation {
+        id: bottomScrollAnimation
+
+        target: messageList
+        property: "contentY"
+
+        duration: 250
+        easing.type: Easing.OutCubic
+    }
+
+    // =====================================
+    // Main conversation
+    // =====================================
+
+    Rectangle {
+        id: conversation
+
+        anchors.fill: parent
+        color: "#101820"
+
+        Item {
+            anchors.fill: parent
+            clip: true
+
+            Column {
+                id: conversationContent
+
+                anchors {
+                    fill: parent
+
+                    // Keep the composer above the Ubuntu Touch keyboard.
+                    bottomMargin: Qt.inputMethod.visible
+                                ? Qt.inputMethod.keyboardRectangle.height
+                                : 0
+                }
+
+                spacing: 0
+
+                // =====================================
+                // Conversation header
+                // =====================================
+
+                Rectangle {
+                    width: parent.width
+                    height: units.gu(8)
+
+                    color: "#1b2935"
+
+                    // Back button on narrow layouts.
+                    Rectangle {
+                        anchors {
+                            left: parent.left
+                            leftMargin: units.gu(2)
+                            verticalCenter: parent.verticalCenter
+                        }
+
+                        width: units.gu(5)
+                        height: units.gu(5)
+
+                        radius: units.gu(2.5)
+                        color: "#293c4c"
+
+                        visible: !root.wideLayout
+
+                        Text {
+                            anchors.centerIn: parent
+
+                            text: "‹"
+                            color: "white"
+
+                            font.pixelSize: units.gu(3)
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+
+                            onClicked: {
+                                root.backRequested()
+                            }
+                        }
+                    }
+
+                    Image {
+                        id: conversationAvatar
+
+                        anchors {
+                            left: parent.left
+                            leftMargin: root.wideLayout
+                                        ? units.gu(2)
+                                        : units.gu(9)
+                            verticalCenter: parent.verticalCenter
+                        }
+
+                        width: units.gu(5)
+                        height: units.gu(5)
+
+                        source: root.avatarUrl
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                        cache: true
+                        visible: source !== ""
+                    }
+
+                    Text {
+                        anchors {
+                            left: conversationAvatar.right
+                            leftMargin: units.gu(2)
+                            verticalCenter: parent.verticalCenter
+                            right: parent.right
+                            rightMargin: units.gu(1)
+                        }
+
+                        text: root.roomName
+                        color: "white"
+
+                        font.pixelSize: units.gu(2)
+                        font.bold: true
+
+                        elide: Text.ElideRight
+                    }
+                }
+
+                // =====================================
+                // Message history
+                // =====================================
+
+                Item {
+                    width: parent.width
+
+                    height: parent.height -
+                            units.gu(8) -
+                            units.gu(9)
+
+                    Flickable {
+                        id: messageList
+
+                        anchors.fill: parent
+
+                        contentWidth: width
+                        contentHeight: messageColumn.height
+
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        onContentYChanged: {
+                            root.updateBottomState()
+                            root.maybeLoadOlderMessages()
+                        }
+
+                        onContentHeightChanged: {
+                            if (
+                                root.pendingInitialScroll &&
+                                !root.isLoadingInitial
+                            ) {
+                                Qt.callLater(function() {
+                                    root.finishInitialScroll()
+                                })
+                            } else {
+                                root.updateBottomState()
+                            }
+                        }
+
+                        onMovementEnded: {
+                            root.updateBottomState()
+                            root.maybeLoadOlderMessages()
+                        }
+
+                        Column {
+                            id: messageColumn
+
+                            width: messageList.width
+                            spacing: units.gu(1)
+
+                            // =====================================
+                            // Older-history loading indicator
+                            // =====================================
+
+                            Item {
+                                width: parent.width
+
+                                height: root.isLoadingOlder
+                                        ? units.gu(7)
+                                        : 0
+
+                                visible: root.isLoadingOlder
+
+                                LoadingIndicator {
+                                    anchors.fill: parent
+
+                                    label: "Loading older messages…"
+                                    spinnerSize: units.gu(3)
+                                    labelSize: units.gu(1.5)
+
+                                    active: root.isLoadingOlder
+                                }
+                            }
+
+                            Item {
+                                width: parent.width
+                                height: units.gu(2)
+                            }
+
+                            Text {
+                                visible: messageModel.count === 0 &&
+                                         !root.isLoadingInitial
+
+                                width: parent.width
+
+                                text: "No messages to display"
+                                color: "#9aabba"
+
+                                horizontalAlignment: Text.AlignHCenter
+                                font.pixelSize: units.gu(1.8)
+                            }
+
+                            // =====================================
+                            // Message list
+                            // =====================================
+
+                            Repeater {
+                                model: messageModel
+
+                                delegate: MessageBubble {
+                                    width: messageList.width
+
+                                    sender: model.sender
+                                    body: model.body
+                                    timestamp: model.timestamp
+
+                                    isOwn: model.isOwn
+                                    isEncrypted: model.isEncrypted
+                                }
+                            }
+
+                            Item {
+                                width: parent.width
+                                height: units.gu(2)
+                            }
+                        }
+                    }
+
+                    // =====================================
+                    // Scroll-to-bottom button
+                    // =====================================
+
+                    Rectangle {
+                        id: scrollBottomButton
+
+                        anchors {
+                            right: parent.right
+                            bottom: parent.bottom
+                            rightMargin: units.gu(2)
+                            bottomMargin: units.gu(2)
+                        }
+
+                        width: units.gu(6)
+                        height: units.gu(6)
+
+                        radius: units.gu(3)
+
+                        color: "#245b78"
+
+                        visible: messageModel.count > 0 &&
+                                 !root.isAtBottom &&
+                                 !root.isLoadingInitial
+
+                        z: 5
+
+                        opacity: visible ? 1 : 0
+
+                        Behavior on opacity {
+                            NumberAnimation {
+                                duration: 150
+                            }
+                        }
+
+                        Text {
+                            anchors.centerIn: parent
+
+                            text: "↓"
+                            color: "white"
+
+                            font.pixelSize: units.gu(3)
+                            font.bold: true
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+
+                            onClicked: {
+                                root.scrollToBottom()
+                            }
+                        }
+                    }
+
+                    // =====================================
+                    // Initial room-startup loading overlay
+                    // =====================================
+
+                    Rectangle {
+                        anchors.fill: parent
+
+                        z: 10
+
+                        visible: root.isLoadingInitial
+                        color: "#101820"
+
+                        LoadingIndicator {
+                            anchors.fill: parent
+
+                            label: "Loading messages…"
+                            spinnerSize: units.gu(5)
+                            labelSize: units.gu(1.8)
+
+                            active: root.isLoadingInitial
+                        }
+                    }
+                }
+
+                // =====================================
+                // Message composer
+                // =====================================
+
+                MessageComposer {
+                    id: messageComposer
+
+                    width: parent.width
+
+                    onSendRequested: {
+                        if (root.roomId === "")
+                            return
+
+                        root.sendMessageRequested(
+                            root.roomId,
+                            message
+                        )
+
+                        console.log(
+                            "ASTRO: Message prepared for room",
+                            root.roomId
+                        )
+                    }
+                }
+            }
+        }
+    }
+}

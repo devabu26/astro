@@ -14,6 +14,7 @@ Item {
 
     // The parent controls when the animation starts and stops.
     property bool active: false
+    property bool exitPending: false
 
     // Destination is the centre point of the diamond,
     // expressed in this component's coordinates.
@@ -99,8 +100,12 @@ Item {
         }
 
         onStopped: {
-            if (root.active)
+            if (root.active) {
                 pulseAnimation.start()
+            } else if (root.exitPending) {
+                root.exitPending = false
+                exitAnimation.start()
+            }
         }
     }
 
@@ -163,31 +168,35 @@ Item {
     // Animation state control
     // =========================================================
 
-    onActiveChanged: {
-        if (active) {
-            // Cancel any previous animation.
-            travelAnimation.stop()
-            pulseAnimation.stop()
-            exitAnimation.stop()
+   onActiveChanged: {
+    if (active) {
+        // Cancel any previous animation.
+        travelAnimation.stop()
+        pulseAnimation.stop()
+        exitAnimation.stop()
 
-            // Reset the diamond to the screen centre.
-            visible = true
-            opacity = 1
+        exitPending = false
 
-            diamond.x = (width - diamond.width) / 2
-            diamond.y = (height - diamond.height) / 2
-            diamond.scale = 1
+        // Reset the diamond to the screen centre.
+        visible = true
+        opacity = 1
 
-            // Travel to the sidebar.
-            travelAnimation.start()
+        diamond.x = (width - diamond.width) / 2
+        diamond.y = (height - diamond.height) / 2
+        diamond.scale = 1
 
-        } else {
-            // Stop pulsing and fade away.
-            travelAnimation.stop()
-            pulseAnimation.stop()
+        // Travel to the sidebar.
+        travelAnimation.start()
 
-            if (visible)
-                exitAnimation.start()
+    } else {
+        // Stop pulsing and finish the travel animation first.
+        pulseAnimation.stop()
+
+        if (travelAnimation.running) {
+            exitPending = true
+        } else if (visible) {
+            exitAnimation.start()
         }
     }
+}
 }

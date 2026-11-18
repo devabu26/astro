@@ -10,7 +10,7 @@ Item {
     property string selectedRoom: ""
     property var expandedSpaceIds: []
 
-    signal roomSelected(string name, string preview)
+    signal roomSelected(string roomId, string name, string preview)
 
     ListModel {
         id: navigationModel
@@ -498,7 +498,7 @@ Item {
                         if (rowType === "space") {
                             root.toggleSpace(roomId)
                         } else {
-                            root.roomSelected(name, preview)
+                            root.roomSelected(roomId, name, preview)
                         }
                     }
                 }

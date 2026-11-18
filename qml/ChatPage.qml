@@ -19,8 +19,10 @@ Item {
     property bool wideLayout: width >= units.gu(75)
     property bool showConversation: false
 
+    property string selectedRoomId: ""
     property string selectedRoom: "Welcome to Astro"
     property string selectedPreview: "Your Matrix client starts here."
+    property string selectedRoomAvatarUrl: ""
     property string storageResult: ""
 
     // True while the initial Matrix room sync is in progress.
@@ -71,9 +73,8 @@ Item {
 
             roomModel.clear()
 
-            // The response is valid. The loading animation
-            // can now finish.
-            root.stopRoomLoading()
+            // Keep the loading animation active while
+            // the room model is being populated.
 
             for (var i = 0; i < data.rooms.length; i++) {
                 var room = data.rooms[i]
@@ -142,6 +143,9 @@ Item {
 
             roomNavigator.rebuild()
 
+            // Room population is complete.
+            root.stopRoomLoading()
+
             console.log(
                 "ASTRO: Loaded",
                 data.rooms.length,
@@ -172,6 +176,9 @@ Item {
                     dataUrl
                 )
 
+                if (root.selectedRoomId === roomId)
+                    root.selectedRoomAvatarUrl = dataUrl
+
                 roomNavigator.rebuild()
 
                 return
@@ -180,7 +187,7 @@ Item {
     }
 
     // =========================================================
-    // Backend signals
+    // Backend room-avatar signals
     // =========================================================
 
     Connections {
@@ -304,9 +311,28 @@ Item {
                         selectedRoom: root.selectedRoom
 
                         onRoomSelected: {
+                            root.selectedRoomId = roomId
                             root.selectedRoom = name
                             root.selectedPreview = preview
+                            root.selectedRoomAvatarUrl = ""
+
+                            for (var i = 0; i < roomModel.count; i++) {
+                                if (roomModel.get(i).roomId === roomId) {
+                                    root.selectedRoomAvatarUrl =
+                                        roomModel.get(i).avatarUrl
+                                    break
+                                }
+                            }
+
                             root.showConversation = true
+
+                            if (root.backend && roomId !== "") {
+                                console.log(
+                                    "ASTRO: Requesting timeline for",
+                                    roomId
+                                )
+                                root.backend.requestRoomTimeline(roomId)
+                            }
                         }
                     }
 
@@ -339,154 +365,30 @@ Item {
             // Conversation view
             // =================================================
 
-            Rectangle {
-                id: conversation
+            RoomView {
+                id: roomView
 
                 width: root.wideLayout
                        ? parent.width - sidebar.width
                        : parent.width
 
                 height: parent.height
-                color: "#101820"
 
                 visible: root.wideLayout ||
                          root.showConversation
 
-                Flickable {
-                    anchors.fill: parent
+                backend: root.backend
+                roomId: root.selectedRoomId
+                roomName: root.selectedRoom
+                avatarUrl: root.selectedRoomAvatarUrl
+                wideLayout: root.wideLayout
 
-                    contentWidth: width
-                    contentHeight: conversationContent.height
-
-                    clip: true
-
-                    Column {
-                        id: conversationContent
-
-                        width: parent.width
-                        spacing: 0
-
-                        // =====================================
-                        // Conversation header
-                        // =====================================
-
-                        Rectangle {
-                            width: parent.width
-                            height: units.gu(8)
-
-                            color: "#1b2935"
-
-                            // Back button on narrow layouts.
-                            Rectangle {
-                                anchors {
-                                    left: parent.left
-                                    leftMargin: units.gu(2)
-                                    verticalCenter: parent.verticalCenter
-                                }
-
-                                width: units.gu(5)
-                                height: units.gu(5)
-
-                                radius: units.gu(2.5)
-
-                                color: "#293c4c"
-
-                                visible: !root.wideLayout
-
-                                Text {
-                                    anchors.centerIn: parent
-
-                                    text: "‹"
-                                    color: "white"
-
-                                    font.pixelSize: units.gu(3)
-                                }
-
-                                MouseArea {
-                                    anchors.fill: parent
-
-                                    onClicked: {
-                                        root.showConversation = false
-                                    }
-                                }
-                            }
-
-                            Text {
-                                anchors {
-                                    left: parent.left
-
-                                    leftMargin: root.wideLayout
-                                                ? units.gu(2)
-                                                : units.gu(9)
-
-                                    verticalCenter: parent.verticalCenter
-
-                                    right: parent.right
-                                    rightMargin: units.gu(1)
-                                }
-
-                                text: root.selectedRoom
-                                color: "white"
-
-                                font.pixelSize: units.gu(2)
-                                font.bold: true
-
-                                elide: Text.ElideRight
-                            }
-                        }
-
-                        // =====================================
-                        // Conversation placeholder
-                        // =====================================
-
-                        Column {
-                            width: parent.width
-                            spacing: units.gu(2)
-
-                            Item {
-                                width: parent.width
-                                height: units.gu(3)
-                            }
-
-                            Text {
-                                anchors.horizontalCenter:
-                                    parent.horizontalCenter
-
-                                text: "✦"
-                                color: "#80b9e8"
-
-                                font.pixelSize: units.gu(7)
-                            }
-
-                            Text {
-                                width: parent.width
-
-                                text: root.selectedRoom
-                                color: "white"
-
-                                font.pixelSize: units.gu(2.5)
-                                font.bold: true
-
-                                horizontalAlignment: Text.AlignHCenter
-                                wrapMode: Text.Wrap
-                            }
-
-                            Text {
-                                width: parent.width
-
-                                text: root.selectedPreview
-                                color: "#9aabba"
-
-                                font.pixelSize: units.gu(1.8)
-
-                                horizontalAlignment: Text.AlignHCenter
-                                wrapMode: Text.Wrap
-                            }
-                        }
-                    }
+                onBackRequested: {
+                    root.showConversation = false
                 }
             }
-        }
+
+    }
     }
 
     // =========================================================

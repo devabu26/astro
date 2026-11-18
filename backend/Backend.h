@@ -69,7 +69,10 @@ public:
         const QString &mxcUri
     );
 
-signals:
+    Q_INVOKABLE void requestRoomTimeline(const QString &roomId);
+    Q_INVOKABLE void requestOlderRoomTimeline(const QString &roomId);
+
+    signals:
 
     // ---------------------------------------------------------
     // Application and storage state
@@ -93,6 +96,17 @@ signals:
     // ---------------------------------------------------------
 
     void matrixRoomsRetrieved(const QString &json);
+    void matrixTimelineRetrieved(
+        const QString &roomId,
+        const QString &json,
+        const QString &error
+    );
+
+    void matrixOlderTimelineRetrieved(
+    const QString &roomId,
+    const QString &json,
+    const QString &error
+    );
 
     // ---------------------------------------------------------
     // Matrix media signals
@@ -128,6 +142,8 @@ signals:
     // Matrix room requests.
     void requestFetchMatrixRooms();
     void requestSyncMatrixRooms();
+    void requestFetchRoomTimeline(const QString &roomId);
+    void requestPaginateRoomTimeline(const QString &roomId);
 
     // Matrix media requests.
     void requestFetchRoomAvatar(

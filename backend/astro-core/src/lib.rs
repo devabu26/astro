@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 use std::ffi::c_char;
 
 pub mod ffi;

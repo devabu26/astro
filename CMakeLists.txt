@@ -122,11 +122,16 @@ add_custom_command(
         --release
         --locked
     DEPENDS
+    DEPENDS
         backend/astro-core/Cargo.toml
         backend/astro-core/Cargo.lock
         backend/astro-core/src/lib.rs
         backend/astro-core/src/ffi.rs
         backend/astro-core/src/storage.rs
+        backend/astro-core/src/matrix_client.rs
+        backend/astro-core/src/media.rs
+        backend/astro-core/src/session_storage.rs
+
 
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/backend/astro-core"
     COMMENT "Building Astro Rust core for ${RUST_TARGET}"

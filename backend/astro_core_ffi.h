@@ -46,6 +46,18 @@ char *astro_matrix_get_rooms_json(
     char **error_out
 );
 
+char *astro_matrix_get_room_timeline_json(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    char **error_out
+);
+
+char *astro_matrix_paginate_room_timeline_json(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    char **error_out
+);
+
 char *astro_matrix_get_cached_rooms_json(
     AstroMatrixClient *handle,
     char **error_out

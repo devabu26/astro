@@ -184,7 +184,7 @@ pub unsafe extern "C" fn astro_matrix_get_cached_rooms_json(
     }
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        let manager = unsafe { &*handle };
+        let manager = unsafe { &mut *handle };
         manager.cached_rooms_json()
     }));
 
@@ -223,7 +223,7 @@ pub unsafe extern "C" fn astro_matrix_get_rooms_json(
     }
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        let manager = unsafe { &*handle };
+        let manager = unsafe { &mut *handle };
         manager.rooms_json()
     }));
 
@@ -241,6 +241,86 @@ pub unsafe extern "C" fn astro_matrix_get_rooms_json(
         }
         Err(_) => {
             set_error(error_out, "Unexpected Rust panic while retrieving Matrix rooms");
+            ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_get_room_timeline_json(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = unsafe { read_input(room_id, "Room ID")? };
+        let manager = unsafe { &mut *handle };
+        manager.room_timeline_json(room_id)
+    }));
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(value) => value.into_raw(),
+            Err(_) => {
+                set_error(error_out, "Timeline data contained an invalid null character");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while retrieving Matrix timeline");
+            ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_paginate_room_timeline_json(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = unsafe { read_input(room_id, "Room ID")? };
+        let manager = unsafe { &mut *handle };
+        manager.paginate_room_timeline_json(room_id)
+    }));
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(value) => value.into_raw(),
+            Err(_) => {
+                set_error(error_out, "Timeline data contained an invalid null character");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while paginating room timeline");
             ptr::null_mut()
         }
     }

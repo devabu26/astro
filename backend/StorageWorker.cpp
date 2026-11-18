@@ -371,6 +371,112 @@ void StorageWorker::syncMatrixRooms()
 }
 
 
+void StorageWorker::fetchRoomTimeline(const QString &roomId)
+{
+    if (!m_matrixClient) {
+        emit matrixTimelineUpdated(
+            roomId,
+            QString(),
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    if (roomId.isEmpty()) {
+        emit matrixTimelineUpdated(
+            roomId,
+            QString(),
+            QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+
+    char *json = astro_matrix_get_room_timeline_json(
+        m_matrixClient,
+        roomIdBytes.constData(),
+        &error
+    );
+
+    if (!json) {
+        QString message =
+            QStringLiteral("Could not retrieve room timeline");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+            astro_string_free(error);
+        }
+
+        emit matrixTimelineUpdated(roomId, QString(), message);
+        return;
+    }
+
+    const QString result = QString::fromUtf8(json);
+    astro_string_free(json);
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    emit matrixTimelineUpdated(roomId, result, QString());
+}
+
+
+void StorageWorker::paginateRoomTimeline(const QString &roomId)
+{
+    if (!m_matrixClient) {
+        emit matrixOlderTimelineUpdated(
+            roomId,
+            QString(),
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    if (roomId.isEmpty()) {
+        emit matrixOlderTimelineUpdated(
+            roomId,
+            QString(),
+            QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+
+    char *json = astro_matrix_paginate_room_timeline_json(
+        m_matrixClient,
+        roomIdBytes.constData(),
+        &error
+    );
+
+    if (!json) {
+        QString message =
+            QStringLiteral("Could not retrieve older room messages");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+            astro_string_free(error);
+        }
+
+        emit matrixOlderTimelineUpdated(roomId, QString(), message);
+        return;
+    }
+
+    const QString result = QString::fromUtf8(json);
+    astro_string_free(json);
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    emit matrixOlderTimelineUpdated(roomId, result, QString());
+}
+
+
 // Matrix media and room avatar retrieval
 // =============================================================
 

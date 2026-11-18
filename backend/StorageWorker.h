@@ -42,6 +42,8 @@ public slots:
 
     void fetchMatrixRooms();
     void syncMatrixRooms();
+    void fetchRoomTimeline(const QString &roomId);
+    void paginateRoomTimeline(const QString &roomId);
     // ---------------------------------------------------------
     // Matrix media and avatar retrieval
     // ---------------------------------------------------------
@@ -76,6 +78,16 @@ signals:
     // ---------------------------------------------------------
 
     void matrixRoomsUpdated(const QString &json, bool finished);
+    void matrixTimelineUpdated(
+        const QString &roomId,
+        const QString &json,
+        const QString &error
+    );
+    void matrixOlderTimelineUpdated(
+    const QString &roomId,
+    const QString &json,
+    const QString &error
+    );
     // ---------------------------------------------------------
     // Matrix media signals
     // ---------------------------------------------------------
