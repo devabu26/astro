@@ -65,7 +65,7 @@ add_custom_target(${PROJECT_NAME}_FILES ALL SOURCES ${PROJECT_SRC_FILES})
 
 
 # Astro C++ QML backend
-find_package(Qt5 5.12 REQUIRED COMPONENTS Core Qml DBus)
+find_package(Qt5 5.12 REQUIRED COMPONENTS Core Gui Qml DBus)
 add_library(AstroBackend MODULE
     backend/Backend.cpp
     backend/Backend.h
@@ -81,9 +81,8 @@ target_link_libraries(AstroBackend
         Qt5::Core
         Qt5::Qml
         Qt5::DBus
+        Qt5::Gui
 )
-
-add_dependencies(AstroBackend astro_rust_build)
 
 install(
     TARGETS AstroBackend
@@ -128,9 +127,6 @@ add_custom_command(
         backend/astro-core/src/lib.rs
         backend/astro-core/src/ffi.rs
         backend/astro-core/src/storage.rs
-        backend/astro-core/src/session_storage.rs
-        backend/astro-core/src/matrix_client.rs
-
 
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/backend/astro-core"
     COMMENT "Building Astro Rust core for ${RUST_TARGET}"

@@ -168,6 +168,84 @@ pub unsafe extern "C" fn astro_matrix_restore(
     }
 }
 
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_get_cached_rooms_json(
+    handle: *mut MatrixClientManager,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manager = unsafe { &*handle };
+        manager.cached_rooms_json()
+    }));
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(value) => value.into_raw(),
+            Err(_) => {
+                set_error(error_out, "Room data contained an invalid null character");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while retrieving cached Matrix rooms");
+            ptr::null_mut()
+        }
+    }
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_get_rooms_json(
+    handle: *mut MatrixClientManager,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manager = unsafe { &*handle };
+        manager.rooms_json()
+    }));
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(value) => value.into_raw(),
+            Err(_) => {
+                set_error(error_out, "Room data contained an invalid null character");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while retrieving Matrix rooms");
+            ptr::null_mut()
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn astro_matrix_logout(
     handle: *mut MatrixClientManager,
@@ -197,6 +275,110 @@ pub unsafe extern "C" fn astro_matrix_logout(
             set_error(error_out, "Unexpected Rust panic during Matrix logout");
             -1
         }
+    }
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_thumbnail(
+    handle: *mut MatrixClientManager,
+    mxc_uri: *const c_char,
+    width: u32,
+    height: u32,
+    data_out: *mut *mut u8,
+    len_out: *mut usize,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if !data_out.is_null() {
+        *data_out = ptr::null_mut();
+    }
+
+    if !len_out.is_null() {
+        *len_out = 0;
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    if mxc_uri.is_null() {
+        set_error(error_out, "MXC URI must not be null");
+        return -1;
+    }
+
+    if data_out.is_null() || len_out.is_null() {
+        set_error(error_out, "Media output pointers must not be null");
+        return -1;
+    }
+
+    if width == 0 || height == 0 {
+        set_error(error_out, "Thumbnail dimensions must be greater than zero");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manager = &*handle;
+        let uri = CStr::from_ptr(mxc_uri)
+            .to_str()
+            .map_err(|_| "MXC URI is not valid UTF-8".to_string())?;
+
+        let owned_uri = matrix_sdk::ruma::OwnedMxcUri::from(uri);
+
+        if !owned_uri.is_valid() {
+            return Err(format!("Invalid MXC URI: {uri}"));
+        }
+
+        let source =
+            matrix_sdk::ruma::events::room::MediaSource::Plain(owned_uri);
+
+        manager.thumbnail(source, width, height)
+      })
+    );
+
+    match result {
+        Ok(Ok(mut data)) => {
+            let len = data.len();
+
+            if len == 0 {
+                return 0;
+            }
+
+            let ptr = data.as_mut_ptr();
+            std::mem::forget(data);
+
+            *data_out = ptr;
+            *len_out = len;
+
+            1
+        }
+
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while downloading thumbnail",
+            );
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_media_bytes_free(
+    data: *mut u8,
+    len: usize,
+) {
+    if !data.is_null() {
+        drop(Vec::from_raw_parts(data, len, len));
     }
 }
 

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TEST_HOMESERVER: &str = "https://matrix.example.org";
+const TEST_STORE_ID: &str = "a57e-1234-abcd";
 
 fn test_path() -> PathBuf {
     let id = SystemTime::now()
@@ -39,17 +40,21 @@ fn session_round_trip_and_wrong_passphrase() {
         &path,
         "correct-test-passphrase",
         TEST_HOMESERVER,
+        TEST_STORE_ID,
         &original,
     )
     .unwrap();
 
-    let (homeserver, restored) =
-        astro_core::session_storage::load_session(&path, "correct-test-passphrase")
-            .unwrap()
-            .expect("session should be restored");
+    let restored = astro_core::session_storage::load_session(
+        &path,
+        "correct-test-passphrase",
+    )
+    .unwrap()
+    .expect("session should be restored");
 
-    assert_eq!(homeserver, TEST_HOMESERVER);
-    assert_eq!(restored, original);
+    assert_eq!(restored.homeserver, TEST_HOMESERVER);
+    assert_eq!(restored.store_id.as_deref(), Some(TEST_STORE_ID));
+    assert_eq!(restored.session, original);
 
     let wrong_passphrase =
         astro_core::session_storage::load_session(&path, "incorrect-test-passphrase");
@@ -68,13 +73,19 @@ fn session_file_does_not_contain_plaintext_secrets() {
         &path,
         "correct-test-passphrase",
         TEST_HOMESERVER,
+        TEST_STORE_ID,
         &session,
     )
     .unwrap();
 
     let contents = fs::read(&path).unwrap();
 
-    for secret in ["dummy-access-token", "dummy-refresh-token", TEST_HOMESERVER] {
+    for secret in [
+        "dummy-access-token",
+        "dummy-refresh-token",
+        TEST_HOMESERVER,
+        TEST_STORE_ID,
+    ] {
         assert!(
             !contents
                 .windows(secret.len())
@@ -100,7 +111,8 @@ fn session_file_delete_is_idempotent() {
 fn missing_session_returns_none() {
     let path = test_path();
 
-    let result = astro_core::session_storage::load_session(&path, "test-passphrase").unwrap();
+    let result =
+        astro_core::session_storage::load_session(&path, "test-passphrase").unwrap();
 
     assert!(result.is_none());
 }
@@ -109,8 +121,29 @@ fn missing_session_returns_none() {
 fn empty_homeserver_is_rejected() {
     let path = test_path();
 
-    let result =
-        astro_core::session_storage::save_session(&path, "test-passphrase", "", &test_session());
+    let result = astro_core::session_storage::save_session(
+        &path,
+        "test-passphrase",
+        "",
+        TEST_STORE_ID,
+        &test_session(),
+    );
+
+    assert!(result.is_err());
+    assert!(!path.exists());
+}
+
+#[test]
+fn invalid_store_id_is_rejected() {
+    let path = test_path();
+
+    let result = astro_core::session_storage::save_session(
+        &path,
+        "test-passphrase",
+        TEST_HOMESERVER,
+        "invalid-store-id",
+        &test_session(),
+    );
 
     assert!(result.is_err());
     assert!(!path.exists());

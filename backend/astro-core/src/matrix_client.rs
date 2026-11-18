@@ -1,10 +1,19 @@
-use matrix_sdk::{store::RoomLoadSettings, Client, SqliteStoreConfig};
+use matrix_sdk::{
+    config::SyncSettings,
+    ruma::room::RoomType,
+    store::RoomLoadSettings,
+    Client,
+    SqliteStoreConfig,
+};
+use matrix_sdk_ui::spaces::SpaceService;
+use std::time::Duration;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::{Builder, Runtime};
 
+use crate::media::MediaManager;
 use crate::session_storage::{delete_session, load_session, save_session};
 
 static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -234,6 +243,153 @@ impl MatrixClientManager {
         eprintln!("ASTRO DEBUG: Matrix client destroyed");
 
         Ok(())
+    }
+
+    /// Retrieved Cached Rooms as a one time occurance
+    ///
+    /// This does not start a continuous sync loop.
+    pub fn cached_rooms_json(&self) -> Result<String, String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?;
+
+        self.runtime.block_on(async {
+            // Build the Matrix Space graph from the synchronised room state.
+            let space_service = SpaceService::new(client.clone()).await;
+            let _top_level_spaces = space_service.top_level_joined_spaces().await;
+
+            let joined_rooms = client.joined_rooms();
+            let mut room_entries = Vec::with_capacity(joined_rooms.len());
+
+            for room in joined_rooms {
+                let info = room.clone_info();
+                let room_id = room.room_id().to_string();
+
+                let is_space = info.room_type() == Some(&RoomType::Space);
+                let is_dm = !is_space && room.is_dm();
+
+                let kind = if is_space {
+                    "space"
+                } else if is_dm {
+                    "dm"
+                } else {
+                    "room"
+                };
+
+                let name = info
+                    .name()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| room_id.clone());
+
+                let parent_ids = space_service
+                    .joined_parent_ids_of_child(room.room_id())
+                    .await;
+
+                let parents: Vec<String> =
+                    parent_ids.iter().map(ToString::to_string).collect();
+
+                room_entries.push(serde_json::json!({
+                    "room_id": room_id,
+                    "kind": kind,
+                    "name": name,
+                    "topic": info.topic(),
+                    "avatar_url": info.avatar_url().map(ToString::to_string),
+                    "member_count": info.joined_members_count(),
+                    "parent_space_ids": parents
+                }));
+            }
+
+            Ok(serde_json::json!({
+                "rooms": room_entries
+            }).to_string())
+        })
+    }
+
+    /// Perform a one-off sync and return joined rooms and Space relationships.
+    ///
+    /// This does not start a continuous sync loop.
+    pub fn rooms_json(&self) -> Result<String, String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?;
+
+        self.runtime.block_on(async {
+            client
+                .sync_once(SyncSettings::default().timeout(Duration::from_secs(10)))
+                .await
+                .map_err(|e| format!("Matrix room sync failed: {e}"))?;
+
+            // Build the Matrix Space graph from the synchronised room state.
+            let space_service = SpaceService::new(client.clone()).await;
+            let _top_level_spaces = space_service.top_level_joined_spaces().await;
+
+            let joined_rooms = client.joined_rooms();
+            let mut room_entries = Vec::with_capacity(joined_rooms.len());
+
+            for room in joined_rooms {
+                let info = room.clone_info();
+                let room_id = room.room_id().to_string();
+
+                let is_space = info.room_type() == Some(&RoomType::Space);
+                let is_dm = !is_space && room.is_dm();
+
+                let kind = if is_space {
+                    "space"
+                } else if is_dm {
+                    "dm"
+                } else {
+                    "room"
+                };
+
+                let name = info
+                    .name()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| room_id.clone());
+
+                let parent_ids = space_service
+                    .joined_parent_ids_of_child(room.room_id())
+                    .await;
+
+                let parents: Vec<String> =
+                    parent_ids.iter().map(ToString::to_string).collect();
+
+                room_entries.push(serde_json::json!({
+                    "room_id": room_id,
+                    "kind": kind,
+                    "name": name,
+                    "topic": info.topic(),
+                    "avatar_url": info.avatar_url().map(ToString::to_string),
+                    "member_count": info.joined_members_count(),
+                    "parent_space_ids": parents
+                }));
+            }
+
+            Ok(serde_json::json!({
+                "rooms": room_entries
+            }).to_string())
+        })
+    }
+
+    pub fn thumbnail(
+        &self,
+        source: matrix_sdk::ruma::events::room::MediaSource,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?;
+
+        self.runtime.block_on(async {
+            let media = MediaManager::new(client);
+
+            media
+                .thumbnail(source, width, height)
+                .await
+        })
     }
 
     pub fn client(&self) -> &Client {

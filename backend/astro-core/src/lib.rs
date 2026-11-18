@@ -2,6 +2,7 @@ use std::ffi::c_char;
 
 pub mod ffi;
 pub mod matrix_client;
+pub mod media;
 pub mod session_storage;
 pub mod storage;
 

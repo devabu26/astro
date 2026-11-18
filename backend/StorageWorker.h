@@ -16,24 +16,86 @@ public:
     ~StorageWorker() override;
 
 public slots:
-    void logoutMatrix();
+
+    // ---------------------------------------------------------
+    // Encrypted storage operations
+    // ---------------------------------------------------------
+
     void openStorage(const QString &passphrase);
+    void closeStorage();
+
+    // ---------------------------------------------------------
+    // Matrix account operations
+    // ---------------------------------------------------------
+
     void loginMatrix(
         const QString &homeserver,
         const QString &username,
         const QString &password
     );
-    void closeStorage();
+
+    void logoutMatrix();
+
+    // ---------------------------------------------------------
+    // Matrix room and Space retrieval
+    // ---------------------------------------------------------
+
+    void fetchMatrixRooms();
+    void syncMatrixRooms();
+    // ---------------------------------------------------------
+    // Matrix media and avatar retrieval
+    // ---------------------------------------------------------
+
+    void fetchRoomAvatar(
+        const QString &roomId,
+        const QString &mxcUri,
+        quint32 width,
+        quint32 height
+    );
 
 signals:
-    void matrixLogoutSucceeded();
+
+    // ---------------------------------------------------------
+    // Encrypted storage signals
+    // ---------------------------------------------------------
+
     void storageOpened();
     void storageClosed();
     void storageFailed(const QString &error);
     void sessionRestored(bool restored);
+
+    // ---------------------------------------------------------
+    // Matrix account signals
+    // ---------------------------------------------------------
+
     void matrixLoginSucceeded();
+    void matrixLogoutSucceeded();
+
+    // ---------------------------------------------------------
+    // Matrix room and Space signals
+    // ---------------------------------------------------------
+
+    void matrixRoomsUpdated(const QString &json, bool finished);
+    // ---------------------------------------------------------
+    // Matrix media signals
+    // ---------------------------------------------------------
+
+    void roomAvatarRetrieved(
+        const QString &roomId,
+        const QString &dataUrl
+    );
+
+    void roomAvatarFailed(
+        const QString &roomId,
+        const QString &error
+    );
 
 private:
+
+    // ---------------------------------------------------------
+    // Rust Matrix client
+    // ---------------------------------------------------------
+
     AstroMatrixClient *m_matrixClient = nullptr;
 
     // Retained only while encrypted storage is unlocked.

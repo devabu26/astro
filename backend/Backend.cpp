@@ -22,12 +22,17 @@
 #include <QDBusPendingCall>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#include <QDBusReply>
 #include <QDBusObjectPath>
 #include <QDBusVariant>
 #include <QDBusArgument>
 #include <QDBusMetaType>
 
-// Secret Service structure: (oayays)
+// =============================================================
+// Secret Service data structure
+// D-Bus signature: (oayays)
+// =============================================================
+
 struct SecretServiceSecret
 {
     QDBusObjectPath session;
@@ -38,36 +43,45 @@ struct SecretServiceSecret
 
 Q_DECLARE_METATYPE(SecretServiceSecret)
 
-QDBusArgument &operator<<(QDBusArgument &argument,
-                          const SecretServiceSecret &secret)
+// Serialize SecretServiceSecret for D-Bus.
+QDBusArgument &operator<<(
+    QDBusArgument &argument,
+    const SecretServiceSecret &secret
+)
 {
     argument.beginStructure();
+
     argument << secret.session
              << secret.parameters
              << secret.value
              << secret.contentType;
+
     argument.endStructure();
 
     return argument;
 }
 
-const QDBusArgument &operator>>(const QDBusArgument &argument,
-                                SecretServiceSecret &secret)
+// Deserialize SecretServiceSecret from D-Bus.
+const QDBusArgument &operator>>(
+    const QDBusArgument &argument,
+    SecretServiceSecret &secret
+)
 {
     argument.beginStructure();
+
     argument >> secret.session
              >> secret.parameters
              >> secret.value
              >> secret.contentType;
+
     argument.endStructure();
 
     return argument;
 }
 
-
-// ---------------------------------------------------------------------
-// Backend construction and storage worker setup
-// ---------------------------------------------------------------------
+// =============================================================
+// Backend construction and worker-thread setup
+// =============================================================
 
 Backend::Backend(QObject *parent)
     : QObject(parent)
@@ -76,7 +90,10 @@ Backend::Backend(QObject *parent)
         QStringLiteral("astro.madabu")
     );
 
+    // ---------------------------------------------------------
     // Create the dedicated storage thread and worker.
+    // ---------------------------------------------------------
+
     m_storageThread = new QThread(this);
     m_storageWorker = new StorageWorker();
 
@@ -89,7 +106,10 @@ Backend::Backend(QObject *parent)
         &QObject::deleteLater
     );
 
-    // Send storage requests to the worker thread.
+    // ---------------------------------------------------------
+    // Encrypted storage request connections
+    // ---------------------------------------------------------
+
     connect(
         this,
         &Backend::requestOpenStorage,
@@ -100,6 +120,18 @@ Backend::Backend(QObject *parent)
 
     connect(
         this,
+        &Backend::requestCloseStorage,
+        m_storageWorker,
+        &StorageWorker::closeStorage,
+        Qt::QueuedConnection
+    );
+
+    // ---------------------------------------------------------
+    // Matrix account request connections
+    // ---------------------------------------------------------
+
+    connect(
+        this,
         &Backend::requestLoginMatrix,
         m_storageWorker,
         &StorageWorker::loginMatrix,
@@ -107,22 +139,53 @@ Backend::Backend(QObject *parent)
     );
 
     connect(
-    this,
-    &Backend::requestLogoutMatrix,
-    m_storageWorker,
-    &StorageWorker::logoutMatrix,
-    Qt::QueuedConnection
-    );
-
-    connect(
         this,
-        &Backend::requestCloseStorage,
+        &Backend::requestLogoutMatrix,
         m_storageWorker,
-        &StorageWorker::closeStorage,
+        &StorageWorker::logoutMatrix,
         Qt::QueuedConnection
     );
 
-    // Handle successful storage opening.
+    // ---------------------------------------------------------
+    // Matrix room and Space request connections
+    // ---------------------------------------------------------
+
+    connect(
+        this,
+        &Backend::requestFetchMatrixRooms,
+        m_storageWorker,
+        &StorageWorker::fetchMatrixRooms,
+        Qt::QueuedConnection
+    );
+
+    // ---------------------------------------------------------
+    connect(
+       this,
+       &Backend::requestSyncMatrixRooms,
+       m_storageWorker,
+       &StorageWorker::syncMatrixRooms,
+       Qt::QueuedConnection
+   );
+
+   // Matrix media request connections
+    // ---------------------------------------------------------
+
+    connect(
+        this,
+        &Backend::requestFetchRoomAvatar,
+        m_storageWorker,
+        &StorageWorker::fetchRoomAvatar,
+        Qt::QueuedConnection
+    );
+
+    // =========================================================
+    // Storage worker response connections
+    // =========================================================
+
+    // ---------------------------------------------------------
+    // Successful storage opening
+    // ---------------------------------------------------------
+
     connect(
         m_storageWorker,
         &StorageWorker::storageOpened,
@@ -130,15 +193,21 @@ Backend::Backend(QObject *parent)
         [this]()
         {
             m_storageOperationInProgress = false;
+
             setStorageReady(true);
 
             emit storageStatusChanged(
-                QStringLiteral("Encrypted storage opened successfully")
+                QStringLiteral(
+                    "Encrypted storage opened successfully"
+                )
             );
         }
     );
 
-    // Handle successful storage closing.
+    // ---------------------------------------------------------
+    // Successful storage closing
+    // ---------------------------------------------------------
+
     connect(
         m_storageWorker,
         &StorageWorker::storageClosed,
@@ -146,6 +215,7 @@ Backend::Backend(QObject *parent)
         [this]()
         {
             m_storageOperationInProgress = false;
+
             setStorageReady(false);
 
             emit storageStatusChanged(
@@ -154,7 +224,10 @@ Backend::Backend(QObject *parent)
         }
     );
 
-    // Handle storage errors.
+    // ---------------------------------------------------------
+    // Storage errors
+    // ---------------------------------------------------------
+
     connect(
         m_storageWorker,
         &StorageWorker::storageFailed,
@@ -167,6 +240,10 @@ Backend::Backend(QObject *parent)
         }
     );
 
+    // ---------------------------------------------------------
+    // Matrix session restoration
+    // ---------------------------------------------------------
+
     connect(
         m_storageWorker,
         &StorageWorker::sessionRestored,
@@ -178,12 +255,21 @@ Backend::Backend(QObject *parent)
             emit storageStatusChanged(
                 restored
                     ? QStringLiteral("Matrix session restored")
-                    : QStringLiteral("Storage unlocked. Please sign in to Matrix.")
+                    : QStringLiteral(
+                        "Storage unlocked. Please sign in to Matrix."
+                    )
             );
         }
     );
 
-    //Login
+    // =========================================================
+    // Matrix account response connections
+    // =========================================================
+
+    // ---------------------------------------------------------
+    // Matrix login
+    // ---------------------------------------------------------
+
     connect(
         m_storageWorker,
         &StorageWorker::matrixLoginSucceeded,
@@ -200,7 +286,10 @@ Backend::Backend(QObject *parent)
         }
     );
 
-    //Logout
+    // ---------------------------------------------------------
+    // Matrix logout
+    // ---------------------------------------------------------
+
     connect(
         m_storageWorker,
         &StorageWorker::matrixLogoutSucceeded,
@@ -217,30 +306,110 @@ Backend::Backend(QObject *parent)
         }
     );
 
+    // =========================================================
+    // Matrix room and Space response connections
+    // =========================================================
+
+    connect(
+    m_storageWorker,
+    &StorageWorker::matrixRoomsUpdated,
+   this,
+   [this](const QString &json, bool finished)
+   {
+       // Forward cached or freshly synchronised rooms to QML.
+       // QML can queue avatar requests while handling the cached list.
+       emit matrixRoomsRetrieved(json);
+
+       // Schedule network sync only after cached rooms reach QML.
+       if (!finished) {
+           emit requestSyncMatrixRooms();
+           return;
+       }
+
+       m_storageOperationInProgress = false;
+
+       emit storageStatusChanged(
+           QStringLiteral("Matrix rooms retrieved")
+       );
+   }
+);
+
+   // =========================================================
+   // Matrix media and room avatar response connections
+   // =========================================================
+
+   // ---------------------------------------------------------
+   // Successfully retrieved room avatar
+   // ---------------------------------------------------------
+
+   connect(
+        m_storageWorker,
+        &StorageWorker::roomAvatarRetrieved,
+        this,
+        [this](
+            const QString &roomId,
+            const QString &dataUrl
+        )
+        {
+            emit roomAvatarRetrieved(roomId, dataUrl);
+        }
+    );
+
+    // ---------------------------------------------------------
+    // Room avatar retrieval failure
+    // ---------------------------------------------------------
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::roomAvatarFailed,
+        this,
+        [this](
+            const QString &roomId,
+            const QString &error
+        )
+        {
+            emit roomAvatarFailed(roomId, error);
+        }
+    );
+
+    // ---------------------------------------------------------
+    // Start the worker thread after all connections exist.
+    // ---------------------------------------------------------
+
     m_storageThread->start();
 
-    // Prepare the application data directory.
-    const QString path = prepareDataDirectory();
+    // ---------------------------------------------------------
+    // Report the application data directory.
+    // Do not create it here.
+    // ---------------------------------------------------------
+
+    const QString path =
+        QStandardPaths::writableLocation(
+            QStandardPaths::AppDataLocation
+        );
 
     if (path.isEmpty()) {
-        qWarning() << "Astro: Could not prepare application data directory";
+        qWarning()
+            << "Astro: Could not determine application data directory";
     } else {
-        qInfo() << "Astro: Application data directory:" << path;
+        qInfo()
+            << "Astro: Application data directory:"
+            << path;
     }
 }
 
-
-// ---------------------------------------------------------------------
+// =============================================================
 // Backend destruction
-// ---------------------------------------------------------------------
+// =============================================================
 
 Backend::~Backend()
 {
     if (m_storageThread && m_storageThread->isRunning()) {
 
-        // Close Rust storage on the worker thread.
+        // Close Rust-side resources on the worker thread.
         // BlockingQueuedConnection ensures this finishes before
         // the worker thread is stopped.
+
         if (m_storageWorker) {
             QMetaObject::invokeMethod(
                 m_storageWorker,
@@ -254,26 +423,26 @@ Backend::~Backend()
     }
 }
 
-
-// ---------------------------------------------------------------------
-// Existing Rust status
-// ---------------------------------------------------------------------
+// =============================================================
+// General application status
+// =============================================================
 
 QString Backend::status() const
 {
     const char *rustStatus = astro_get_status();
 
     if (!rustStatus) {
-        return QStringLiteral("Astro Rust backend returned no status!");
+        return QStringLiteral(
+            "Astro Rust backend returned no status!"
+        );
     }
 
     return QString::fromUtf8(rustStatus);
 }
 
-
-// ---------------------------------------------------------------------
+// =============================================================
 // Application data directory
-// ---------------------------------------------------------------------
+// =============================================================
 
 QString Backend::prepareDataDirectory() const
 {
@@ -300,15 +469,27 @@ QString Backend::prepareDataDirectory() const
 
     return path;
 }
+
+// =============================================================
+// Existing encrypted storage detection
+// =============================================================
+
 bool Backend::hasExistingStorage() const
 {
-    const QString path = prepareDataDirectory();
+    const QString path =
+        QStandardPaths::writableLocation(
+            QStandardPaths::AppDataLocation
+        );
 
     if (path.isEmpty()) {
         return false;
     }
 
     const QDir directory(path);
+
+    if (!directory.exists()) {
+        return false;
+    }
 
     return
         QFileInfo::exists(
@@ -328,9 +509,9 @@ bool Backend::hasExistingStorage() const
         );
 }
 
-// ---------------------------------------------------------------------
-// Existing Secret Service status diagnostic
-// ---------------------------------------------------------------------
+// =============================================================
+// Secret Service status diagnostic
+// =============================================================
 
 QString Backend::secretServiceStatus() const
 {
@@ -338,14 +519,18 @@ QString Backend::secretServiceStatus() const
         QDBusConnection::sessionBus();
 
     if (!connection.isConnected()) {
-        return QStringLiteral("Session D-Bus: not connected");
+        return QStringLiteral(
+            "Session D-Bus: not connected"
+        );
     }
 
     QDBusConnectionInterface *interface =
         connection.interface();
 
     if (!interface) {
-        return QStringLiteral("Session D-Bus: interface unavailable");
+        return QStringLiteral(
+            "Session D-Bus: interface unavailable"
+        );
     }
 
     const QDBusReply<bool> reply =
@@ -354,21 +539,25 @@ QString Backend::secretServiceStatus() const
         );
 
     if (!reply.isValid()) {
-        return QStringLiteral("Secret Service check failed: ")
-            + reply.error().message();
+        return QStringLiteral(
+            "Secret Service check failed: "
+        ) + reply.error().message();
     }
 
     if (reply.value()) {
-        return QStringLiteral("Secret Service: accessible");
+        return QStringLiteral(
+            "Secret Service: accessible"
+        );
     }
 
-    return QStringLiteral("Secret Service: not registered");
+    return QStringLiteral(
+        "Secret Service: not registered"
+    );
 }
 
-
-// ---------------------------------------------------------------------
-// Existing Secret Service round-trip diagnostic
-// ---------------------------------------------------------------------
+// =============================================================
+// Secret Service round-trip diagnostic
+// =============================================================
 
 void Backend::testSecretService()
 {
@@ -377,19 +566,26 @@ void Backend::testSecretService()
 
     if (!connection.isConnected()) {
         emit secretServiceTestFinished(
-            QStringLiteral("Keyring test failed: session D-Bus unavailable")
+            QStringLiteral(
+                "Keyring test failed: session D-Bus unavailable"
+            )
         );
+
         return;
     }
 
     qDBusRegisterMetaType<SecretServiceSecret>();
 
-    // Unique diagnostic value. This is not a real credential.
+    // Unique diagnostic value.
+    // This is not a real credential.
+
     const QString testId =
         QUuid::createUuid().toString(QUuid::WithoutBraces);
 
     const QByteArray testValue =
-        (QStringLiteral("Astro-Keyring-Test-") + testId).toUtf8();
+        (
+            QStringLiteral("Astro-Keyring-Test-") + testId
+        ).toUtf8();
 
     const QString service =
         QStringLiteral("org.freedesktop.secrets");
@@ -403,15 +599,21 @@ void Backend::testSecretService()
     const QString collectionPath =
         QStringLiteral("/org/freedesktop/secrets/collection/login");
 
+    // ---------------------------------------------------------
+    // Asynchronous D-Bus helper
+    // ---------------------------------------------------------
+
     // Send an asynchronous D-Bus call and deliver its reply
     // through a callback. Nothing here blocks the UI thread.
+
     auto callAsync =
         [this, connection, service](
             const QString &path,
             const QString &interfaceName,
             const QString &method,
             const QList<QVariant> &arguments,
-            std::function<void(QDBusPendingCallWatcher *)> callback)
+            std::function<void(QDBusPendingCallWatcher *)> callback
+        )
     {
         QDBusMessage message =
             QDBusMessage::createMethodCall(
@@ -441,7 +643,10 @@ void Backend::testSecretService()
         );
     };
 
-    // Step 1: open a Secret Service session.
+    // =========================================================
+    // Step 1: Open a Secret Service session
+    // =========================================================
+
     callAsync(
         servicePath,
         serviceInterface,
@@ -455,21 +660,27 @@ void Backend::testSecretService()
         [this, callAsync, collectionPath, testId, testValue]
         (QDBusPendingCallWatcher *watcher)
         {
-            QDBusPendingReply<QDBusVariant, QDBusObjectPath> reply =
-                *watcher;
+            QDBusPendingReply<
+                QDBusVariant,
+                QDBusObjectPath
+            > reply = *watcher;
 
             if (reply.isError()) {
                 emit secretServiceTestFinished(
                     QStringLiteral("Keyring session failed: ")
                     + reply.error().message()
                 );
+
                 return;
             }
 
             const QDBusObjectPath sessionPath =
                 reply.argumentAt<1>();
 
-            // Step 2: prepare the temporary item.
+            // =================================================
+            // Step 2: Prepare the temporary item
+            // =================================================
+
             QMap<QString, QString> attributes;
 
             attributes.insert(
@@ -490,12 +701,16 @@ void Backend::testSecretService()
             QVariantMap properties;
 
             properties.insert(
-                QStringLiteral("org.freedesktop.Secret.Item.Label"),
+                QStringLiteral(
+                    "org.freedesktop.Secret.Item.Label"
+                ),
                 QStringLiteral("Astro Keyring diagnostic")
             );
 
             properties.insert(
-                QStringLiteral("org.freedesktop.Secret.Item.Attributes"),
+                QStringLiteral(
+                    "org.freedesktop.Secret.Item.Attributes"
+                ),
                 QVariant::fromValue(attributes)
             );
 
@@ -506,10 +721,15 @@ void Backend::testSecretService()
             secret.value = testValue;
             secret.contentType = QStringLiteral("text/plain");
 
-            // Step 3: create the temporary item.
+            // =================================================
+            // Step 3: Create the temporary item
+            // =================================================
+
             callAsync(
                 collectionPath,
-                QStringLiteral("org.freedesktop.Secret.Collection"),
+                QStringLiteral(
+                    "org.freedesktop.Secret.Collection"
+                ),
                 QStringLiteral("CreateItem"),
                 {
                     QVariant::fromValue(properties),
@@ -519,14 +739,17 @@ void Backend::testSecretService()
                 [this, callAsync, sessionPath, testValue]
                 (QDBusPendingCallWatcher *createWatcher)
                 {
-                    QDBusPendingReply<QDBusObjectPath, QDBusObjectPath>
-                        createReply = *createWatcher;
+                    QDBusPendingReply<
+                        QDBusObjectPath,
+                        QDBusObjectPath
+                    > createReply = *createWatcher;
 
                     if (createReply.isError()) {
                         emit secretServiceTestFinished(
                             QStringLiteral("Keyring store failed: ")
                             + createReply.error().message()
                         );
+
                         return;
                     }
 
@@ -543,6 +766,7 @@ void Backend::testSecretService()
                                 "test stopped safely"
                             )
                         );
+
                         return;
                     }
 
@@ -552,13 +776,19 @@ void Backend::testSecretService()
                                 "Keyring did not return a valid item"
                             )
                         );
+
                         return;
                     }
 
-                    // Step 4: retrieve the stored value.
+                    // =========================================
+                    // Step 4: Retrieve the stored value
+                    // =========================================
+
                     callAsync(
                         itemPath.path(),
-                        QStringLiteral("org.freedesktop.Secret.Item"),
+                        QStringLiteral(
+                            "org.freedesktop.Secret.Item"
+                        ),
                         QStringLiteral("GetSecret"),
                         {
                             QVariant::fromValue(sessionPath)
@@ -578,7 +808,10 @@ void Backend::testSecretService()
                                 ? getReply.error().message()
                                 : QString();
 
-                            // Step 5: delete the temporary item.
+                            // =================================
+                            // Step 5: Delete the temporary item
+                            // =================================
+
                             callAsync(
                                 itemPath.path(),
                                 QStringLiteral(
@@ -587,7 +820,9 @@ void Backend::testSecretService()
                                 QStringLiteral("Delete"),
                                 {},
                                 [this, retrieved, retrievalError]
-                                (QDBusPendingCallWatcher *deleteWatcher)
+                                (
+                                    QDBusPendingCallWatcher *deleteWatcher
+                                )
                                 {
                                     QDBusPendingReply<QDBusObjectPath>
                                         deleteReply = *deleteWatcher;
@@ -599,17 +834,21 @@ void Backend::testSecretService()
                                             )
                                             + deleteReply.error().message()
                                         );
+
                                         return;
                                     }
 
-                                    if (deleteReply.value().path()
-                                        != QStringLiteral("/")) {
+                                    if (
+                                        deleteReply.value().path()
+                                        != QStringLiteral("/")
+                                    ) {
                                         emit secretServiceTestFinished(
                                             QStringLiteral(
                                                 "Keyring cleanup requires "
                                                 "an interactive prompt"
                                             )
                                         );
+
                                         return;
                                     }
 
@@ -623,6 +862,7 @@ void Backend::testSecretService()
                                                 ". Temporary item deleted."
                                             )
                                         );
+
                                         return;
                                     }
 
@@ -651,10 +891,9 @@ void Backend::testSecretService()
     );
 }
 
-
-// ---------------------------------------------------------------------
+// =============================================================
 // Storage state
-// ---------------------------------------------------------------------
+// =============================================================
 
 bool Backend::storageReady() const
 {
@@ -668,34 +907,43 @@ void Backend::setStorageReady(bool ready)
     }
 
     m_storageReady = ready;
+
     emit storageReadyChanged();
 }
 
-
-// ---------------------------------------------------------------------
+// =============================================================
 // Open encrypted storage
-// ---------------------------------------------------------------------
+// =============================================================
 
 void Backend::openStorage(const QString &passphrase)
 {
     if (m_storageOperationInProgress) {
         emit storageStatusChanged(
-            QStringLiteral("A storage operation is already in progress")
+            QStringLiteral(
+                "A storage operation is already in progress"
+            )
         );
+
         return;
     }
 
     if (m_storageReady) {
         emit storageStatusChanged(
-            QStringLiteral("Encrypted storage is already open")
+            QStringLiteral(
+                "Encrypted storage is already open"
+            )
         );
+
         return;
     }
 
     if (passphrase.isEmpty()) {
         emit storageStatusChanged(
-            QStringLiteral("Please enter a storage passphrase")
+            QStringLiteral(
+                "Please enter a storage passphrase"
+            )
         );
+
         return;
     }
 
@@ -708,8 +956,10 @@ void Backend::openStorage(const QString &passphrase)
     emit requestOpenStorage(passphrase);
 }
 
+// =============================================================
+// Matrix login
+// =============================================================
 
-//Login To Matrix Server
 void Backend::loginMatrix(
     const QString &homeserver,
     const QString &username,
@@ -718,8 +968,11 @@ void Backend::loginMatrix(
 {
     if (m_storageOperationInProgress) {
         emit storageStatusChanged(
-            QStringLiteral("Another operation is already in progress")
+            QStringLiteral(
+                "Another operation is already in progress"
+            )
         );
+
         return;
     }
 
@@ -727,6 +980,7 @@ void Backend::loginMatrix(
         emit storageStatusChanged(
             QStringLiteral("Unlock encrypted storage first")
         );
+
         return;
     }
 
@@ -743,13 +997,19 @@ void Backend::loginMatrix(
     );
 }
 
-//Logout Of Matrix Account
-void Backend::logoutMatrix()
+// =============================================================
+// Matrix room and Space retrieval
+// =============================================================
+
+void Backend::refreshMatrixRooms()
 {
     if (m_storageOperationInProgress) {
         emit storageStatusChanged(
-            QStringLiteral("Another operation is already in progress")
+            QStringLiteral(
+                "Another operation is already in progress"
+            )
         );
+
         return;
     }
 
@@ -757,6 +1017,79 @@ void Backend::logoutMatrix()
         emit storageStatusChanged(
             QStringLiteral("Unlock encrypted storage first")
         );
+
+        return;
+    }
+
+    m_storageOperationInProgress = true;
+
+    emit storageStatusChanged(
+        QStringLiteral("Retrieving Matrix rooms...")
+    );
+
+    emit requestFetchMatrixRooms();
+}
+
+// =============================================================
+// Matrix media and room avatar requests
+// =============================================================
+
+void Backend::requestRoomAvatar(
+    const QString &roomId,
+    const QString &mxcUri
+)
+{
+    if (!m_storageReady) {
+        emit roomAvatarFailed(
+            roomId,
+            QStringLiteral("Encrypted storage is not open")
+        );
+
+        return;
+    }
+
+    if (roomId.isEmpty() || mxcUri.isEmpty()) {
+        emit roomAvatarFailed(
+            roomId,
+            QStringLiteral("Room ID or avatar URI is empty")
+        );
+
+        return;
+    }
+
+    // Request a 96 x 96 thumbnail.
+    // The request is queued on the existing worker thread.
+    // Avatar retrieval does not block normal storage operations.
+
+    emit requestFetchRoomAvatar(
+        roomId,
+        mxcUri,
+        96,
+        96
+    );
+}
+
+// =============================================================
+// Matrix logout
+// =============================================================
+
+void Backend::logoutMatrix()
+{
+    if (m_storageOperationInProgress) {
+        emit storageStatusChanged(
+            QStringLiteral(
+                "Another operation is already in progress"
+            )
+        );
+
+        return;
+    }
+
+    if (!m_storageReady) {
+        emit storageStatusChanged(
+            QStringLiteral("Unlock encrypted storage first")
+        );
+
         return;
     }
 
@@ -769,16 +1102,19 @@ void Backend::logoutMatrix()
     emit requestLogoutMatrix();
 }
 
-// ---------------------------------------------------------------------
+// =============================================================
 // Close encrypted storage
-// ---------------------------------------------------------------------
+// =============================================================
 
 void Backend::closeStorage()
 {
     if (m_storageOperationInProgress) {
         emit storageStatusChanged(
-            QStringLiteral("A storage operation is already in progress")
+            QStringLiteral(
+                "A storage operation is already in progress"
+            )
         );
+
         return;
     }
 
@@ -786,6 +1122,7 @@ void Backend::closeStorage()
         emit storageStatusChanged(
             QStringLiteral("Encrypted storage is not open")
         );
+
         return;
     }
 
@@ -796,4 +1133,118 @@ void Backend::closeStorage()
     );
 
     emit requestCloseStorage();
+}
+
+// =============================================================
+// Delete all Astro application data
+// =============================================================
+
+void Backend::deleteAllData()
+{
+    if (m_storageOperationInProgress) {
+        emit storageStatusChanged(
+            QStringLiteral(
+                "Another operation is already in progress"
+            )
+        );
+
+        return;
+    }
+
+    const QString path = prepareDataDirectory();
+
+    if (path.isEmpty()) {
+        emit storageStatusChanged(
+            QStringLiteral(
+                "Could not determine Astro data directory"
+            )
+        );
+
+        return;
+    }
+
+    // ---------------------------------------------------------
+    // If storage is currently open, close it first on the
+    // worker thread before deleting the application data.
+    // ---------------------------------------------------------
+
+    if (m_storageReady) {
+        m_storageOperationInProgress = true;
+
+        QMetaObject::invokeMethod(
+            m_storageWorker,
+            [this, path]()
+            {
+                // Close the Rust-side resources first.
+                m_storageWorker->closeStorage();
+
+                // Delete the application data directory.
+                QDir directory(path);
+
+                if (!directory.removeRecursively()) {
+                    QMetaObject::invokeMethod(
+                        this,
+                        [this]()
+                        {
+                            m_storageOperationInProgress = false;
+
+                            emit storageStatusChanged(
+                                QStringLiteral(
+                                    "Could not delete Astro local data"
+                                )
+                            );
+                        },
+                        Qt::QueuedConnection
+                    );
+
+                    return;
+                }
+
+                QMetaObject::invokeMethod(
+                    this,
+                    [this]()
+                    {
+                        m_storageOperationInProgress = false;
+
+                        setStorageReady(false);
+
+                        emit dataDeleted();
+
+                        emit storageStatusChanged(
+                            QStringLiteral(
+                                "All Astro local data deleted"
+                            )
+                        );
+                    },
+                    Qt::QueuedConnection
+                );
+            },
+            Qt::QueuedConnection
+        );
+
+        return;
+    }
+
+    // ---------------------------------------------------------
+    // Storage is already closed, so deletion can happen
+    // directly.
+    // ---------------------------------------------------------
+
+    QDir directory(path);
+
+    if (!directory.removeRecursively()) {
+        emit storageStatusChanged(
+            QStringLiteral(
+                "Could not delete Astro local data"
+            )
+        );
+
+        return;
+    }
+
+    emit dataDeleted();
+
+    emit storageStatusChanged(
+        QStringLiteral("All Astro local data deleted")
+    );
 }

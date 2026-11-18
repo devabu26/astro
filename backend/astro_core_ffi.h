@@ -41,9 +41,44 @@ int32_t astro_matrix_restore(
     char **error_out
 );
 
+char *astro_matrix_get_rooms_json(
+    AstroMatrixClient *handle,
+    char **error_out
+);
+
+char *astro_matrix_get_cached_rooms_json(
+    AstroMatrixClient *handle,
+    char **error_out
+);
+
 int32_t astro_matrix_logout(
     AstroMatrixClient *handle,
     char **error_out
+);
+
+/*
+ * Downloads a thumbnail for a plain MXC media URI.
+ *
+ * Returns:
+ *   1  Success; data_out/len_out contain the allocated bytes.
+ *   0  Success, but the media response contained no bytes.
+ *  -1  Error; error_out receives the message.
+ *
+ * The returned byte buffer must be released with astro_media_bytes_free().
+ */
+int32_t astro_matrix_thumbnail(
+    AstroMatrixClient *handle,
+    const char *mxc_uri,
+    uint32_t width,
+    uint32_t height,
+    uint8_t **data_out,
+    uintptr_t *len_out,
+    char **error_out
+);
+
+void astro_media_bytes_free(
+    uint8_t *data,
+    uintptr_t len
 );
 
 void astro_matrix_close(AstroMatrixClient *handle);

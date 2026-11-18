@@ -1,4 +1,3 @@
-
 import QtQuick 2.7
 import Lomiri.Components 1.3
 import QtQuick.Layouts 1.3
@@ -69,9 +68,8 @@ Item {
                 Column {
                     id: settingsContent
                     width: parent.width
-                    spacing: 0
+                    spacing: units.gu(2)
 
-                    // Equal left and right page margins
                     Column {
                         id: settingsInner
                         width: parent.width - units.gu(4)
@@ -148,7 +146,6 @@ Item {
                             }
                         }
 
-                        // Lock Button
                         Button {
                             width: parent.width
                             text: "Lock Astro"
@@ -158,7 +155,6 @@ Item {
                             }
                         }
 
-                        // Log-out Button
                         Button {
                             width: parent.width
                             text: "Log out of Matrix"
@@ -238,10 +234,167 @@ Item {
                             }
                         }
 
+                        // Spacer
                         Item {
                             width: parent.width
-                            height: units.gu(2)
+                            height: units.gu(4)
                         }
+
+                        // Danger zone
+                        Text {
+                            text: "DANGER ZONE"
+                            color: "#e57373"
+                            font.pixelSize: units.gu(1.5)
+                            font.bold: true
+                        }
+
+                        Rectangle {
+                            width: parent.width
+                            height: units.gu(6)
+                            radius: units.gu(1)
+                            color: "#1b2935"
+                            border.color: "#8b3030"
+                            border.width: 1
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Reset Astro / Delete All Data"
+                                color: "#e53935"
+                                font.pixelSize: units.gu(1.8)
+                                font.bold: true
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+
+                                onPressed: {
+                                    parent.color = "#292020"
+                                }
+
+                                onReleased: {
+                                    parent.color = "#1b2935"
+                                }
+
+                                onClicked: {
+                                    resetOverlay.visible = true
+                                }
+                            }
+                        }
+
+                        Item {
+                            width: parent.width
+                            height: units.gu(4)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Reset confirmation overlay
+    Rectangle {
+        id: resetOverlay
+
+        anchors.fill: parent
+        color: "#000000"
+        opacity: 0.75
+        visible: false
+        z: 100
+
+        MouseArea {
+            anchors.fill: parent
+        }
+    }
+
+    Rectangle {
+        id: resetConfirmation
+
+        width: parent.width - units.gu(6)
+        height: units.gu(40)
+        anchors.centerIn: parent
+        radius: units.gu(2)
+        color: "#1b2935"
+        border.color: "#FFFFFF"
+        border.width: 1
+        visible: resetOverlay.visible
+        z: 101
+
+        Column {
+            anchors {
+                fill: parent
+                margins: units.gu(3)
+            }
+
+            spacing: units.gu(2)
+
+            Text {
+                width: parent.width
+                text: "Delete all Astro data?"
+                color: "white"
+                font.pixelSize: units.gu(2.5)
+                font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+            }
+
+            Text {
+                width: parent.width
+                text: "This will permanently delete your encrypted Astro storage, Matrix session and local Matrix data. You will need to sign in again.\n\nThis action cannot be undone."
+                color: "#c4ced6"
+                font.pixelSize: units.gu(1.7)
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+            }
+
+            Item {
+                width: parent.width
+                height: units.gu(1)
+            }
+
+            Rectangle {
+                width: parent.width
+                height: units.gu(6)
+                radius: units.gu(1)
+                color: "#293c4c"
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "Cancel"
+                    color: "white"
+                    font.pixelSize: units.gu(1.8)
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+
+                    onClicked: {
+                        resetOverlay.visible = false
+                    }
+                }
+            }
+
+            Rectangle {
+                width: parent.width
+                height: units.gu(6)
+                radius: units.gu(1)
+                color: "#3a2020"
+                border.color: "#e53935"
+                border.width: 1
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "Delete Everything"
+                    color: "#e53935"
+                    font.pixelSize: units.gu(1.8)
+                    font.bold: true
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+
+                    onClicked: {
+                        resetOverlay.visible = false
+                        root.backend.deleteAllData()
                     }
                 }
             }
