@@ -1,9 +1,9 @@
-
 #pragma once
 
 #include <QObject>
 #include <QString>
 #include <QByteArray>
+#include <QTimer>
 
 #include "astro_core_ffi.h"
 
@@ -23,6 +23,7 @@ public slots:
 
     void openStorage(const QString &passphrase);
     void closeStorage();
+    void deleteAllData(const QString &path);
 
     // ---------------------------------------------------------
     // Matrix account operations
@@ -44,6 +45,12 @@ public slots:
     void syncMatrixRooms();
     void fetchRoomTimeline(const QString &roomId);
     void paginateRoomTimeline(const QString &roomId);
+    void markRoomAsRead(const QString &roomId);
+    void sendRoomMessage(const QString &roomId, const QString &message);
+
+    // Poll retained Matrix timeline subscriptions.
+    void pollRoomTimelineUpdates();
+
     // ---------------------------------------------------------
     // Matrix media and avatar retrieval
     // ---------------------------------------------------------
@@ -65,6 +72,14 @@ signals:
     void storageClosed();
     void storageFailed(const QString &error);
     void sessionRestored(bool restored);
+    void dataDeletionFinished(
+        bool deleted,
+        bool storageWasUnlocked,
+        bool logoutAttempted,
+        bool logoutSucceeded,
+        const QString &logoutError,
+        const QString &deletionError
+    );
 
     // ---------------------------------------------------------
     // Matrix account signals
@@ -78,16 +93,28 @@ signals:
     // ---------------------------------------------------------
 
     void matrixRoomsUpdated(const QString &json, bool finished);
+
     void matrixTimelineUpdated(
         const QString &roomId,
         const QString &json,
         const QString &error
     );
+
     void matrixOlderTimelineUpdated(
-    const QString &roomId,
-    const QString &json,
-    const QString &error
+        const QString &roomId,
+        const QString &json,
+        const QString &error
     );
+
+    void matrixMessageSent(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &error
+    );
+
+    // Live timeline changes forwarded to Backend and QML.
+    void matrixLiveTimelineUpdated(const QString &json);
+
     // ---------------------------------------------------------
     // Matrix media signals
     // ---------------------------------------------------------
@@ -110,6 +137,10 @@ private:
 
     AstroMatrixClient *m_matrixClient = nullptr;
 
+    // Polls retained timeline subscriptions on this worker's thread.
+    QTimer *m_timelinePollTimer = nullptr;
+
     // Retained only while encrypted storage is unlocked.
     QByteArray m_storagePassphrase;
+    bool m_matrixSessionActive = false;
 };

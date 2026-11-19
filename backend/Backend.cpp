@@ -170,6 +170,13 @@ Backend::Backend(QObject *parent)
 
    // Matrix room timeline request connection.
    connect(
+        m_storageWorker,
+        &StorageWorker::matrixLiveTimelineUpdated,
+        this,
+        &Backend::matrixLiveTimelineUpdated
+   );
+
+   connect(
        this,
        &Backend::requestFetchRoomTimeline,
        m_storageWorker,
@@ -184,6 +191,23 @@ Backend::Backend(QObject *parent)
         &StorageWorker::paginateRoomTimeline,
         Qt::QueuedConnection
     );
+
+    connect(
+        this,
+        &Backend::requestMarkRoomAsRead,
+        m_storageWorker,
+        &StorageWorker::markRoomAsRead,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestSendRoomMessage,
+        m_storageWorker,
+        &StorageWorker::sendRoomMessage,
+        Qt::QueuedConnection
+    );
+
 
    // Forward room timeline results to QML.
    connect(
@@ -211,6 +235,20 @@ Backend::Backend(QObject *parent)
         )
         {
             emit matrixOlderTimelineRetrieved(roomId, json, error);
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixMessageSent,
+        this,
+        [this](
+            const QString &roomId,
+            const QString &eventId,
+            const QString &error
+        )
+        {
+            emit matrixMessageSent(roomId, eventId, error);
         }
     );
 
@@ -355,6 +393,37 @@ Backend::Backend(QObject *parent)
     );
 
     // =========================================================
+   connect(
+        m_storageWorker,
+        &StorageWorker::dataDeletionFinished,
+        this,
+        [this](
+            bool deleted,
+            bool storageWasUnlocked,
+            bool logoutAttempted,
+            bool logoutSucceeded,
+            const QString &logoutError,
+            const QString &deletionError
+        )
+        {
+            m_storageOperationInProgress = false;
+
+            if (deleted) {
+                setStorageReady(false);
+                emit dataDeleted();
+            }
+
+            emit dataDeletionFinished(
+                deleted,
+                storageWasUnlocked,
+                logoutAttempted,
+                logoutSucceeded,
+                logoutError,
+                deletionError
+            );
+        }
+    );
+
     // Matrix room and Space response connections
     // =========================================================
 
@@ -366,7 +435,7 @@ Backend::Backend(QObject *parent)
    {
        // Forward cached or freshly synchronised rooms to QML.
        // QML can queue avatar requests while handling the cached list.
-       emit matrixRoomsRetrieved(json);
+       emit matrixRoomsRetrieved(json, finished);
 
        // Schedule network sync only after cached rooms reach QML.
        if (!finished) {
@@ -1169,6 +1238,51 @@ void Backend::requestOlderRoomTimeline(const QString &roomId)
     emit requestPaginateRoomTimeline(roomId);
 }
 
+void Backend::markRoomAsRead(const QString &roomId)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        return;
+    }
+
+    emit requestMarkRoomAsRead(roomId);
+}
+
+void Backend::sendRoomMessage(
+    const QString &roomId,
+    const QString &message
+)
+{
+    if (!m_storageReady) {
+        emit matrixMessageSent(
+            roomId,
+            QString(),
+            QStringLiteral("Encrypted storage is not open")
+        );
+        return;
+    }
+
+    if (roomId.isEmpty()) {
+        emit matrixMessageSent(
+            roomId,
+            QString(),
+            QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    if (message.trimmed().isEmpty()) {
+        emit matrixMessageSent(
+            roomId,
+            QString(),
+            QStringLiteral("Message must not be empty")
+        );
+        return;
+    }
+
+    emit requestSendRoomMessage(roomId, message);
+}
+
+
 void Backend::logoutMatrix()
 {
     if (m_storageOperationInProgress) {
@@ -1239,11 +1353,8 @@ void Backend::deleteAllData()
 {
     if (m_storageOperationInProgress) {
         emit storageStatusChanged(
-            QStringLiteral(
-                "Another operation is already in progress"
-            )
+            QStringLiteral("Another operation is already in progress")
         );
-
         return;
     }
 
@@ -1251,96 +1362,24 @@ void Backend::deleteAllData()
 
     if (path.isEmpty()) {
         emit storageStatusChanged(
-            QStringLiteral(
-                "Could not determine Astro data directory"
-            )
+            QStringLiteral("Could not determine Astro data directory")
         );
-
         return;
     }
 
-    // ---------------------------------------------------------
-    // If storage is currently open, close it first on the
-    // worker thread before deleting the application data.
-    // ---------------------------------------------------------
-
-    if (m_storageReady) {
-        m_storageOperationInProgress = true;
-
-        QMetaObject::invokeMethod(
-            m_storageWorker,
-            [this, path]()
-            {
-                // Close the Rust-side resources first.
-                m_storageWorker->closeStorage();
-
-                // Delete the application data directory.
-                QDir directory(path);
-
-                if (!directory.removeRecursively()) {
-                    QMetaObject::invokeMethod(
-                        this,
-                        [this]()
-                        {
-                            m_storageOperationInProgress = false;
-
-                            emit storageStatusChanged(
-                                QStringLiteral(
-                                    "Could not delete Astro local data"
-                                )
-                            );
-                        },
-                        Qt::QueuedConnection
-                    );
-
-                    return;
-                }
-
-                QMetaObject::invokeMethod(
-                    this,
-                    [this]()
-                    {
-                        m_storageOperationInProgress = false;
-
-                        setStorageReady(false);
-
-                        emit dataDeleted();
-
-                        emit storageStatusChanged(
-                            QStringLiteral(
-                                "All Astro local data deleted"
-                            )
-                        );
-                    },
-                    Qt::QueuedConnection
-                );
-            },
-            Qt::QueuedConnection
-        );
-
-        return;
-    }
-
-    // ---------------------------------------------------------
-    // Storage is already closed, so deletion can happen
-    // directly.
-    // ---------------------------------------------------------
-
-    QDir directory(path);
-
-    if (!directory.removeRecursively()) {
-        emit storageStatusChanged(
-            QStringLiteral(
-                "Could not delete Astro local data"
-            )
-        );
-
-        return;
-    }
-
-    emit dataDeleted();
+    m_storageOperationInProgress = true;
 
     emit storageStatusChanged(
-        QStringLiteral("All Astro local data deleted")
+        QStringLiteral("Deleting Astro local data...")
+    );
+
+    // Run logout, client cleanup and deletion on the storage thread.
+    QMetaObject::invokeMethod(
+        m_storageWorker,
+        [this, path]()
+        {
+            m_storageWorker->deleteAllData(path);
+        },
+        Qt::QueuedConnection
     );
 }

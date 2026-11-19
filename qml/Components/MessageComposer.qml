@@ -10,8 +10,10 @@ Rectangle {
 
     signal sendRequested(string message)
 
+    property bool sending: false
+
     function submitMessage() {
-        var message = messageInput.text.trim()
+        var message = root.currentMessage().trim()
 
         if (message === "")
             return
@@ -19,8 +21,19 @@ Rectangle {
         root.sendRequested(message)
     }
 
+    function currentMessage() {
+    var text = messageInput.text
+    var cursor = messageInput.cursorPosition
+
+    return text.slice(0, cursor)
+            + messageInput.preeditText
+            + text.slice(cursor)
+    }
+
     function clearInput() {
+        Qt.inputMethod.reset()
         messageInput.text = ""
+        messageInput.cursorPosition = 0
     }
 
     Rectangle {
@@ -59,6 +72,7 @@ Rectangle {
 
             wrapMode: TextEdit.Wrap
             textFormat: TextEdit.PlainText
+            readOnly: root.sending
 
             verticalAlignment: TextEdit.AlignVCenter
 
@@ -90,6 +104,7 @@ Rectangle {
                 font.pixelSize: units.gu(1.8)
 
                 visible: messageInput.text.length === 0
+         && messageInput.preeditText.length === 0
 
                 enabled: false
             }
@@ -110,13 +125,11 @@ Rectangle {
 
         radius: units.gu(3)
 
-        color: messageInput.text.trim().length > 0
-               ? "#245b78"
-               : "#293c4c"
+       color: root.currentMessage().trim().length > 0 && !root.sending
+       ? "#245b78" : "#293c4c"
 
-        opacity: messageInput.text.trim().length > 0
-                 ? 1
-                 : 0.55
+opacity: root.currentMessage().trim().length > 0 && !root.sending
+         ? 1 : 0.55
 
         Text {
             anchors.centerIn: parent
@@ -130,7 +143,8 @@ Rectangle {
         MouseArea {
             anchors.fill: parent
 
-            enabled: messageInput.text.trim().length > 0
+            enabled: root.currentMessage().trim().length > 0
+         && !root.sending
 
             onClicked: {
                 root.submitMessage()

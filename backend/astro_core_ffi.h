@@ -41,6 +41,13 @@ int32_t astro_matrix_restore(
     char **error_out
 );
 
+char *astro_matrix_send_room_message(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    const char *message,
+    char **error_out
+);
+
 char *astro_matrix_get_rooms_json(
     AstroMatrixClient *handle,
     char **error_out
@@ -52,9 +59,20 @@ char *astro_matrix_get_room_timeline_json(
     char **error_out
 );
 
+int32_t astro_matrix_mark_room_as_read(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    char **error_out
+);
+
 char *astro_matrix_paginate_room_timeline_json(
     AstroMatrixClient *handle,
     const char *room_id,
+    char **error_out
+);
+
+char *astro_matrix_poll_room_timeline_updates_json(
+    AstroMatrixClient *handle,
     char **error_out
 );
 

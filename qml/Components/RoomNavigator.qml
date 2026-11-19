@@ -1,4 +1,3 @@
-
 import QtQuick 2.7
 import Lomiri.Components 1.3
 import QtGraphicalEffects 1.0
@@ -8,6 +7,11 @@ Item {
 
     property var roomsModel
     property string selectedRoom: ""
+
+    // Navigation controls supplied by ChatPage.
+    property string filterMode: "all"
+    property string searchText: ""
+
     property var expandedSpaceIds: []
 
     signal roomSelected(string roomId, string name, string preview)
@@ -17,19 +21,39 @@ Item {
     }
 
     // =========================================================
+    // Search
+    // =========================================================
+
+    function roomMatchesSearch(room) {
+        var query = root.searchText.toLowerCase().trim()
+
+        if (query === "")
+            return true
+
+        var name = String(room.name || "").toLowerCase()
+        var preview = String(room.preview || "").toLowerCase()
+        var roomId = String(room.roomId || "").toLowerCase()
+
+        return name.indexOf(query) !== -1 ||
+               preview.indexOf(query) !== -1 ||
+               roomId.indexOf(query) !== -1
+    }
+
+    // =========================================================
     // Space relationship helpers
     // =========================================================
 
     function parentIdsFor(room) {
         var parents = room.parentSpaceIds || []
 
-        // Qt Quick ListModel on older Ubuntu Touch releases
-        // handles string roles more reliably than array roles.
         if (typeof parents === "string") {
             try {
                 parents = JSON.parse(parents)
             } catch (error) {
-                console.log("ASTRO: Invalid parent Space JSON:", error)
+                console.log(
+                    "ASTRO: Invalid parent Space JSON:",
+                    error
+                )
                 return []
             }
         }
@@ -85,6 +109,27 @@ Item {
         rebuild()
     }
 
+    function expandAllSpaces() {
+        var updated = []
+
+        if (root.roomsModel) {
+            for (var i = 0; i < root.roomsModel.count; i++) {
+                var room = root.roomsModel.get(i)
+
+                if (room.kind === "space")
+                    updated.push(room.roomId)
+            }
+        }
+
+        expandedSpaceIds = updated
+        rebuild()
+    }
+
+    function collapseAllSpaces() {
+        expandedSpaceIds = []
+        rebuild()
+    }
+
     // =========================================================
     // Navigation model helpers
     // =========================================================
@@ -109,9 +154,26 @@ Item {
             avatarUrl: room.avatarUrl,
             colour: room.colour,
             kind: room.kind,
+            unreadCount: Number(room.unreadCount || 0),
+            mentionCount: Number(room.mentionCount || 0),
             depth: depth,
             expanded: false
         })
+    }
+
+    function updateUnreadCounts(roomId, unreadCount, mentionCount) {
+        for (var i = 0; i < navigationModel.count; i++) {
+            var entry = navigationModel.get(i)
+
+            if (entry.roomId === roomId && entry.rowType !== "space") {
+                navigationModel.setProperty(
+                    i, "unreadCount", unreadCount
+                )
+                navigationModel.setProperty(
+                    i, "mentionCount", mentionCount
+                )
+            }
+        }
     }
 
     function appendSpace(index, depth, ancestors) {
@@ -171,76 +233,107 @@ Item {
     // =========================================================
 
     function rebuild() {
-        console.log("ASTRO TRACE: rebuild entered")
         navigationModel.clear()
-        console.log("ASTRO TRACE: navigationModel cleared")
 
-        if (!root.roomsModel) {
-            console.log("ASTRO TRACE: no roomsModel; rebuild finished")
+        if (!root.roomsModel)
+            return
+
+        var i
+        var room
+
+        // -----------------------------------------------------
+        // Search results
+        //
+        // Search is deliberately independent of the selected
+        // filter, so a search can find rooms inside collapsed
+        // Spaces and direct messages.
+        // -----------------------------------------------------
+
+        if (root.searchText.trim() !== "") {
+            appendSection("SEARCH RESULTS")
+
+            var resultCount = 0
+
+            for (i = 0; i < root.roomsModel.count; i++) {
+                room = root.roomsModel.get(i)
+
+                if (!roomMatchesSearch(room))
+                    continue
+
+                appendRoom(
+                    i,
+                    0,
+                    room.kind === "dm" ? "dm" : "room"
+                )
+
+                resultCount++
+            }
+
+            if (resultCount === 0)
+                appendSection("NO MATCHING CONVERSATIONS")
+
             return
         }
 
-        console.log("ASTRO TRACE: roomsModel count:", root.roomsModel.count)
+        // -----------------------------------------------------
+        // Count available entries
+        // -----------------------------------------------------
 
-        var i
         var spaceCount = 0
         var standaloneCount = 0
         var dmCount = 0
+        var allRoomCount = 0
 
         for (i = 0; i < root.roomsModel.count; i++) {
-            var room = root.roomsModel.get(i)
+            room = root.roomsModel.get(i)
 
             if (room.kind === "space" && !hasJoinedParent(room))
                 spaceCount++
 
-            if (room.kind === "room" && !hasJoinedParent(room))
-                standaloneCount++
+            if (room.kind === "room") {
+                allRoomCount++
+
+                if (!hasJoinedParent(room))
+                    standaloneCount++
+            }
 
             if (room.kind === "dm")
                 dmCount++
         }
 
-        console.log("ASTRO TRACE: counts calculated:",
-                    spaceCount, standaloneCount, dmCount)
+        // -----------------------------------------------------
+        // Spaces filter
+        // -----------------------------------------------------
 
-        if (spaceCount > 0) {
-            console.log("ASTRO TRACE: adding SPACES section")
+        if (root.filterMode === "spaces") {
             appendSection("SPACES")
-            console.log("ASTRO TRACE: SPACES section added")
+
+            if (spaceCount === 0) {
+                appendSection("NO JOINED SPACES")
+                return
+            }
 
             for (i = 0; i < root.roomsModel.count; i++) {
                 room = root.roomsModel.get(i)
 
-                if (room.kind !== "space")
-                    continue
-
-                console.log("ASTRO TRACE: checking Space:", room.name)
-
-                if (!hasJoinedParent(room)) {
-                    console.log("ASTRO TRACE: appending top-level Space:", room.name)
+                if (room.kind === "space" && !hasJoinedParent(room))
                     appendSpace(i, 0, [])
-                    console.log("ASTRO TRACE: Space appended:", room.name)
-                }
-            }
-        }
-
-        if (standaloneCount > 0) {
-            console.log("ASTRO TRACE: adding ROOMS section")
-            appendSection("ROOMS")
-
-            for (i = 0; i < root.roomsModel.count; i++) {
-                room = root.roomsModel.get(i)
-
-                if (room.kind === "room" && !hasJoinedParent(room))
-                    appendRoom(i, 0, "room")
             }
 
-            console.log("ASTRO TRACE: standalone rooms appended")
+            return
         }
 
-        if (dmCount > 0) {
-            console.log("ASTRO TRACE: adding DIRECT MESSAGES section")
+        // -----------------------------------------------------
+        // Direct messages filter
+        // -----------------------------------------------------
+
+        if (root.filterMode === "direct") {
             appendSection("DIRECT MESSAGES")
+
+            if (dmCount === 0) {
+                appendSection("NO DIRECT MESSAGES")
+                return
+            }
 
             for (i = 0; i < root.roomsModel.count; i++) {
                 room = root.roomsModel.get(i)
@@ -249,15 +342,77 @@ Item {
                     appendRoom(i, 0, "dm")
             }
 
-            console.log("ASTRO TRACE: direct messages appended")
+            return
         }
 
-        console.log("ASTRO TRACE: rebuild finished; navigation rows:",
-                    navigationModel.count)
+        // -----------------------------------------------------
+        // Ordinary rooms filter
+        //
+        // Include rooms nested inside Spaces as well as
+        // standalone rooms. They are displayed as a flat list.
+        // -----------------------------------------------------
+
+        if (root.filterMode === "rooms") {
+            appendSection("ROOMS")
+
+            if (allRoomCount === 0) {
+                appendSection("NO ROOMS")
+                return
+            }
+
+            for (i = 0; i < root.roomsModel.count; i++) {
+                room = root.roomsModel.get(i)
+
+                if (room.kind === "room")
+                    appendRoom(i, 0, "room")
+            }
+
+            return
+        }
+
+        // -----------------------------------------------------
+        // All conversations
+        //
+        // Preserve the original hierarchical navigation.
+        // -----------------------------------------------------
+
+        if (spaceCount > 0) {
+            appendSection("SPACES")
+
+            for (i = 0; i < root.roomsModel.count; i++) {
+                room = root.roomsModel.get(i)
+
+                if (room.kind === "space" && !hasJoinedParent(room))
+                    appendSpace(i, 0, [])
+            }
+        }
+
+        if (standaloneCount > 0) {
+            appendSection("ROOMS")
+
+            for (i = 0; i < root.roomsModel.count; i++) {
+                room = root.roomsModel.get(i)
+
+                if (room.kind === "room" && !hasJoinedParent(room))
+                    appendRoom(i, 0, "room")
+            }
+        }
+
+        if (dmCount > 0) {
+            appendSection("DIRECT MESSAGES")
+
+            for (i = 0; i < root.roomsModel.count; i++) {
+                room = root.roomsModel.get(i)
+
+                if (room.kind === "dm")
+                    appendRoom(i, 0, "dm")
+            }
+        }
     }
 
-    // Rebuild when the model is assigned or replaced.
     onRoomsModelChanged: rebuild()
+    onFilterModeChanged: rebuild()
+    onSearchTextChanged: rebuild()
 
     Component.onCompleted: rebuild()
 
@@ -273,20 +428,35 @@ Item {
         clip: true
 
         delegate: Item {
+            id: entry
+
+            // Explicit ListModel role access for Qt 5 compatibility.
+            property string entryRowType: model.rowType || ""
+            property string entryName: model.name || ""
+            property string entryPreview: model.preview || ""
+            property string entryAvatar: model.avatar || ""
+            property string entryAvatarUrl: model.avatarUrl || ""
+            property string entryColour: model.colour || "#526575"
+            property string entryKind: model.kind || ""
+            property string entryRoomId: model.roomId || ""
+            property int entryUnreadCount: Number(model.unreadCount || 0)
+            property int entryMentionCount: Number(model.mentionCount || 0)
+            property int entryDepth: model.depth === undefined ? 0 : model.depth
+            property bool entryExpanded: model.expanded === true
             width: roomList.width
 
             property real avatarSize:
-                rowType === "room" && depth > 0
+                entryRowType === "room" && entryDepth > 0
                 ? units.gu(4.5)
-                : depth > 0
+                : entryDepth > 0
                   ? units.gu(5.25)
                   : units.gu(6)
 
-            height: rowType === "section"
+            height: entryRowType === "section"
                     ? units.gu(4)
-                    : depth === 0
+                    : entryDepth === 0
                       ? units.gu(9)
-                      : depth === 1
+                      : entryDepth === 1
                         ? units.gu(8)
                         : units.gu(7.5)
 
@@ -302,9 +472,9 @@ Item {
                     bottomMargin: units.gu(0.5)
                 }
 
-                visible: rowType === "section"
+                visible: entryRowType === "section"
 
-                text: name
+                text: entryName
                 color: "#91a4b5"
 
                 font.pixelSize: units.gu(1.4)
@@ -321,12 +491,12 @@ Item {
                     margins: units.gu(0.5)
                 }
 
-                visible: rowType !== "section"
+                visible: entryRowType !== "section"
 
                 radius: units.gu(1)
 
-                color: root.selectedRoom === name &&
-                       rowType !== "space"
+                color: root.selectedRoom === entryName &&
+                       entryRowType !== "space"
                        ? "#293c4c"
                        : "transparent"
 
@@ -334,7 +504,7 @@ Item {
                     anchors {
                         fill: parent
                         leftMargin: units.gu(1) +
-                                    depth * units.gu(2)
+                                    entryDepth * units.gu(2)
                         rightMargin: units.gu(1)
                         topMargin: units.gu(1)
                         bottomMargin: units.gu(1)
@@ -350,9 +520,9 @@ Item {
                         width: units.gu(2)
                         height: units.gu(6)
 
-                        visible: rowType === "space"
+                        visible: entryRowType === "space"
 
-                        text: expanded ? "▾" : "▸"
+                        text: entryExpanded ? "▾" : "▸"
                         color: "#b4c4d1"
 
                         font.pixelSize: units.gu(2)
@@ -362,7 +532,7 @@ Item {
                     }
 
                     // -----------------------------------------
-                    // Room avatar
+                    // Room entryAvatar
                     // -----------------------------------------
 
                     Rectangle {
@@ -371,7 +541,7 @@ Item {
 
                         radius: avatarSize / 2
                         clip: true
-                        color: colour
+                        color: entryColour
 
                         anchors.verticalCenter: parent.verticalCenter
 
@@ -387,20 +557,18 @@ Item {
                             cache: true
                             smooth: true
 
-                            source: avatarUrl
+                            source: entryAvatarUrl
                             visible: false
 
                             onStatusChanged: {
                                 if (status === Image.Error) {
                                     console.log(
-                                        "ASTRO: Could not display room avatar:",
-                                        roomId
+                                        "ASTRO: Could not display room entryAvatar:",
+                                        entryRoomId
                                     )
                                 }
                             }
                         }
-
-
 
                         OpacityMask {
                             anchors.fill: roomAvatarImage
@@ -419,27 +587,27 @@ Item {
                             anchors.centerIn: parent
 
                             visible:
-                                avatarUrl === "" ||
+                                entryAvatarUrl === "" ||
                                 roomAvatarImage.status !== Image.Ready
 
-                            text: kind === "space" ? "◆" :
-                                  kind === "dm" ? "●" :
-                                  avatar
+                            text: entryKind === "space" ? "◆" :
+                                  entryKind === "dm" ? "●" :
+                                  entryAvatar
 
                             color: "white"
                             font.bold: true
 
                             font.pixelSize:
-                                rowType === "room" && depth > 0
+                                entryRowType === "room" && entryDepth > 0
                                 ? units.gu(1.9)
-                                : kind === "room"
+                                : entryKind === "room"
                                   ? units.gu(2.5)
                                   : units.gu(2.2)
                         }
                     }
 
                     // -----------------------------------------
-                    // Name and preview
+                    // Name and entryPreview
                     // -----------------------------------------
 
                     Column {
@@ -448,37 +616,81 @@ Item {
                         width: parent.width -
                                avatarSize -
                                units.gu(2) -
-                               (rowType === "space"
+                               (entryRowType === "space"
                                 ? units.gu(2)
                                 : 0)
 
                         spacing: units.gu(0.5)
 
-                        Text {
+                        Row {
                             width: parent.width
+                            spacing: units.gu(0.5)
 
-                            text: name
-                            color: "white"
+                            Text {
+                                width: parent.width -
+                                       (unreadBadge.visible
+                                        ? unreadBadge.width + parent.spacing
+                                        : 0)
 
-                            font.bold: true
-                            font.pixelSize:
-                                depth === 0
-                                ? units.gu(1.8)
-                                : rowType === "space"
-                                  ? units.gu(1.65)
-                                  : units.gu(1.5)
+                                text: entryName
+                                color: "white"
 
-                            elide: Text.ElideRight
+                                font.bold: true
+                                font.pixelSize:
+                                    entryDepth === 0
+                                    ? units.gu(1.8)
+                                    : entryRowType === "space"
+                                      ? units.gu(1.65)
+                                      : units.gu(1.5)
+
+                                elide: Text.ElideRight
+                            }
+
+                            Rectangle {
+                                id: unreadBadge
+
+                                visible: entryUnreadCount > 0 &&
+                                         entryRowType !== "space" &&
+                                         entryKind !== "space"
+
+                                width: Math.max(
+                                    units.gu(2.4),
+                                    unreadBadgeText.implicitWidth +
+                                    units.gu(1.1)
+                                )
+                                height: units.gu(2.4)
+                                radius: height / 2
+
+                                color: entryMentionCount > 0
+                                       ? "#c94f58"
+                                       : "#526d85"
+
+                                anchors.verticalCenter: parent.verticalCenter
+
+                                Text {
+                                    id: unreadBadgeText
+
+                                    anchors.centerIn: parent
+
+                                    text: entryUnreadCount > 99
+                                          ? "99+"
+                                          : String(entryUnreadCount)
+
+                                    color: "white"
+                                    font.bold: true
+                                    font.pixelSize: units.gu(1.15)
+                                }
+                            }
                         }
 
                         Text {
                             width: parent.width
 
-                            text: preview
+                            text: entryPreview
                             color: "#9aabba"
 
                             font.pixelSize:
-                                depth === 0
+                                entryDepth === 0
                                 ? units.gu(1.5)
                                 : units.gu(1.25)
 
@@ -495,10 +707,14 @@ Item {
                     anchors.fill: parent
 
                     onClicked: {
-                        if (rowType === "space") {
-                            root.toggleSpace(roomId)
+                        if (entryRowType === "space") {
+                            root.toggleSpace(entryRoomId)
                         } else {
-                            root.roomSelected(roomId, name, preview)
+                            root.roomSelected(
+                                entryRoomId,
+                                entryName,
+                                entryPreview
+                            )
                         }
                     }
                 }

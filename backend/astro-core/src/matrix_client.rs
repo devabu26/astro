@@ -1,19 +1,21 @@
+use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
+use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::{
-    config::SyncSettings,
-    ruma::room::RoomType,
-    store::RoomLoadSettings,
-    Client,
-    RoomMemberships,
+    config::SyncSettings, ruma::room::RoomType, store::RoomLoadSettings, Client, RoomMemberships,
     SqliteStoreConfig,
 };
 use matrix_sdk_ui::spaces::SpaceService;
-use matrix_sdk_ui::timeline::{Timeline, TimelineBuilder};
-use std::time::Duration;
+use matrix_sdk_ui::timeline::{Timeline, TimelineBuilder, TimelineItem};
+use eyeball_im::VectorDiff;
+use futures_util::{FutureExt, Stream, StreamExt};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::runtime::{Builder, Runtime};
 
@@ -21,6 +23,30 @@ use crate::media::MediaManager;
 use crate::session_storage::{delete_session, load_session, save_session};
 
 static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+type TimelineUpdateStream =
+    Pin<Box<dyn Stream<Item = Vec<VectorDiff<Arc<TimelineItem>>>>>>;
+
+fn timeline_item_to_json(item: &TimelineItem) -> Option<serde_json::Value> {
+    let event = item.as_event()?;
+    let content = event.content();
+    let is_encrypted = content.is_unable_to_decrypt();
+
+    let body = if is_encrypted {
+        "Encrypted message"
+    } else {
+        content.as_message()?.body()
+    };
+
+    Some(serde_json::json!({
+        "event_id": event.event_id().map(ToString::to_string),
+        "sender": event.sender().to_string(),
+        "body": body,
+        "timestamp": u64::from(event.timestamp().get()),
+        "is_own": event.is_own(),
+        "is_encrypted": is_encrypted
+    }))
+}
 
 struct SyncTask {
     cancel: tokio::sync::oneshot::Sender<()>,
@@ -43,6 +69,9 @@ pub struct MatrixClientManager {
     session_path: PathBuf,
     sync_task: Option<SyncTask>,
     timelines: HashMap<String, Timeline>,
+    timeline_update_streams: HashMap<String, TimelineUpdateStream>,
+    last_unread_counts: HashMap<String, (u64, u64)>,
+    last_unread_check: Option<Instant>,
 }
 
 fn create_new_store(database_path: &Path) -> Result<(String, PathBuf), String> {
@@ -109,14 +138,17 @@ impl MatrixClientManager {
         })?;
 
         eprintln!("ASTRO DEBUG: Matrix client build completed");
+
         Ok(Self {
             timelines: HashMap::new(),
+            timeline_update_streams: HashMap::new(),
+            last_unread_counts: HashMap::new(),
+            last_unread_check: None,
             client: Some(client),
             runtime: std::sync::Arc::new(runtime),
             session_path,
             sync_task: None,
         })
-
     }
 
     pub fn login(
@@ -267,6 +299,7 @@ impl MatrixClientManager {
         // Destroy the client while its Tokio runtime is active.
         let _runtime_guard = self.runtime.enter();
 
+        self.timeline_update_streams.clear();
         self.timelines.clear();
 
         drop(self.client.take());
@@ -343,8 +376,7 @@ impl MatrixClientManager {
                     .joined_parent_ids_of_child(room.room_id())
                     .await;
 
-                let parents: Vec<String> =
-                    parent_ids.iter().map(ToString::to_string).collect();
+                let parents: Vec<String> = parent_ids.iter().map(ToString::to_string).collect();
 
                 room_entries.push(serde_json::json!({
                     "room_id": room_id,
@@ -353,26 +385,29 @@ impl MatrixClientManager {
                     "topic": info.topic(),
                     "avatar_url": avatar_url,
                     "member_count": info.joined_members_count(),
+                    "unread_count": room.num_unread_notifications(),
+                    "mention_count": room.num_unread_mentions(),
                     "parent_space_ids": parents
                 }));
             }
 
             Ok(serde_json::json!({
                 "rooms": room_entries
-            }).to_string())
+            })
+            .to_string())
         })
     }
 
     /// Perform an initial sync, return joined rooms and Space relationships,
     /// and start continuous syncing if it is not already running.
     pub fn rooms_json(&mut self) -> Result<String, String> {
-            let client = self
+        let client = self
             .client
             .as_ref()
             .ok_or_else(|| "No active Matrix session".to_string())?;
 
-            let rooms_json = self.runtime.block_on(async {
-                client
+        let rooms_json = self.runtime.block_on(async {
+            client
                 .sync_once(SyncSettings::default().timeout(Duration::from_secs(10)))
                 .await
                 .map_err(|e| format!("Matrix room sync failed: {e}"))?;
@@ -434,8 +469,7 @@ impl MatrixClientManager {
                     .joined_parent_ids_of_child(room.room_id())
                     .await;
 
-                let parents: Vec<String> =
-                    parent_ids.iter().map(ToString::to_string).collect();
+                let parents: Vec<String> = parent_ids.iter().map(ToString::to_string).collect();
 
                 room_entries.push(serde_json::json!({
                     "room_id": room_id,
@@ -444,14 +478,19 @@ impl MatrixClientManager {
                     "topic": info.topic(),
                     "avatar_url": avatar_url,
                     "member_count": info.joined_members_count(),
+                    "unread_count": room.num_unread_notifications(),
+                    "mention_count": room.num_unread_mentions(),
                     "parent_space_ids": parents
                 }));
             }
 
-            Ok::<String, String>(serde_json::json!({
-                "rooms": room_entries
-            }).to_string())
-                })?;
+            Ok::<String, String>(
+                serde_json::json!({
+                    "rooms": room_entries
+                })
+                .to_string(),
+            )
+        })?;
 
         // Start continuous syncing once the initial room sync has succeeded.
         if self
@@ -506,127 +545,225 @@ impl MatrixClientManager {
         Ok(rooms_json)
     }
 
-    /// Build a room timeline and return its initial message snapshot as JSON.
     /// Build and store a room timeline, then return its initial message snapshot.
-pub fn room_timeline_json(&mut self, room_id: &str) -> Result<String, String> {
-    let client = self
-        .client
-        .as_ref()
-        .ok_or_else(|| "No active Matrix session".to_string())?;
+    pub fn room_timeline_json(&mut self, room_id: &str) -> Result<String, String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?;
 
-    let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id)
-        .map_err(|error| format!("Invalid Matrix room ID: {error}"))?;
+        let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+            .map_err(|error| format!("Invalid Matrix room ID: {error}"))?;
 
-    let room = client
-        .get_room(&parsed_room_id)
-        .ok_or_else(|| format!("Matrix room not found: {room_id}"))?;
+        let room = client
+            .get_room(&parsed_room_id)
+            .ok_or_else(|| format!("Matrix room not found: {room_id}"))?;
 
-    let (timeline, json) = self.runtime.block_on(async {
-        let timeline = TimelineBuilder::new(&room)
-            .build()
-            .await
-            .map_err(|error| format!("Could not build room timeline: {error}"))?;
+        let (timeline, json, update_stream) = self.runtime.block_on(async {
+            let timeline = TimelineBuilder::new(&room)
+                .build()
+                .await
+                .map_err(|error| format!("Could not build room timeline: {error}"))?;
 
-        // Load the latest 50 historical events.
-        let reached_start = timeline
-            .paginate_backwards(50)
-            .await
-            .map_err(|error| format!("Could not load room history: {error}"))?;
+            // Load the latest 50 historical events before subscribing.
+            let reached_start = timeline
+                .paginate_backwards(5)
+                .await
+                .map_err(|error| format!("Could not load room history: {error}"))?;
 
-        let (items, _updates) = timeline.subscribe().await;
+            // Retain this stream so ongoing Matrix sync changes can be observed.
+            let (items, updates) = timeline.subscribe().await;
 
-        let messages: Vec<serde_json::Value> = items
-            .iter()
-            .filter_map(|item| {
-                let event = item.as_event()?;
-                let content = event.content();
+            let messages: Vec<serde_json::Value> = items
+                .iter()
+                .filter_map(|item| timeline_item_to_json(item.as_ref()))
+                .collect();
 
-                let is_encrypted = content.is_unable_to_decrypt();
-
-                let body = if is_encrypted {
-                    "Encrypted message"
-                } else {
-                    content.as_message()?.body()
-                };
-
-                Some(serde_json::json!({
-                    "event_id": event.event_id().map(ToString::to_string),
-                    "sender": event.sender().to_string(),
-                    "body": body,
-                    "timestamp": u64::from(event.timestamp().get()),
-                    "is_own": event.is_own(),
-                    "is_encrypted": is_encrypted
-                }))
+            let json = serde_json::json!({
+                "room_id": room_id,
+                "messages": messages,
+                "reached_start": reached_start
             })
-            .collect();
+            .to_string();
 
-        let json = serde_json::json!({
-            "room_id": room_id,
-            "messages": messages,
-            "reached_start": reached_start
+            Ok::<_, String>((timeline, json, Box::pin(updates) as TimelineUpdateStream))
+        })?;
+
+        // Keep the timeline for pagination and its stream for live updates.
+        self.timelines.insert(room_id.to_owned(), timeline);
+        self.timeline_update_streams
+            .insert(room_id.to_owned(), update_stream);
+
+        Ok(json)
+    }
+
+    /// Load another batch of older messages from an existing room timeline.
+    pub fn paginate_room_timeline_json(&self, room_id: &str) -> Result<String, String> {
+        let timeline = self
+            .timelines
+            .get(room_id)
+            .ok_or_else(|| format!("No active timeline for room: {room_id}"))?;
+
+        self.runtime.block_on(async {
+            let reached_start = timeline
+                .paginate_backwards(20)
+                .await
+                .map_err(|error| format!("Could not load older room history: {error}"))?;
+
+            let (items, _updates) = timeline.subscribe().await;
+
+            let messages: Vec<serde_json::Value> = items
+                .iter()
+                .filter_map(|item| timeline_item_to_json(item.as_ref()))
+                .collect();
+
+            Ok(serde_json::json!({
+                "room_id": room_id,
+                "messages": messages,
+                "reached_start": reached_start
+            })
+            .to_string())
         })
-        .to_string();
+    }
 
-        Ok::<_, String>((timeline, json))
-    })?;
+    /// Send a read receipt for the latest event in a room timeline.
+    pub fn mark_room_as_read(&self, room_id: &str) -> Result<bool, String> {
+        let timeline = self
+            .timelines
+            .get(room_id)
+            .ok_or_else(|| format!("No active timeline for room: {room_id}"))?;
 
-    // Retain this timeline so subsequent requests paginate the same instance.
-    self.timelines.insert(room_id.to_owned(), timeline);
+        self.runtime.block_on(async {
+            timeline
+                .mark_as_read(ReceiptType::Read)
+                .await
+                .map_err(|error| format!("Could not send read receipt: {error}"))
+        })
+    }
 
-    Ok(json)
-}
+    /// Drain timeline changes and report changed unread counts.
+    pub fn poll_room_timeline_updates_json(&mut self) -> String {
+        let runtime = std::sync::Arc::clone(&self.runtime);
+        let mut updates = Vec::new();
 
-/// Load another batch of older messages from an existing room timeline.
-pub fn paginate_room_timeline_json(
-    &self,
-    room_id: &str,
-) -> Result<String, String> {
-    let timeline = self
-        .timelines
-        .get(room_id)
-        .ok_or_else(|| format!("No active timeline for room: {room_id}"))?;
+        let _runtime_guard = runtime.enter();
 
-    self.runtime.block_on(async {
-        let reached_start = timeline
-            .paginate_backwards(50)
-            .await
-            .map_err(|error| format!("Could not load older room history: {error}"))?;
+        for (room_id, stream) in self.timeline_update_streams.iter_mut() {
+            let next_batch = stream.next().now_or_never();
 
-        let (items, _updates) = timeline.subscribe().await;
+            let Some(Some(batch)) = next_batch else {
+                continue;
+            };
 
-        let messages: Vec<serde_json::Value> = items
-            .iter()
-            .filter_map(|item| {
-                let event = item.as_event()?;
-                let content = event.content();
+            for diff in batch {
+                match diff {
+                    VectorDiff::PushBack { value }
+                    | VectorDiff::Set { value, .. } => {
+                        if let Some(message) = timeline_item_to_json(value.as_ref()) {
+                            updates.push(serde_json::json!({
+                                "room_id": room_id,
+                                "operation": "upsert",
+                                "message": message
+                            }));
+                        }
+                    }
 
-                let is_encrypted = content.is_unable_to_decrypt();
+                    VectorDiff::Append { values } => {
+                        for value in values.iter() {
+                            if let Some(message) = timeline_item_to_json(value.as_ref()) {
+                                updates.push(serde_json::json!({
+                                    "room_id": room_id,
+                                    "operation": "upsert",
+                                    "message": message
+                                }));
+                            }
+                        }
+                    }
 
-                let body = if is_encrypted {
-                    "Encrypted message"
-                } else {
-                    content.as_message()?.body()
-                };
+                    // Backward pagination uses its separate snapshot path.
+                    _ => {}
+                }
+            }
+        }
 
-                Some(serde_json::json!({
-                    "event_id": event.event_id().map(ToString::to_string),
-                    "sender": event.sender().to_string(),
-                    "body": body,
-                    "timestamp": u64::from(event.timestamp().get()),
-                    "is_own": event.is_own(),
-                    "is_encrypted": is_encrypted
-                }))
+        // Unread counts do not need to be scanned at the timeline's
+        // 100 ms polling frequency. Check them once per second instead.
+        let now = Instant::now();
+        let should_check_unread = self.last_unread_check.map_or(
+            true,
+            |last| now.duration_since(last) >= Duration::from_secs(1),
+        );
+
+        let mut unread_counts = Vec::new();
+
+        if should_check_unread {
+            self.last_unread_check = Some(now);
+
+            if let Some(client) = self.client.as_ref() {
+                for room in client.joined_rooms() {
+                    let room_id = room.room_id().to_string();
+                    let unread = room.num_unread_notifications();
+                    let mentions = room.num_unread_mentions();
+                    let counts = (unread, mentions);
+
+                    if self.last_unread_counts.get(&room_id) != Some(&counts) {
+                        self.last_unread_counts.insert(room_id.clone(), counts);
+
+                        unread_counts.push(serde_json::json!({
+                            "room_id": room_id,
+                            "unread_count": unread,
+                            "mention_count": mentions
+                        }));
+                    }
+                }
+            }
+        }
+
+        if updates.is_empty() && unread_counts.is_empty() {
+            return serde_json::json!({
+                "updates": []
             })
-            .collect();
+            .to_string();
+        }
 
-        Ok(serde_json::json!({
-            "room_id": room_id,
-            "messages": messages,
-            "reached_start": reached_start
-        }).to_string())
-    })
-}
+        serde_json::json!({
+            "updates": updates,
+            "unread_counts": unread_counts
+        })
+        .to_string()
+    }
 
+    /// Send a plain-text message to a Matrix room.
+    ///
+    /// The Matrix SDK handles encryption automatically for encrypted rooms.
+    pub fn send_room_message(&self, room_id: &str, message: &str) -> Result<String, String> {
+        if message.trim().is_empty() {
+            return Err("Message must not be empty".into());
+        }
+
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?;
+
+        let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+            .map_err(|error| format!("Invalid Matrix room ID: {error}"))?;
+
+        let room = client
+            .get_room(&parsed_room_id)
+            .ok_or_else(|| format!("Matrix room not found: {room_id}"))?;
+
+        self.runtime.block_on(async {
+            let content = RoomMessageEventContent::text_plain(message.to_owned());
+
+            let response = room
+                .send(content)
+                .await
+                .map_err(|error| format!("Could not send Matrix message: {error}"))?;
+
+            Ok(response.response.event_id.to_string())
+        })
+    }
 
     pub fn thumbnail(
         &self,
@@ -642,9 +779,7 @@ pub fn paginate_room_timeline_json(
         self.runtime.block_on(async {
             let media = MediaManager::new(client);
 
-            media
-                .thumbnail(source, width, height)
-                .await
+            media.thumbnail(source, width, height).await
         })
     }
 
@@ -663,6 +798,8 @@ impl Drop for MatrixClientManager {
         // Make this runtime the current Tokio context while
         // Matrix SDK and SQLite resources are being destroyed.
         let _runtime_guard = self.runtime.enter();
+
+        self.timeline_update_streams.clear();
         self.timelines.clear();
 
         eprintln!("ASTRO DEBUG: Dropping Matrix client manager");

@@ -168,6 +168,51 @@ pub unsafe extern "C" fn astro_matrix_restore(
     }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_send_room_message(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    message: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        let message = read_input(message, "Message")?;
+
+        let manager = &*handle;
+        manager.send_room_message(room_id, message)
+    }));
+
+    match result {
+        Ok(Ok(event_id)) => match CString::new(event_id) {
+            Ok(value) => value.into_raw(),
+            Err(_) => {
+                set_error(error_out, "Invalid event ID returned by Matrix");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while sending Matrix message",
+            );
+            ptr::null_mut()
+        }
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn astro_matrix_get_cached_rooms_json(
@@ -201,12 +246,14 @@ pub unsafe extern "C" fn astro_matrix_get_cached_rooms_json(
             ptr::null_mut()
         }
         Err(_) => {
-            set_error(error_out, "Unexpected Rust panic while retrieving cached Matrix rooms");
+            set_error(
+                error_out,
+                "Unexpected Rust panic while retrieving cached Matrix rooms",
+            );
             ptr::null_mut()
         }
     }
 }
-
 
 #[no_mangle]
 pub unsafe extern "C" fn astro_matrix_get_rooms_json(
@@ -240,7 +287,10 @@ pub unsafe extern "C" fn astro_matrix_get_rooms_json(
             ptr::null_mut()
         }
         Err(_) => {
-            set_error(error_out, "Unexpected Rust panic while retrieving Matrix rooms");
+            set_error(
+                error_out,
+                "Unexpected Rust panic while retrieving Matrix rooms",
+            );
             ptr::null_mut()
         }
     }
@@ -271,7 +321,10 @@ pub unsafe extern "C" fn astro_matrix_get_room_timeline_json(
         Ok(Ok(json)) => match CString::new(json) {
             Ok(value) => value.into_raw(),
             Err(_) => {
-                set_error(error_out, "Timeline data contained an invalid null character");
+                set_error(
+                    error_out,
+                    "Timeline data contained an invalid null character",
+                );
                 ptr::null_mut()
             }
         },
@@ -280,8 +333,49 @@ pub unsafe extern "C" fn astro_matrix_get_room_timeline_json(
             ptr::null_mut()
         }
         Err(_) => {
-            set_error(error_out, "Unexpected Rust panic while retrieving Matrix timeline");
+            set_error(
+                error_out,
+                "Unexpected Rust panic while retrieving Matrix timeline",
+            );
             ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_mark_room_as_read(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = unsafe { read_input(room_id, "Room ID")? };
+        let manager = unsafe { &*handle };
+        manager.mark_room_as_read(room_id)
+    }));
+
+    match result {
+        Ok(Ok(true)) => 1,
+        Ok(Ok(false)) => 0,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while sending Matrix read receipt",
+            );
+            -1
         }
     }
 }
@@ -311,7 +405,10 @@ pub unsafe extern "C" fn astro_matrix_paginate_room_timeline_json(
         Ok(Ok(json)) => match CString::new(json) {
             Ok(value) => value.into_raw(),
             Err(_) => {
-                set_error(error_out, "Timeline data contained an invalid null character");
+                set_error(
+                    error_out,
+                    "Timeline data contained an invalid null character",
+                );
                 ptr::null_mut()
             }
         },
@@ -320,7 +417,50 @@ pub unsafe extern "C" fn astro_matrix_paginate_room_timeline_json(
             ptr::null_mut()
         }
         Err(_) => {
-            set_error(error_out, "Unexpected Rust panic while paginating room timeline");
+            set_error(
+                error_out,
+                "Unexpected Rust panic while paginating room timeline",
+            );
+            ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_poll_room_timeline_updates_json(
+    handle: *mut MatrixClientManager,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manager = unsafe { &mut *handle };
+        manager.poll_room_timeline_updates_json()
+    }));
+
+    match result {
+        Ok(json) => match CString::new(json) {
+            Ok(value) => value.into_raw(),
+            Err(_) => {
+                set_error(
+                    error_out,
+                    "Timeline update data contained an invalid null character",
+                );
+                ptr::null_mut()
+            }
+        },
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while polling Matrix timeline updates",
+            );
             ptr::null_mut()
         }
     }
@@ -357,7 +497,6 @@ pub unsafe extern "C" fn astro_matrix_logout(
         }
     }
 }
-
 
 #[no_mangle]
 pub unsafe extern "C" fn astro_matrix_thumbnail(
@@ -413,12 +552,10 @@ pub unsafe extern "C" fn astro_matrix_thumbnail(
             return Err(format!("Invalid MXC URI: {uri}"));
         }
 
-        let source =
-            matrix_sdk::ruma::events::room::MediaSource::Plain(owned_uri);
+        let source = matrix_sdk::ruma::events::room::MediaSource::Plain(owned_uri);
 
         manager.thumbnail(source, width, height)
-      })
-    );
+    }));
 
     match result {
         Ok(Ok(mut data)) => {
@@ -453,10 +590,7 @@ pub unsafe extern "C" fn astro_matrix_thumbnail(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn astro_media_bytes_free(
-    data: *mut u8,
-    len: usize,
-) {
+pub unsafe extern "C" fn astro_media_bytes_free(data: *mut u8, len: usize) {
     if !data.is_null() {
         drop(Vec::from_raw_parts(data, len, len));
     }

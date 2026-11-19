@@ -139,9 +139,9 @@ MainView {
                 "ASTRO: Matrix rooms received"
             )
 
-            // loadRooms() stops the animation after validating
-            // the returned JSON and updating the room model.
-            chatPage.loadRooms(json)
+            // loadRooms() stops the animation only after
+            // the final network synchronisation response.
+            chatPage.loadRooms(json, finished)
         }
     }
 

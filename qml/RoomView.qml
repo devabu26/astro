@@ -1,4 +1,3 @@
-
 import QtQuick 2.7
 import Lomiri.Components 1.3
 import "Components"
@@ -20,6 +19,7 @@ Item {
 
     // Scroll state.
     property bool isAtBottom: true
+    property bool readReceiptSent: false
 
     signal backRequested()
     signal sendMessageRequested(string roomId, string message)
@@ -27,6 +27,50 @@ Item {
     // =====================================
     // Scroll to bottom
     // =====================================
+
+    function messageDateInfo(date) {
+        if (!date || isNaN(date.getTime())) {
+            return {
+                key: "unknown",
+                label: "Unknown date"
+            }
+        }
+
+        function makeKey(value) {
+            var month = ("0" + (value.getMonth() + 1)).slice(-2)
+            var day = ("0" + value.getDate()).slice(-2)
+
+            return value.getFullYear() + "-" + month + "-" + day
+        }
+
+        var key = makeKey(date)
+        var today = new Date()
+
+        var todayStart = new Date(
+            today.getFullYear(),
+            today.getMonth(),
+            today.getDate()
+        )
+
+        var yesterday = new Date(
+            today.getFullYear(),
+            today.getMonth(),
+            today.getDate() - 1
+        )
+
+        var label = Qt.formatDate(date, "dddd, d MMMM yyyy")
+
+        if (key === makeKey(todayStart)) {
+            label = "Today"
+        } else if (key === makeKey(yesterday)) {
+            label = "Yesterday"
+        }
+
+        return {
+            key: key,
+            label: label
+        }
+    }
 
     function scrollToBottom() {
         var bottomPosition = Math.max(
@@ -47,6 +91,28 @@ Item {
 
         root.isAtBottom =
             messageList.contentY >= bottomPosition - units.gu(5)
+
+        root.markRoomReadIfAtBottom()
+    }
+
+    function markRoomReadIfAtBottom() {
+        if (!root.isAtBottom) {
+            root.readReceiptSent = false
+            return
+        }
+
+        if (
+            root.readReceiptSent ||
+            root.isLoadingInitial ||
+            root.pendingInitialScroll ||
+            !root.backend ||
+            root.roomId === ""
+        ) {
+            return
+        }
+
+        root.readReceiptSent = true
+        root.backend.markRoomAsRead(root.roomId)
     }
 
     // =====================================
@@ -77,9 +143,9 @@ Item {
             bottomPosition
         )
 
-        // Older-history pagination can start only after
-        // the initial scroll has completed.
-        root.maybeLoadOlderMessages()
+        // Do not automatically fetch older history here.
+        // Pagination is triggered by user scrolling or the
+        // Load older messages control.
     }
 
     // =====================================
@@ -131,6 +197,7 @@ Item {
 
         messageModel.clear()
         messageComposer.clearInput()
+        messageComposer.sending = false
 
         // Reset the old room's scroll position.
         messageList.contentY = 0
@@ -139,6 +206,7 @@ Item {
         isLoadingOlder = false
         isLoadingInitial = roomId !== ""
         isAtBottom = true
+        readReceiptSent = false
         pendingInitialScroll = false
     }
 
@@ -196,12 +264,15 @@ Item {
                     var date = new Date(
                         Number(message.timestamp)
                     )
+                    var dateInfo = root.messageDateInfo(date)
 
                     messageModel.append({
                         eventId: message.event_id || "",
                         sender: message.sender || "",
                         body: message.body || "",
                         timestamp: date.toLocaleTimeString(),
+                        dateKey: dateInfo.key,
+                        dateLabel: dateInfo.label,
                         isOwn: message.is_own === true,
                         isEncrypted: message.is_encrypted === true
                     })
@@ -305,12 +376,15 @@ Item {
                         var date = new Date(
                             Number(message.timestamp)
                         )
+                        var dateInfo = root.messageDateInfo(date)
 
                         messageModel.insert(insertedCount, {
                             eventId: eventId,
                             sender: message.sender || "",
                             body: message.body || "",
                             timestamp: date.toLocaleTimeString(),
+                            dateKey: dateInfo.key,
+                            dateLabel: dateInfo.label,
                             isOwn: message.is_own === true,
                             isEncrypted: message.is_encrypted === true
                         })
@@ -361,7 +435,6 @@ Item {
                         )
 
                         root.updateBottomState()
-                        root.maybeLoadOlderMessages()
                     })
                 })
 
@@ -373,6 +446,143 @@ Item {
                     parseError
                 )
             }
+        }
+
+        // =====================================
+        // Live timeline updates
+        // =====================================
+
+        onMatrixLiveTimelineUpdated: {
+            if (root.roomId === "")
+                return
+
+            try {
+                var result = JSON.parse(json)
+                var updates = result.updates || []
+
+                // Only follow incoming messages automatically
+                // when the user was already at the bottom.
+                var shouldStickToBottom = root.isAtBottom
+                var addedMessage = false
+
+                for (var u = 0; u < updates.length; u++) {
+                    var update = updates[u]
+
+                    if (update.room_id !== root.roomId)
+                        continue
+
+                    if (
+                        update.operation !== "upsert" ||
+                        !update.message
+                    ) {
+                        continue
+                    }
+
+                    var message = update.message
+                    var eventId = message.event_id || ""
+                    var existingIndex = -1
+
+                    // Check whether this event is already displayed.
+                    // This also handles updates to existing events,
+                    // such as an encrypted event being decrypted.
+                    if (eventId !== "") {
+                        for (
+                            var i = 0;
+                            i < messageModel.count;
+                            i++
+                        ) {
+                            if (
+                                messageModel.get(i).eventId === eventId
+                            ) {
+                                existingIndex = i
+                                break
+                            }
+                        }
+                    }
+
+                    var date = new Date(
+                        Number(message.timestamp)
+                    )
+                    var dateInfo = root.messageDateInfo(date)
+
+                    var messageData = {
+                        eventId: eventId,
+                        sender: message.sender || "",
+                        body: message.body || "",
+                        timestamp: date.toLocaleTimeString(),
+                        dateKey: dateInfo.key,
+                        dateLabel: dateInfo.label,
+                        isOwn: message.is_own === true,
+                        isEncrypted: message.is_encrypted === true
+                    }
+
+                    if (existingIndex >= 0) {
+                        // Update an existing event in place.
+                        messageModel.set(
+                            existingIndex,
+                            messageData
+                        )
+                    } else {
+                        // Append a genuinely new event.
+                        messageModel.append(messageData)
+                        addedMessage = true
+                    }
+                }
+
+                // Do not interrupt someone reading older messages.
+                // Only scroll automatically if they were already
+                // at the bottom before the new message arrived.
+                if (addedMessage && shouldStickToBottom) {
+                    // A new event may need a new read receipt.
+                    root.readReceiptSent = false
+
+                    var updatedRoomId = root.roomId
+
+                    Qt.callLater(function() {
+                        if (root.roomId === updatedRoomId)
+                            root.scrollToBottom()
+                    })
+                }
+
+            } catch (parseError) {
+                console.log(
+                    "ASTRO: Could not process live timeline update:",
+                    parseError
+                )
+            }
+        }
+
+        // =====================================
+        // Message send response
+        // =====================================
+
+        onMatrixMessageSent: {
+            if (roomId !== root.roomId)
+                return
+
+            messageComposer.sending = false
+
+            if (error !== "") {
+                console.log(
+                    "ASTRO: Message send failed:",
+                    error
+                )
+                return
+            }
+
+            console.log(
+                "ASTRO: Message sent successfully:",
+                eventId
+            )
+
+            // Clear the composer only after Matrix confirms
+            // that the message was sent.
+            messageComposer.clearInput()
+
+            // Reload the timeline so the confirmed event is
+            // displayed using the normal timeline renderer.
+            root.pendingInitialScroll = true
+            root.backend.requestRoomTimeline(root.roomId)
         }
     }
 
@@ -526,7 +736,6 @@ Item {
 
                         onContentYChanged: {
                             root.updateBottomState()
-                            root.maybeLoadOlderMessages()
                         }
 
                         onContentHeightChanged: {
@@ -577,6 +786,38 @@ Item {
                                 }
                             }
 
+                            // Manual history loading. This is particularly
+                            // useful when the initial five messages do not
+                            // fill the screen and cannot be scrolled.
+                            Rectangle {
+                                width: parent.width
+                                height: root.hasMoreHistory &&
+                                        !root.isLoadingOlder
+                                        ? units.gu(5)
+                                        : 0
+
+                                visible: root.hasMoreHistory &&
+                                         !root.isLoadingOlder
+
+                                radius: units.gu(1)
+                                color: "#293c4c"
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "Load older messages"
+                                    color: "#d5e1eb"
+                                    font.pixelSize: units.gu(1.6)
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+
+                                    onClicked: {
+                                        root.maybeLoadOlderMessages()
+                                    }
+                                }
+                            }
+
                             Item {
                                 width: parent.width
                                 height: units.gu(2)
@@ -602,15 +843,42 @@ Item {
                             Repeater {
                                 model: messageModel
 
-                                delegate: MessageBubble {
+                                delegate: Item {
                                     width: messageList.width
+                                    height: messageDelegateColumn.height
 
-                                    sender: model.sender
-                                    body: model.body
-                                    timestamp: model.timestamp
+                                    Column {
+                                        id: messageDelegateColumn
 
-                                    isOwn: model.isOwn
-                                    isEncrypted: model.isEncrypted
+                                        width: parent.width
+                                        spacing: units.gu(0.5)
+
+                                        Text {
+                                            width: parent.width
+
+                                            visible: index === 0 ||
+                                                messageModel.get(index - 1).dateKey !== model.dateKey
+
+                                            text: model.dateLabel
+
+                                            color: "#9aabba"
+                                            font.pixelSize: units.gu(1.6)
+                                            font.bold: true
+
+                                            horizontalAlignment: Text.AlignHCenter
+                                        }
+
+                                        MessageBubble {
+                                            width: messageList.width
+
+                                            sender: model.sender
+                                            body: model.body
+                                            timestamp: model.timestamp
+
+                                            isOwn: model.isOwn
+                                            isEncrypted: model.isEncrypted
+                                        }
+                                    }
                                 }
                             }
 
@@ -712,14 +980,19 @@ Item {
                         if (root.roomId === "")
                             return
 
-                        root.sendMessageRequested(
-                            root.roomId,
-                            message
-                        )
+                        if (!root.backend || sending)
+                            return
+
+                        sending = true
 
                         console.log(
-                            "ASTRO: Message prepared for room",
+                            "ASTRO: Sending message to room",
                             root.roomId
+                        )
+
+                        root.backend.sendRoomMessage(
+                            root.roomId,
+                            message
                         )
                     }
                 }

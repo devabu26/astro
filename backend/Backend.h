@@ -1,4 +1,3 @@
-
 #pragma once
 
 #include <QObject>
@@ -71,8 +70,10 @@ public:
 
     Q_INVOKABLE void requestRoomTimeline(const QString &roomId);
     Q_INVOKABLE void requestOlderRoomTimeline(const QString &roomId);
+    Q_INVOKABLE void markRoomAsRead(const QString &roomId);
+    Q_INVOKABLE void sendRoomMessage(const QString &roomId, const QString &message);
 
-    signals:
+signals:
 
     // ---------------------------------------------------------
     // Application and storage state
@@ -82,6 +83,14 @@ public:
     void storageStatusChanged(const QString &status);
     void secretServiceTestFinished(const QString &result);
     void dataDeleted();
+    void dataDeletionFinished(
+        bool deleted,
+        bool storageWasUnlocked,
+        bool logoutAttempted,
+        bool logoutSucceeded,
+        const QString &logoutError,
+        const QString &deletionError
+    );
 
     // ---------------------------------------------------------
     // Matrix account signals
@@ -95,7 +104,8 @@ public:
     // Matrix room and Space signals
     // ---------------------------------------------------------
 
-    void matrixRoomsRetrieved(const QString &json);
+    void matrixRoomsRetrieved(const QString &json, bool finished);
+
     void matrixTimelineRetrieved(
         const QString &roomId,
         const QString &json,
@@ -103,10 +113,19 @@ public:
     );
 
     void matrixOlderTimelineRetrieved(
-    const QString &roomId,
-    const QString &json,
-    const QString &error
+        const QString &roomId,
+        const QString &json,
+        const QString &error
     );
+
+    void matrixMessageSent(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &error
+    );
+
+    // Incoming and updated room timeline events.
+    void matrixLiveTimelineUpdated(const QString &json);
 
     // ---------------------------------------------------------
     // Matrix media signals
@@ -144,6 +163,8 @@ public:
     void requestSyncMatrixRooms();
     void requestFetchRoomTimeline(const QString &roomId);
     void requestPaginateRoomTimeline(const QString &roomId);
+    void requestMarkRoomAsRead(const QString &roomId);
+    void requestSendRoomMessage(const QString &roomId, const QString &message);
 
     // Matrix media requests.
     void requestFetchRoomAvatar(

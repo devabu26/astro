@@ -25,8 +25,8 @@ Item {
     property string selectedRoomAvatarUrl: ""
     property string storageResult: ""
 
-    // True while the initial Matrix room sync is in progress.
     property bool roomsLoading: false
+    property bool moreMenuVisible: false
 
     // =========================================================
     // Room data model
@@ -60,105 +60,115 @@ Item {
     // Room data loading
     // =========================================================
 
-    function loadRooms(json) {
-        try {
-            var data = JSON.parse(json)
 
-            if (!data || !data.rooms) {
-                console.log(
-                    "ASTRO: Invalid Matrix rooms response"
+function loadRooms(json, finished) {
+    try {
+        var data = JSON.parse(json)
+
+        if (!data || !data.rooms) {
+            console.log(
+                "ASTRO: Invalid Matrix rooms response"
+            )
+
+            if (finished)
+                root.stopRoomLoading()
+
+            return
+        }
+
+        roomModel.clear()
+
+        for (var i = 0; i < data.rooms.length; i++) {
+            var room = data.rooms[i]
+
+            var roomName = room.name ||
+                           room.room_id ||
+                           "Unnamed room"
+
+            var kind = room.kind || "room"
+
+            var preview = room.topic || (
+                kind === "space" ? "Matrix Space" :
+                kind === "dm" ? "Direct message" :
+                "Matrix room"
+            )
+
+            if (kind === "space")
+                preview = "Space · " + preview
+            else if (kind === "dm")
+                preview = "Direct message · " + preview
+
+            var avatar = roomName.length > 0
+                         ? roomName.charAt(0).toUpperCase()
+                         : "#"
+
+            var colour = kind === "space" ? "#5265a4" :
+                         kind === "dm" ? "#398875" :
+                         "#a16b9b"
+
+            var roomId = room.room_id || ""
+            var mxcUri = room.avatar_url || ""
+
+            console.log(
+                "ASTRO SPACE DEBUG:",
+                roomName,
+                "kind:", kind,
+                "roomId:", roomId,
+                "parents:",
+                JSON.stringify(room.parent_space_ids || [])
+            )
+
+            roomModel.append({
+                name: roomName,
+                preview: preview,
+                avatar: avatar,
+                avatarUrl: "",
+                colour: colour,
+                roomId: roomId,
+                kind: kind,
+                unreadCount: Number(room.unread_count || 0),
+                mentionCount: Number(room.mention_count || 0),
+                parentSpaceIds: JSON.stringify(
+                    room.parent_space_ids || []
                 )
-                return
+            })
+
+            if (root.backend &&
+                roomId !== "" &&
+                mxcUri !== "") {
+
+                root.backend.requestRoomAvatar(
+                    roomId,
+                    mxcUri
+                )
             }
+        }
 
-            roomModel.clear()
+        roomNavigator.rebuild()
 
-            // Keep the loading animation active while
-            // the room model is being populated.
+        console.log(
+            "ASTRO: Loaded",
+            data.rooms.length,
+            "Matrix rooms and Spaces",
+            "finished:", finished
+        )
 
-            for (var i = 0; i < data.rooms.length; i++) {
-                var room = data.rooms[i]
-
-                var roomName = room.name ||
-                               room.room_id ||
-                               "Unnamed room"
-
-                var kind = room.kind || "room"
-
-                var preview = room.topic || (
-                    kind === "space" ? "Matrix Space" :
-                    kind === "dm" ? "Direct message" :
-                    "Matrix room"
-                )
-
-                if (kind === "space")
-                    preview = "Space · " + preview
-                else if (kind === "dm")
-                    preview = "Direct message · " + preview
-
-                var avatar = roomName.length > 0
-                             ? roomName.charAt(0).toUpperCase()
-                             : "#"
-
-                var colour = kind === "space" ? "#5265a4" :
-                             kind === "dm" ? "#398875" :
-                             "#a16b9b"
-
-                var roomId = room.room_id || ""
-                var mxcUri = room.avatar_url || ""
-
-                console.log(
-                    "ASTRO SPACE DEBUG:",
-                    roomName,
-                    "kind:", kind,
-                    "roomId:", roomId,
-                    "parents:",
-                    JSON.stringify(room.parent_space_ids || [])
-                )
-
-                // Add the room before requesting its avatar.
-                // The avatar response will update this model entry.
-                roomModel.append({
-                    name: roomName,
-                    preview: preview,
-                    avatar: avatar,
-                    avatarUrl: "",
-                    colour: colour,
-                    roomId: roomId,
-                    kind: kind,
-                    parentSpaceIds: JSON.stringify(room.parent_space_ids || [])
-                })
-
-                // Request the avatar asynchronously.
-                if (root.backend &&
-                    roomId !== "" &&
-                    mxcUri !== "") {
-
-                    root.backend.requestRoomAvatar(
-                        roomId,
-                        mxcUri
-                    )
-                }
-            }
-
-            roomNavigator.rebuild()
-
-            // Room population is complete.
+        // Cached results populate the UI immediately.
+        // Keep the animation running until network sync finishes.
+        if (finished)
             root.stopRoomLoading()
 
-            console.log(
-                "ASTRO: Loaded",
-                data.rooms.length,
-                "Matrix rooms and Spaces"
-            )
+    } catch (error) {
+        console.log(
+            "ASTRO: Could not parse Matrix rooms:",
+            error
+        )
 
-        } catch (error) {
-            console.log(
-                "ASTRO: Could not parse Matrix rooms:",
-                error
-            )
-        }
+        if (finished)
+            root.stopRoomLoading()
     }
+}
+
 
     // =========================================================
     // Room avatar updates
@@ -204,6 +214,47 @@ Item {
                 error
             )
         }
+
+        onMatrixLiveTimelineUpdated: {
+            try {
+                var result = JSON.parse(json)
+                var counts = result.unread_counts || []
+
+                for (var c = 0; c < counts.length; c++) {
+                    var item = counts[c]
+                    var roomIndex = -1
+
+                    for (var i = 0; i < roomModel.count; i++) {
+                        if (roomModel.get(i).roomId === item.room_id) {
+                            roomIndex = i
+                            break
+                        }
+                    }
+
+                    if (roomIndex < 0)
+                        continue
+
+                    var unread = Number(item.unread_count || 0)
+                    var mentions = Number(item.mention_count || 0)
+
+                    roomModel.setProperty(
+                        roomIndex, "unreadCount", unread
+                    )
+                    roomModel.setProperty(
+                        roomIndex, "mentionCount", mentions
+                    )
+
+                    roomNavigator.updateUnreadCounts(
+                        item.room_id, unread, mentions
+                    )
+                }
+            } catch (error) {
+                console.log(
+                    "ASTRO: Could not update unread counts:",
+                    error
+                )
+            }
+        }
     }
 
     // =========================================================
@@ -243,7 +294,7 @@ Item {
                     spacing: 0
 
                     // =========================================
-                    // Sidebar heading
+                    // Sidebar heading and More menu button
                     // =========================================
 
                     Item {
@@ -261,6 +312,43 @@ Item {
                             color: "#91a4b5"
                             font.pixelSize: units.gu(1.5)
                             font.bold: true
+                        }
+
+                        Rectangle {
+                            id: moreButton
+
+                            anchors {
+                                right: parent.right
+                                rightMargin: units.gu(1)
+                                verticalCenter: parent.verticalCenter
+                            }
+
+                            width: units.gu(5)
+                            height: units.gu(5)
+
+                            radius: units.gu(1)
+
+                            color: root.moreMenuVisible
+                                   ? "#40566a"
+                                   : "transparent"
+
+                            Text {
+                                anchors.centerIn: parent
+
+                                text: "⋯"
+                                color: "#b4c4d1"
+
+                                font.pixelSize: units.gu(3)
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+
+                                onClicked: {
+                                    root.moreMenuVisible =
+                                        !root.moreMenuVisible
+                                }
+                            }
                         }
                     }
 
@@ -293,16 +381,309 @@ Item {
                     }
 
                     // =========================================
+                    // Search and segmented navigation
+                    // =========================================
+
+                    Item {
+                        id: chatNavigationControls
+
+                        width: parent.width
+                        height: units.gu(15)
+                        z: 10
+
+                        Column {
+                            anchors {
+                                fill: parent
+                                leftMargin: units.gu(1)
+                                rightMargin: units.gu(1)
+                                topMargin: units.gu(0.5)
+                            }
+
+                            spacing: units.gu(0.6)
+
+                            // ---------------------------------
+                            // Search field
+                            // ---------------------------------
+
+                            Row {
+                                width: parent.width
+                                height: units.gu(5)
+
+                                spacing: units.gu(0.5)
+
+                                Rectangle {
+                                    width: parent.width -
+                                           units.gu(5.5)
+
+                                    height: parent.height
+
+                                    radius: units.gu(1)
+                                    color: "#263744"
+
+                                    TextField {
+                                        id: chatSearchField
+
+                                        anchors {
+                                            fill: parent
+                                            leftMargin: units.gu(1)
+                                            rightMargin: units.gu(1)
+                                        }
+
+                                        placeholderText:
+                                            "Search rooms, people or Spaces"
+
+                                        color: "white"
+                                        font.pixelSize: units.gu(1.6)
+
+                                        onTextChanged: {
+                                            roomNavigator.searchText = text
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: units.gu(5)
+                                    height: parent.height
+
+                                    radius: units.gu(1)
+                                    color: "#263744"
+
+                                    Text {
+                                        anchors.centerIn: parent
+
+                                        text: "×"
+                                        color: "#b4c4d1"
+
+                                        font.pixelSize: units.gu(3)
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+
+                                        onClicked: {
+                                            chatSearchField.text = ""
+                                            chatSearchField.forceActiveFocus()
+                                        }
+                                    }
+                                }
+                            }
+
+                            // ---------------------------------
+                            // Segmented navigation background
+                            // ---------------------------------
+
+                            Rectangle {
+                                id: navigationSegmentBackground
+
+                                width: parent.width
+                                height: units.gu(8)
+
+                                radius: units.gu(1.5)
+                                color: "#263744"
+
+                                Row {
+                                    anchors {
+                                        fill: parent
+                                        margins: units.gu(0.4)
+                                    }
+
+                                    spacing: units.gu(0.25)
+
+                                    Repeater {
+                                        model: [
+                                            {
+                                                label: "All",
+                                                value: "all",
+                                                icon: "view-list-symbolic"
+                                            },
+                                            {
+                                                label: "Spaces",
+                                                value: "spaces",
+                                                icon: "view-grid-symbolic"
+                                            },
+                                            {
+                                                label: "Direct",
+                                                value: "direct",
+                                                icon: "contact"
+                                            },
+                                            {
+                                                label: "Rooms",
+                                                value: "rooms",
+                                                icon: "tag"
+                                            }
+                                        ]
+
+                                        delegate: Rectangle {
+                                            width: (
+                                                parent.width -
+                                                units.gu(0.75)
+                                            ) / 4
+
+                                            height: parent.height
+
+                                            radius: units.gu(1.1)
+
+                                            color:
+                                                roomNavigator.filterMode ===
+                                                modelData.value
+                                                ? "#40566a"
+                                                : "transparent"
+
+                                            Column {
+                                                anchors.centerIn: parent
+
+                                                spacing: units.gu(0.35)
+
+                                                Icon {
+                                                    anchors.horizontalCenter:
+                                                        parent.horizontalCenter
+
+                                                    name: modelData.icon
+
+                                                    width: units.gu(2.4)
+                                                    height: units.gu(2.4)
+
+                                                    color:
+                                                        roomNavigator.filterMode ===
+                                                        modelData.value
+                                                        ? "white"
+                                                        : "#aabac7"
+                                                }
+
+                                                Text {
+                                                    anchors.horizontalCenter:
+                                                        parent.horizontalCenter
+
+                                                    text: modelData.label
+
+                                                    color:
+                                                        roomNavigator.filterMode ===
+                                                        modelData.value
+                                                        ? "white"
+                                                        : "#aabac7"
+
+                                                    font.pixelSize:
+                                                        units.gu(1.25)
+
+                                                    font.bold:
+                                                        roomNavigator.filterMode ===
+                                                        modelData.value
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+
+                                                onClicked: {
+                                                    root.moreMenuVisible = false
+
+                                                    roomNavigator.filterMode =
+                                                        modelData.value
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // =====================================
+                        // More submenu
+                        // =====================================
+
+                        Rectangle {
+                            id: chatMoreMenu
+
+                            anchors {
+                                top: parent.bottom
+                                right: parent.right
+                                rightMargin: units.gu(1)
+                            }
+
+                            width: units.gu(23)
+                            height: units.gu(11)
+
+                            radius: units.gu(1)
+                            color: "#263744"
+
+                            border.color: "#526575"
+                            border.width: units.dp(1)
+
+                            visible: root.moreMenuVisible
+                            z: 20
+
+                            Column {
+                                anchors.fill: parent
+                                anchors.margins: units.gu(0.5)
+
+                                spacing: units.gu(0.5)
+
+                                Rectangle {
+                                    width: parent.width
+                                    height: units.gu(4.5)
+
+                                    radius: units.gu(0.5)
+                                    color: "#344b5c"
+
+                                    Text {
+                                        anchors.centerIn: parent
+
+                                        text: "Expand all Spaces"
+                                        color: "white"
+
+                                        font.pixelSize: units.gu(1.5)
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+
+                                        onClicked: {
+                                            roomNavigator.expandAllSpaces()
+                                            root.moreMenuVisible = false
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: parent.width
+                                    height: units.gu(4.5)
+
+                                    radius: units.gu(0.5)
+                                    color: "#344b5c"
+
+                                    Text {
+                                        anchors.centerIn: parent
+
+                                        text: "Collapse all Spaces"
+                                        color: "white"
+
+                                        font.pixelSize: units.gu(1.5)
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+
+                                        onClicked: {
+                                            roomNavigator.collapseAllSpaces()
+                                            root.moreMenuVisible = false
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // =========================================
                     // Matrix room navigation
                     // =========================================
 
                     RoomNavigator {
                         id: roomNavigator
+
                         width: parent.width
 
                         height: parent.height -
-                                units.gu(16) -
+                                units.gu(31) -
                                 (root.roomsLoading
                                  ? units.gu(8)
                                  : 0)
@@ -331,11 +712,13 @@ Item {
                                     "ASTRO: Requesting timeline for",
                                     roomId
                                 )
+
                                 root.backend.requestRoomTimeline(roomId)
                             }
                         }
                     }
 
+                    // =========================================
                     // Sidebar settings button
                     // =========================================
 
@@ -387,15 +770,11 @@ Item {
                     root.showConversation = false
                 }
             }
-
-    }
+        }
     }
 
     // =========================================================
     // Floating Matrix loading animation
-    //
-    // This overlays the ChatPage, allowing the diamond to
-    // travel from the screen centre into the sidebar bar.
     // =========================================================
 
     MatrixLoadingAnimation {
@@ -405,8 +784,6 @@ Item {
 
         active: root.roomsLoading
 
-        // The loading strip is immediately below the
-        // eight-gu-high sidebar heading.
         targetX: units.gu(4)
         targetY: units.gu(12)
     }
