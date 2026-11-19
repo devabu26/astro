@@ -48,6 +48,35 @@ char *astro_matrix_send_room_message(
     char **error_out
 );
 
+/* Matrix device verification actions: 1 success, -1 error. */
+int32_t astro_matrix_accept_verification_request(
+    AstroMatrixClient *handle,
+    const char *user_id,
+    const char *flow_id,
+    char **error_out
+);
+
+int32_t astro_matrix_cancel_verification_request(
+    AstroMatrixClient *handle,
+    const char *user_id,
+    const char *flow_id,
+    char **error_out
+);
+
+int32_t astro_matrix_confirm_verification(
+    AstroMatrixClient *handle,
+    const char *user_id,
+    const char *flow_id,
+    char **error_out
+);
+
+int32_t astro_matrix_mismatch_verification(
+    AstroMatrixClient *handle,
+    const char *user_id,
+    const char *flow_id,
+    char **error_out
+);
+
 char *astro_matrix_get_rooms_json(
     AstroMatrixClient *handle,
     char **error_out
@@ -101,6 +130,60 @@ int32_t astro_matrix_thumbnail(
     const char *mxc_uri,
     uint32_t width,
     uint32_t height,
+    uint8_t **data_out,
+    uintptr_t *len_out,
+    char **error_out
+);
+
+/*
+ * Downloads an image from a serialised Matrix MediaSource.
+ * Supports both plain and encrypted media sources.
+ *
+ * Returns:
+ *   1  Success; data_out/len_out contain the allocated bytes.
+ *   0  Success, but the media response contained no bytes.
+ *  -1  Error; error_out receives the message.
+ *
+ * The returned byte buffer must be released with astro_media_bytes_free().
+ */
+/*
+ * Downloads a thumbnail from a serialised Matrix MediaSource.
+ * Supports both plain and encrypted media sources.
+ *
+ * The returned byte buffer must be released with astro_media_bytes_free().
+ */
+int32_t astro_matrix_media_thumbnail(
+    AstroMatrixClient *handle,
+    const char *media_source_json,
+    uint32_t width,
+    uint32_t height,
+    uint8_t **data_out,
+    uintptr_t *len_out,
+    char **error_out
+);
+
+int32_t astro_matrix_image(
+    AstroMatrixClient *handle,
+    const char *media_source_json,
+    uint8_t **data_out,
+    uintptr_t *len_out,
+    char **error_out
+);
+
+/*
+ * Downloads a video from a serialised Matrix MediaSource.
+ * Supports both plain and encrypted media sources.
+ *
+ * Returns:
+ *   1  Success; data_out/len_out contain the allocated bytes.
+ *   0  Success, but the media response contained no bytes.
+ *  -1  Error; error_out receives the message.
+ *
+ * The returned byte buffer must be released with astro_media_bytes_free().
+ */
+int32_t astro_matrix_video(
+    AstroMatrixClient *handle,
+    const char *media_source_json,
     uint8_t **data_out,
     uintptr_t *len_out,
     char **error_out

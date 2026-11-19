@@ -68,10 +68,39 @@ public:
         const QString &mxcUri
     );
 
+    Q_INVOKABLE void requestSenderAvatar(
+        const QString &requestKey,
+        const QString &mxcUri
+    );
+
+    Q_INVOKABLE void requestMessageImage(
+        const QString &requestKey,
+        const QString &mediaSourceJson
+    );
+
+    Q_INVOKABLE void requestMessageThumbnail(
+        const QString &requestKey,
+        const QString &mediaSourceJson,
+        quint32 width,
+        quint32 height
+    );
+
+    Q_INVOKABLE void requestMessageVideo(
+        const QString &requestKey,
+        const QString &mediaSourceJson,
+        const QString &mimeType
+    );
+
     Q_INVOKABLE void requestRoomTimeline(const QString &roomId);
     Q_INVOKABLE void requestOlderRoomTimeline(const QString &roomId);
     Q_INVOKABLE void markRoomAsRead(const QString &roomId);
     Q_INVOKABLE void sendRoomMessage(const QString &roomId, const QString &message);
+
+    // Matrix device verification
+    Q_INVOKABLE void acceptVerificationRequest(const QString &userId, const QString &flowId);
+    Q_INVOKABLE void cancelVerificationRequest(const QString &userId, const QString &flowId);
+    Q_INVOKABLE void confirmVerification(const QString &userId, const QString &flowId);
+    Q_INVOKABLE void mismatchVerification(const QString &userId, const QString &flowId);
 
 signals:
 
@@ -127,6 +156,13 @@ signals:
     // Incoming and updated room timeline events.
     void matrixLiveTimelineUpdated(const QString &json);
 
+    void matrixVerificationActionFinished(
+        const QString &userId,
+        const QString &flowId,
+        const QString &action,
+        const QString &error
+    );
+
     // ---------------------------------------------------------
     // Matrix media signals
     // ---------------------------------------------------------
@@ -138,6 +174,46 @@ signals:
 
     void roomAvatarFailed(
         const QString &roomId,
+        const QString &error
+    );
+
+    void senderAvatarRetrieved(
+        const QString &requestKey,
+        const QString &dataUrl
+    );
+
+    void senderAvatarFailed(
+        const QString &requestKey,
+        const QString &error
+    );
+
+    void messageImageRetrieved(
+        const QString &requestKey,
+        const QString &dataUrl
+    );
+
+    void messageImageFailed(
+        const QString &requestKey,
+        const QString &error
+    );
+
+    void messageThumbnailRetrieved(
+        const QString &requestKey,
+        const QString &dataUrl
+    );
+
+    void messageThumbnailFailed(
+        const QString &requestKey,
+        const QString &error
+    );
+
+    void messageVideoRetrieved(
+        const QString &requestKey,
+        const QString &fileUrl
+    );
+
+    void messageVideoFailed(
+        const QString &requestKey,
         const QString &error
     );
 
@@ -166,12 +242,50 @@ signals:
     void requestMarkRoomAsRead(const QString &roomId);
     void requestSendRoomMessage(const QString &roomId, const QString &message);
 
+    void requestAcceptVerificationRequest(
+        const QString &userId, const QString &flowId
+    );
+    void requestCancelVerificationRequest(
+        const QString &userId, const QString &flowId
+    );
+    void requestConfirmVerification(
+        const QString &userId, const QString &flowId
+    );
+    void requestMismatchVerification(
+        const QString &userId, const QString &flowId
+    );
+
     // Matrix media requests.
     void requestFetchRoomAvatar(
         const QString &roomId,
         const QString &mxcUri,
         quint32 width,
         quint32 height
+    );
+
+    void requestFetchSenderAvatar(
+        const QString &requestKey,
+        const QString &mxcUri,
+        quint32 width,
+        quint32 height
+    );
+
+    void requestFetchMessageImage(
+        const QString &requestKey,
+        const QString &mediaSourceJson
+    );
+
+    void requestFetchMessageThumbnail(
+        const QString &requestKey,
+        const QString &mediaSourceJson,
+        quint32 width,
+        quint32 height
+    );
+
+    void requestFetchMessageVideo(
+        const QString &requestKey,
+        const QString &mediaSourceJson,
+        const QString &mimeType
     );
 
 private:

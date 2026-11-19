@@ -48,6 +48,12 @@ public slots:
     void markRoomAsRead(const QString &roomId);
     void sendRoomMessage(const QString &roomId, const QString &message);
 
+    // Matrix device verification actions.
+    void acceptVerificationRequest(const QString &userId, const QString &flowId);
+    void cancelVerificationRequest(const QString &userId, const QString &flowId);
+    void confirmVerification(const QString &userId, const QString &flowId);
+    void mismatchVerification(const QString &userId, const QString &flowId);
+
     // Poll retained Matrix timeline subscriptions.
     void pollRoomTimelineUpdates();
 
@@ -60,6 +66,31 @@ public slots:
         const QString &mxcUri,
         quint32 width,
         quint32 height
+    );
+
+    void fetchSenderAvatar(
+        const QString &requestKey,
+        const QString &mxcUri,
+        quint32 width,
+        quint32 height
+    );
+
+    void fetchMessageImage(
+        const QString &requestKey,
+        const QString &mediaSourceJson
+    );
+
+    void fetchMessageThumbnail(
+        const QString &requestKey,
+        const QString &mediaSourceJson,
+        quint32 width,
+        quint32 height
+    );
+
+    void fetchMessageVideo(
+        const QString &requestKey,
+        const QString &mediaSourceJson,
+        const QString &mimeType
     );
 
 signals:
@@ -115,6 +146,13 @@ signals:
     // Live timeline changes forwarded to Backend and QML.
     void matrixLiveTimelineUpdated(const QString &json);
 
+    void matrixVerificationActionFinished(
+        const QString &userId,
+        const QString &flowId,
+        const QString &action,
+        const QString &error
+    );
+
     // ---------------------------------------------------------
     // Matrix media signals
     // ---------------------------------------------------------
@@ -129,7 +167,61 @@ signals:
         const QString &error
     );
 
+    void senderAvatarRetrieved(
+        const QString &requestKey,
+        const QString &dataUrl
+    );
+
+    void senderAvatarFailed(
+        const QString &requestKey,
+        const QString &error
+    );
+
+    void messageImageRetrieved(
+        const QString &requestKey,
+        const QString &dataUrl
+    );
+
+    void messageImageFailed(
+        const QString &requestKey,
+        const QString &error
+    );
+
+    void messageThumbnailRetrieved(
+        const QString &requestKey,
+        const QString &dataUrl
+    );
+
+    void messageThumbnailFailed(
+        const QString &requestKey,
+        const QString &error
+    );
+
+    void messageVideoRetrieved(
+        const QString &requestKey,
+        const QString &fileUrl
+    );
+
+    void messageVideoFailed(
+        const QString &requestKey,
+        const QString &error
+    );
+
 private:
+
+    using VerificationAction = int32_t (*)(
+        AstroMatrixClient *,
+        const char *,
+        const char *,
+        char **
+    );
+
+    void runVerificationAction(
+        const QString &userId,
+        const QString &flowId,
+        const QString &actionName,
+        VerificationAction action
+    );
 
     // ---------------------------------------------------------
     // Rust Matrix client

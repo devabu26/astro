@@ -36,4 +36,45 @@ impl<'a> MediaManager<'a> {
             .await
             .map_err(|e| format!("Thumbnail download failed: {e}"))
     }
+
+    pub async fn video(
+        &self,
+        source: MediaSource,
+    ) -> Result<Vec<u8>, String> {
+        let request = MediaRequestParameters {
+            source,
+            format: MediaFormat::File,
+        };
+
+        self.client
+            .media()
+            .get_media_content(&request, true)
+            .await
+            .map_err(|e| format!("Video download failed: {e}"))
+    }
+
+    pub async fn image(
+        &self,
+        source: MediaSource,
+    ) -> Result<Vec<u8>, String> {
+        let format = match &source {
+            MediaSource::Encrypted(_) => MediaFormat::File,
+            MediaSource::Plain(_) => {
+                MediaFormat::Thumbnail(
+                    MediaThumbnailSettings::new(1280u32.into(), 1280u32.into()),
+                )
+            }
+        };
+
+        let request = MediaRequestParameters {
+            source,
+            format,
+        };
+
+        self.client
+            .media()
+            .get_media_content(&request, true)
+            .await
+            .map_err(|e| format!("Image download failed: {e}"))
+    }
 }

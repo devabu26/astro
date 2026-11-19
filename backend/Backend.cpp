@@ -208,6 +208,51 @@ Backend::Backend(QObject *parent)
         Qt::QueuedConnection
     );
 
+    // ---------------------------------------------------------
+    // Matrix device verification request connections
+    // ---------------------------------------------------------
+
+    connect(
+        this,
+        &Backend::requestAcceptVerificationRequest,
+        m_storageWorker,
+        &StorageWorker::acceptVerificationRequest,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestCancelVerificationRequest,
+        m_storageWorker,
+        &StorageWorker::cancelVerificationRequest,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestConfirmVerification,
+        m_storageWorker,
+        &StorageWorker::confirmVerification,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestMismatchVerification,
+        m_storageWorker,
+        &StorageWorker::mismatchVerification,
+        Qt::QueuedConnection
+    );
+
+    // Forward verification action results back to QML.
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixVerificationActionFinished,
+        this,
+        &Backend::matrixVerificationActionFinished,
+        Qt::QueuedConnection
+    );
+
 
    // Forward room timeline results to QML.
    connect(
@@ -261,6 +306,38 @@ Backend::Backend(QObject *parent)
         &Backend::requestFetchRoomAvatar,
         m_storageWorker,
         &StorageWorker::fetchRoomAvatar,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestFetchSenderAvatar,
+        m_storageWorker,
+        &StorageWorker::fetchSenderAvatar,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestFetchMessageImage,
+        m_storageWorker,
+        &StorageWorker::fetchMessageImage,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestFetchMessageThumbnail,
+        m_storageWorker,
+        &StorageWorker::fetchMessageThumbnail,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestFetchMessageVideo,
+        m_storageWorker,
+        &StorageWorker::fetchMessageVideo,
         Qt::QueuedConnection
     );
 
@@ -486,6 +563,110 @@ Backend::Backend(QObject *parent)
         )
         {
             emit roomAvatarFailed(roomId, error);
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::senderAvatarRetrieved,
+        this,
+        [this](
+            const QString &requestKey,
+            const QString &dataUrl
+        )
+        {
+            emit senderAvatarRetrieved(requestKey, dataUrl);
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::senderAvatarFailed,
+        this,
+        [this](
+            const QString &requestKey,
+            const QString &error
+        )
+        {
+            emit senderAvatarFailed(requestKey, error);
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::messageImageRetrieved,
+        this,
+        [this](
+            const QString &requestKey,
+            const QString &dataUrl
+        )
+        {
+            emit messageImageRetrieved(requestKey, dataUrl);
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::messageImageFailed,
+        this,
+        [this](
+            const QString &requestKey,
+            const QString &error
+        )
+        {
+            emit messageImageFailed(requestKey, error);
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::messageThumbnailRetrieved,
+        this,
+        [this](
+            const QString &requestKey,
+            const QString &dataUrl
+        )
+        {
+            emit messageThumbnailRetrieved(requestKey, dataUrl);
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::messageThumbnailFailed,
+        this,
+        [this](
+            const QString &requestKey,
+            const QString &error
+        )
+        {
+            emit messageThumbnailFailed(requestKey, error);
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::messageVideoRetrieved,
+        this,
+        [this](
+            const QString &requestKey,
+            const QString &fileUrl
+        )
+        {
+            emit messageVideoRetrieved(requestKey, fileUrl);
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::messageVideoFailed,
+        this,
+        [this](
+            const QString &requestKey,
+            const QString &error
+        )
+        {
+            emit messageVideoFailed(requestKey, error);
         }
     );
 
@@ -1186,6 +1367,135 @@ void Backend::requestRoomAvatar(
     );
 }
 
+void Backend::requestSenderAvatar(
+    const QString &requestKey,
+    const QString &mxcUri
+)
+{
+    if (!m_storageReady) {
+        emit senderAvatarFailed(
+            requestKey,
+            QStringLiteral("Encrypted storage is not open")
+        );
+
+        return;
+    }
+
+    if (requestKey.isEmpty() || mxcUri.isEmpty()) {
+        emit senderAvatarFailed(
+            requestKey,
+            QStringLiteral("Request key or avatar URI is empty")
+        );
+
+        return;
+    }
+
+    // Request a 96 x 96 thumbnail.
+    // The request is queued on the existing worker thread.
+    // Avatar retrieval does not block normal storage operations.
+
+    emit requestFetchSenderAvatar(
+        requestKey,
+        mxcUri,
+        96,
+        96
+    );
+}
+
+void Backend::requestMessageImage(
+    const QString &requestKey,
+    const QString &mediaSourceJson
+)
+{
+    if (!m_storageReady) {
+        emit messageImageFailed(
+            requestKey,
+            QStringLiteral("Encrypted storage is not open")
+        );
+        return;
+    }
+
+    if (requestKey.isEmpty() || mediaSourceJson.isEmpty()) {
+        emit messageImageFailed(
+            requestKey,
+            QStringLiteral("Request key or media source is empty")
+        );
+        return;
+    }
+
+    emit requestFetchMessageImage(requestKey, mediaSourceJson);
+}
+
+
+
+void Backend::requestMessageThumbnail(
+    const QString &requestKey,
+    const QString &mediaSourceJson,
+    quint32 width,
+    quint32 height
+)
+{
+    if (!m_storageReady) {
+        emit messageThumbnailFailed(
+            requestKey,
+            QStringLiteral("Encrypted storage is not open")
+        );
+        return;
+    }
+
+    if (requestKey.isEmpty() || mediaSourceJson.isEmpty()) {
+        emit messageThumbnailFailed(
+            requestKey,
+            QStringLiteral("Request key or media source is empty")
+        );
+        return;
+    }
+
+    if (width == 0 || height == 0 || width > 2048 || height > 2048) {
+        emit messageThumbnailFailed(
+            requestKey,
+            QStringLiteral("Thumbnail dimensions are invalid")
+        );
+        return;
+    }
+
+    emit requestFetchMessageThumbnail(
+        requestKey,
+        mediaSourceJson,
+        width,
+        height
+    );
+}
+
+void Backend::requestMessageVideo(
+    const QString &requestKey,
+    const QString &mediaSourceJson,
+    const QString &mimeType
+)
+{
+    if (!m_storageReady) {
+        emit messageVideoFailed(
+            requestKey,
+            QStringLiteral("Encrypted storage is not open")
+        );
+        return;
+    }
+
+    if (requestKey.isEmpty() || mediaSourceJson.isEmpty()) {
+        emit messageVideoFailed(
+            requestKey,
+            QStringLiteral("Request key or media source is empty")
+        );
+        return;
+    }
+
+    emit requestFetchMessageVideo(
+        requestKey,
+        mediaSourceJson,
+        mimeType
+    );
+}
+
 // =============================================================
 // Matrix logout
 // =============================================================
@@ -1282,6 +1592,70 @@ void Backend::sendRoomMessage(
     emit requestSendRoomMessage(roomId, message);
 }
 
+
+void Backend::acceptVerificationRequest(
+    const QString &userId,
+    const QString &flowId
+)
+{
+    if (!m_storageReady || userId.isEmpty() || flowId.isEmpty()) {
+        emit matrixVerificationActionFinished(
+            userId, flowId, QStringLiteral("accept"),
+            QStringLiteral("Storage is not ready or verification details are missing")
+        );
+        return;
+    }
+
+    emit requestAcceptVerificationRequest(userId, flowId);
+}
+
+void Backend::cancelVerificationRequest(
+    const QString &userId,
+    const QString &flowId
+)
+{
+    if (!m_storageReady || userId.isEmpty() || flowId.isEmpty()) {
+        emit matrixVerificationActionFinished(
+            userId, flowId, QStringLiteral("cancel"),
+            QStringLiteral("Storage is not ready or verification details are missing")
+        );
+        return;
+    }
+
+    emit requestCancelVerificationRequest(userId, flowId);
+}
+
+void Backend::confirmVerification(
+    const QString &userId,
+    const QString &flowId
+)
+{
+    if (!m_storageReady || userId.isEmpty() || flowId.isEmpty()) {
+        emit matrixVerificationActionFinished(
+            userId, flowId, QStringLiteral("confirm"),
+            QStringLiteral("Storage is not ready or verification details are missing")
+        );
+        return;
+    }
+
+    emit requestConfirmVerification(userId, flowId);
+}
+
+void Backend::mismatchVerification(
+    const QString &userId,
+    const QString &flowId
+)
+{
+    if (!m_storageReady || userId.isEmpty() || flowId.isEmpty()) {
+        emit matrixVerificationActionFinished(
+            userId, flowId, QStringLiteral("mismatch"),
+            QStringLiteral("Storage is not ready or verification details are missing")
+        );
+        return;
+    }
+
+    emit requestMismatchVerification(userId, flowId);
+}
 
 void Backend::logoutMatrix()
 {

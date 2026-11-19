@@ -214,6 +214,151 @@ pub unsafe extern "C" fn astro_matrix_send_room_message(
     }
 }
 
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_accept_verification_request(
+    handle: *mut MatrixClientManager,
+    user_id: *const c_char,
+    flow_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let user_id = read_input(user_id, "User ID")?;
+        let flow_id = read_input(flow_id, "Flow ID")?;
+        let manager = &*handle;
+        manager.accept_verification_request(user_id, flow_id)
+    }));
+
+    match result {
+        Ok(Ok(())) => 1,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while accepting verification");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_cancel_verification_request(
+    handle: *mut MatrixClientManager,
+    user_id: *const c_char,
+    flow_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let user_id = read_input(user_id, "User ID")?;
+        let flow_id = read_input(flow_id, "Flow ID")?;
+        let manager = &mut *handle;
+        manager.cancel_verification_request(user_id, flow_id)
+    }));
+
+    match result {
+        Ok(Ok(())) => 1,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while cancelling verification");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_confirm_verification(
+    handle: *mut MatrixClientManager,
+    user_id: *const c_char,
+    flow_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let user_id = read_input(user_id, "User ID")?;
+        let flow_id = read_input(flow_id, "Flow ID")?;
+        let manager = &*handle;
+        manager.confirm_verification(user_id, flow_id)
+    }));
+
+    match result {
+        Ok(Ok(())) => 1,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while confirming verification");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_mismatch_verification(
+    handle: *mut MatrixClientManager,
+    user_id: *const c_char,
+    flow_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let user_id = read_input(user_id, "User ID")?;
+        let flow_id = read_input(flow_id, "Flow ID")?;
+        let manager = &*handle;
+        manager.mismatch_verification(user_id, flow_id)
+    }));
+
+    match result {
+        Ok(Ok(())) => 1,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while rejecting verification");
+            -1
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn astro_matrix_get_cached_rooms_json(
     handle: *mut MatrixClientManager,
@@ -583,6 +728,256 @@ pub unsafe extern "C" fn astro_matrix_thumbnail(
             set_error(
                 error_out,
                 "Unexpected Rust panic while downloading thumbnail",
+            );
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_media_thumbnail(
+    handle: *mut MatrixClientManager,
+    media_source_json: *const c_char,
+    width: u32,
+    height: u32,
+    data_out: *mut *mut u8,
+    len_out: *mut usize,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if !data_out.is_null() {
+        *data_out = ptr::null_mut();
+    }
+
+    if !len_out.is_null() {
+        *len_out = 0;
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    if media_source_json.is_null() {
+        set_error(error_out, "Media source JSON must not be null");
+        return -1;
+    }
+
+    if data_out.is_null() || len_out.is_null() {
+        set_error(error_out, "Media output pointers must not be null");
+        return -1;
+    }
+
+    if width == 0 || height == 0 {
+        set_error(error_out, "Thumbnail dimensions must be greater than zero");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manager = &*handle;
+
+        let source_json = CStr::from_ptr(media_source_json)
+            .to_str()
+            .map_err(|_| "Media source JSON is not valid UTF-8".to_string())?;
+
+        let source: matrix_sdk::ruma::events::room::MediaSource =
+            serde_json::from_str(source_json)
+                .map_err(|e| format!("Invalid Matrix media source: {e}"))?;
+
+        manager.thumbnail(source, width, height)
+    }));
+
+    match result {
+        Ok(Ok(mut data)) => {
+            let len = data.len();
+
+            if len == 0 {
+                return 0;
+            }
+
+            let data_ptr = data.as_mut_ptr();
+            std::mem::forget(data);
+
+            *data_out = data_ptr;
+            *len_out = len;
+
+            1
+        }
+
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while downloading media thumbnail",
+            );
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_image(
+    handle: *mut MatrixClientManager,
+    media_source_json: *const c_char,
+    data_out: *mut *mut u8,
+    len_out: *mut usize,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if !data_out.is_null() {
+        *data_out = ptr::null_mut();
+    }
+
+    if !len_out.is_null() {
+        *len_out = 0;
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    if media_source_json.is_null() {
+        set_error(error_out, "Media source JSON must not be null");
+        return -1;
+    }
+
+    if data_out.is_null() || len_out.is_null() {
+        set_error(error_out, "Media output pointers must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manager = &*handle;
+
+        let source_json = CStr::from_ptr(media_source_json)
+            .to_str()
+            .map_err(|_| "Media source JSON is not valid UTF-8".to_string())?;
+
+        let source: matrix_sdk::ruma::events::room::MediaSource =
+            serde_json::from_str(source_json)
+                .map_err(|e| format!("Invalid Matrix media source: {e}"))?;
+
+        manager.image(source)
+    }));
+
+    match result {
+        Ok(Ok(mut data)) => {
+            let len = data.len();
+
+            if len == 0 {
+                return 0;
+            }
+
+            let data_ptr = data.as_mut_ptr();
+            std::mem::forget(data);
+
+            *data_out = data_ptr;
+            *len_out = len;
+
+            1
+        }
+
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while downloading image",
+            );
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_video(
+    handle: *mut MatrixClientManager,
+    media_source_json: *const c_char,
+    data_out: *mut *mut u8,
+    len_out: *mut usize,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if !data_out.is_null() {
+        *data_out = ptr::null_mut();
+    }
+
+    if !len_out.is_null() {
+        *len_out = 0;
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    if media_source_json.is_null() {
+        set_error(error_out, "Media source JSON must not be null");
+        return -1;
+    }
+
+    if data_out.is_null() || len_out.is_null() {
+        set_error(error_out, "Media output pointers must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manager = &*handle;
+
+        let source_json = CStr::from_ptr(media_source_json)
+            .to_str()
+            .map_err(|_| "Media source JSON is not valid UTF-8".to_string())?;
+
+        let source: matrix_sdk::ruma::events::room::MediaSource =
+            serde_json::from_str(source_json)
+                .map_err(|e| format!("Invalid Matrix media source: {e}"))?;
+
+        manager.video(source)
+    }));
+
+    match result {
+        Ok(Ok(mut data)) => {
+            let len = data.len();
+
+            if len == 0 {
+                return 0;
+            }
+
+            let data_ptr = data.as_mut_ptr();
+            std::mem::forget(data);
+
+            *data_out = data_ptr;
+            *len_out = len;
+
+            1
+        }
+
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while downloading video",
             );
             -1
         }

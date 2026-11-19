@@ -1,7 +1,16 @@
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
+use matrix_sdk::encryption::verification::{
+    SasState, SasVerification, Verification, VerificationRequest,
+    VerificationRequestState,
+};
+use matrix_sdk::ruma::events::key::verification::VerificationMethod;
+use matrix_sdk::ruma::events::{
+    key::verification::request::ToDeviceKeyVerificationRequestEvent,
+    room::message::{MessageType, OriginalSyncRoomMessageEvent},
+};
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::{
-    config::SyncSettings, ruma::room::RoomType, store::RoomLoadSettings, Client, RoomMemberships,
+    config::SyncSettings, ruma::room::RoomType, store::RoomLoadSettings, Client, Room, RoomMemberships,
     SqliteStoreConfig,
 };
 use matrix_sdk_ui::spaces::SpaceService;
@@ -12,7 +21,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -27,21 +36,106 @@ static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
 type TimelineUpdateStream =
     Pin<Box<dyn Stream<Item = Vec<VectorDiff<Arc<TimelineItem>>>>>>;
 
+
 fn timeline_item_to_json(item: &TimelineItem) -> Option<serde_json::Value> {
     let event = item.as_event()?;
     let content = event.content();
     let is_encrypted = content.is_unable_to_decrypt();
 
-    let body = if is_encrypted {
-        "Encrypted message"
+    let message = if is_encrypted {
+        None
     } else {
-        content.as_message()?.body()
+        content.as_message()
     };
+
+    let body = message
+        .map(|message| message.body())
+        .unwrap_or("Encrypted message");
+
+    let mut msgtype = "m.text";
+    let mut media_source = None;
+    let mut media_mimetype = None;
+    let mut media_thumbnail_source = None;
+    let mut media_thumbnail_width = None;
+    let mut media_thumbnail_height = None;
+
+    if let Some(message) = message {
+        match message.msgtype() {
+            MessageType::Image(image) => {
+                msgtype = "m.image";
+
+                media_source = serde_json::to_value(&image.source).ok();
+
+                media_mimetype = image
+                    .info
+                    .as_ref()
+                    .and_then(|info| info.mimetype.clone());
+            }
+
+            MessageType::Video(video) => {
+                msgtype = "m.video";
+
+                media_source = serde_json::to_value(&video.source).ok();
+
+                media_mimetype = video
+                    .info
+                    .as_ref()
+                    .and_then(|info| info.mimetype.clone());
+
+                media_thumbnail_source = video
+                    .info
+                    .as_ref()
+                    .and_then(|info| info.thumbnail_source.as_ref())
+                    .and_then(|source| serde_json::to_value(source).ok());
+
+                media_thumbnail_width = video
+                    .info
+                    .as_ref()
+                    .and_then(|info| info.thumbnail_info.as_ref())
+                    .and_then(|thumbnail| {
+                        serde_json::to_value(&thumbnail.width).ok()
+                    })
+                    .and_then(|value| value.as_u64());
+
+                media_thumbnail_height = video
+                    .info
+                    .as_ref()
+                    .and_then(|info| info.thumbnail_info.as_ref())
+                    .and_then(|thumbnail| {
+                        serde_json::to_value(&thumbnail.height).ok()
+                    })
+                    .and_then(|value| value.as_u64());
+            }
+
+            MessageType::File(_) => {
+                msgtype = "m.file";
+            }
+
+            _ => {}
+        }
+    }
+
+    let (sender_display_name, sender_avatar) =
+        match event.sender_profile() {
+            matrix_sdk_ui::timeline::TimelineDetails::Ready(profile) => (
+                profile.display_name.clone(),
+                profile.avatar_url.as_ref().map(ToString::to_string),
+            ),
+            _ => (None, None),
+        };
 
     Some(serde_json::json!({
         "event_id": event.event_id().map(ToString::to_string),
         "sender": event.sender().to_string(),
+        "sender_display_name": sender_display_name,
+        "sender_avatar": sender_avatar,
         "body": body,
+        "msgtype": msgtype,
+        "media_source": media_source,
+        "media_mimetype": media_mimetype,
+        "media_thumbnail_source": media_thumbnail_source,
+        "media_thumbnail_width": media_thumbnail_width,
+        "media_thumbnail_height": media_thumbnail_height,
         "timestamp": u64::from(event.timestamp().get()),
         "is_own": event.is_own(),
         "is_encrypted": is_encrypted
@@ -63,6 +157,13 @@ impl SyncTask {
     }
 }
 
+struct PendingVerificationRequest {
+    user_id: String,
+    flow_id: String,
+    room_id: Option<String>,
+    request: VerificationRequest,
+}
+
 pub struct MatrixClientManager {
     client: Option<Client>,
     runtime: std::sync::Arc<Runtime>,
@@ -72,6 +173,11 @@ pub struct MatrixClientManager {
     timeline_update_streams: HashMap<String, TimelineUpdateStream>,
     last_unread_counts: HashMap<String, (u64, u64)>,
     last_unread_check: Option<Instant>,
+    verification_requests: Arc<Mutex<Vec<PendingVerificationRequest>>>,
+    active_verification_requests: HashMap<String, PendingVerificationRequest>,
+    verification_sas_queue: Arc<Mutex<Vec<(String, SasVerification)>>>,
+    active_verifications: HashMap<String, SasVerification>,
+    last_verification_states: HashMap<String, String>,
 }
 
 fn create_new_store(database_path: &Path) -> Result<(String, PathBuf), String> {
@@ -139,11 +245,85 @@ impl MatrixClientManager {
 
         eprintln!("ASTRO DEBUG: Matrix client build completed");
 
+        // Incoming verification requests are collected here and delivered
+        // to the UI through Astro's existing polling path.
+        let verification_requests =
+            Arc::new(Mutex::new(Vec::<PendingVerificationRequest>::new()));
+
+        let to_device_queue = Arc::clone(&verification_requests);
+
+        client.add_event_handler(
+            move |event: ToDeviceKeyVerificationRequestEvent, client: Client| {
+                let queue = Arc::clone(&to_device_queue);
+
+                async move {
+                    if let Some(request) = client
+                        .encryption()
+                        .get_verification_request(
+                            &event.sender,
+                            &event.content.transaction_id,
+                        )
+                        .await
+                    {
+                        let pending = PendingVerificationRequest {
+                            user_id: event.sender.to_string(),
+                            flow_id: event.content.transaction_id.to_string(),
+                            room_id: None,
+                            request,
+                        };
+
+                        if let Ok(mut queue) = queue.lock() {
+                            queue.push(pending);
+                        }
+                    }
+                }
+            },
+        );
+
+        let room_queue = Arc::clone(&verification_requests);
+
+        client.add_event_handler(
+            move |event: OriginalSyncRoomMessageEvent, room: Room, client: Client| {
+                let queue = Arc::clone(&room_queue);
+
+                async move {
+                    if !matches!(
+                        &event.content.msgtype,
+                        MessageType::VerificationRequest(_)
+                    ) {
+                        return;
+                    }
+
+                    if let Some(request) = client
+                        .encryption()
+                        .get_verification_request(&event.sender, &event.event_id)
+                        .await
+                    {
+                        let pending = PendingVerificationRequest {
+                            user_id: event.sender.to_string(),
+                            flow_id: event.event_id.to_string(),
+                            room_id: Some(room.room_id().to_string()),
+                            request,
+                        };
+
+                        if let Ok(mut queue) = queue.lock() {
+                            queue.push(pending);
+                        }
+                    }
+                }
+            },
+        );
+
         Ok(Self {
             timelines: HashMap::new(),
             timeline_update_streams: HashMap::new(),
             last_unread_counts: HashMap::new(),
             last_unread_check: None,
+            verification_requests,
+            active_verification_requests: HashMap::new(),
+            verification_sas_queue: Arc::new(Mutex::new(Vec::new())),
+            active_verifications: HashMap::new(),
+            last_verification_states: HashMap::new(),
             client: Some(client),
             runtime: std::sync::Arc::new(runtime),
             session_path,
@@ -385,8 +565,8 @@ impl MatrixClientManager {
                     "topic": info.topic(),
                     "avatar_url": avatar_url,
                     "member_count": info.joined_members_count(),
-                    "unread_count": room.num_unread_notifications(),
-                    "mention_count": room.num_unread_mentions(),
+                    "unread_count": room.unread_notification_counts().notification_count,
+                    "mention_count": room.unread_notification_counts().highlight_count,
                     "parent_space_ids": parents
                 }));
             }
@@ -478,8 +658,8 @@ impl MatrixClientManager {
                     "topic": info.topic(),
                     "avatar_url": avatar_url,
                     "member_count": info.joined_members_count(),
-                    "unread_count": room.num_unread_notifications(),
-                    "mention_count": room.num_unread_mentions(),
+                    "unread_count": room.unread_notification_counts().notification_count,
+                    "mention_count": room.unread_notification_counts().highlight_count,
                     "parent_space_ids": parents
                 }));
             }
@@ -695,6 +875,110 @@ impl MatrixClientManager {
         );
 
         let mut unread_counts = Vec::new();
+        let mut verification_events = Vec::new();
+
+        // Move newly received requests into the manager so their SDK
+        // handles remain available for later accept/cancel operations.
+        let queued_requests = self
+            .verification_requests
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default();
+
+        for pending in queued_requests {
+            let key = format!("{}|{}", pending.user_id, pending.flow_id);
+
+            if self.active_verification_requests.contains_key(&key) {
+                continue;
+            }
+
+            verification_events.push(serde_json::json!({
+                "user_id": pending.user_id,
+                "flow_id": pending.flow_id,
+                "room_id": pending.room_id,
+                "is_self_verification": pending.request.is_self_verification()
+            }));
+
+            self.active_verification_requests.insert(key, pending);
+        }
+
+        // Collect SAS handles created by the asynchronous request watcher.
+        let queued_sas = self
+            .verification_sas_queue
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default();
+
+        for (key, sas) in queued_sas {
+            self.active_verifications.insert(key, sas);
+        }
+
+        // Report only changed SAS states, avoiding repeated UI updates
+        // at the 100 ms polling frequency.
+        let active_sas: Vec<(String, SasVerification)> = self
+            .active_verifications
+            .iter()
+            .map(|(key, sas)| (key.clone(), sas.clone()))
+            .collect();
+
+        let mut finished_verifications = Vec::new();
+
+        for (key, sas) in active_sas {
+            let state = sas.state();
+
+            let (state_name, is_finished) = match state {
+                SasState::Created { .. } => ("created", false),
+                SasState::Started { .. } => ("started", false),
+                SasState::Accepted { .. } => ("accepted", false),
+                SasState::KeysExchanged { .. } => ("keys_exchanged", false),
+                SasState::Confirmed => ("confirmed", false),
+                SasState::Done { .. } => ("done", true),
+                SasState::Cancelled(_) => ("cancelled", true),
+            };
+
+            let emojis = sas.emoji().map(|items| {
+                items
+                    .iter()
+                    .map(|emoji| {
+                        serde_json::json!({
+                            "symbol": emoji.symbol,
+                            "description": emoji.description
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            });
+
+            let (user_id, flow_id) = key
+                .split_once('|')
+                .unwrap_or(("", ""));
+
+            let event = serde_json::json!({
+                "type": "verification_state",
+                "user_id": user_id,
+                "flow_id": flow_id,
+                "state": state_name,
+                "emojis": emojis
+            });
+
+            let signature = event.to_string();
+
+            if self.last_verification_states.get(&key) != Some(&signature) {
+                self.last_verification_states
+                    .insert(key.clone(), signature);
+
+                verification_events.push(event);
+            }
+
+            if is_finished {
+                finished_verifications.push(key);
+            }
+        }
+
+        for key in finished_verifications {
+            self.active_verifications.remove(&key);
+            self.active_verification_requests.remove(&key);
+            self.last_verification_states.remove(&key);
+        }
 
         if should_check_unread {
             self.last_unread_check = Some(now);
@@ -702,10 +986,10 @@ impl MatrixClientManager {
             if let Some(client) = self.client.as_ref() {
                 for room in client.joined_rooms() {
                     let room_id = room.room_id().to_string();
-                    let unread = room.num_unread_notifications();
-                    let mentions = room.num_unread_mentions();
+                    let server_counts = room.unread_notification_counts();
+                    let unread = server_counts.notification_count;
+                    let mentions = server_counts.highlight_count;
                     let counts = (unread, mentions);
-
                     if self.last_unread_counts.get(&room_id) != Some(&counts) {
                         self.last_unread_counts.insert(room_id.clone(), counts);
 
@@ -719,7 +1003,7 @@ impl MatrixClientManager {
             }
         }
 
-        if updates.is_empty() && unread_counts.is_empty() {
+        if updates.is_empty() && unread_counts.is_empty() && verification_events.is_empty() {
             return serde_json::json!({
                 "updates": []
             })
@@ -728,9 +1012,145 @@ impl MatrixClientManager {
 
         serde_json::json!({
             "updates": updates,
-            "unread_counts": unread_counts
+            "unread_counts": unread_counts,
+            "verification_requests": verification_events
         })
         .to_string()
+    }
+
+    /// Accept an incoming verification request, advertising SAS only.
+    pub fn accept_verification_request(
+        &self,
+        user_id: &str,
+        flow_id: &str,
+    ) -> Result<(), String> {
+        let key = format!("{user_id}|{flow_id}");
+
+        let request = self
+            .active_verification_requests
+            .get(&key)
+            .map(|pending| pending.request.clone())
+            .ok_or_else(|| "Verification request not found".to_string())?;
+
+        let sas_queue = Arc::clone(&self.verification_sas_queue);
+
+        self.runtime.block_on(async move {
+            request
+                .accept_with_methods(vec![VerificationMethod::SasV1])
+                .await
+                .map_err(|error| format!("Could not accept verification request: {error}"))?;
+
+            // Wait for the other participant to start SAS. The SDK emits
+            // Transitioned when the request becomes a concrete SAS flow.
+            let mut changes = request.changes();
+
+            tokio::spawn(async move {
+                while let Some(state) = changes.next().await {
+                    match state {
+                        VerificationRequestState::Transitioned { verification } => {
+                            if let Verification::SasV1(sas) = verification {
+                                match sas.accept().await {
+                                    Ok(()) => {
+                                        if let Ok(mut queue) = sas_queue.lock() {
+                                            queue.push((key.clone(), sas));
+                                        }
+                                    }
+                                    Err(error) => {
+                                        eprintln!(
+                                            "Astro: could not accept SAS verification for {}: {}",
+                                            key,
+                                            error
+                                        );
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        VerificationRequestState::Done
+                        | VerificationRequestState::Cancelled(_) => break,
+                        _ => {}
+                    }
+                }
+            });
+
+            Ok(())
+        })
+    }
+
+    /// Cancel an incoming verification request or active SAS flow.
+    pub fn cancel_verification_request(
+        &mut self,
+        user_id: &str,
+        flow_id: &str,
+    ) -> Result<(), String> {
+        let key = format!("{user_id}|{flow_id}");
+
+        if let Some(sas) = self.active_verifications.get(&key).cloned() {
+            self.runtime.block_on(async {
+                sas.cancel()
+                    .await
+                    .map_err(|error| format!("Could not cancel verification: {error}"))
+            })?;
+        } else if let Some(pending) = self.active_verification_requests.get(&key) {
+            let request = pending.request.clone();
+
+            self.runtime.block_on(async {
+                request
+                    .cancel()
+                    .await
+                    .map_err(|error| format!("Could not cancel verification request: {error}"))
+            })?;
+        } else {
+            return Err("Verification request not found".into());
+        }
+
+        self.active_verifications.remove(&key);
+        self.active_verification_requests.remove(&key);
+        self.last_verification_states.remove(&key);
+
+        Ok(())
+    }
+
+    /// Confirm that the displayed SAS emoji match the other device.
+    pub fn confirm_verification(
+        &self,
+        user_id: &str,
+        flow_id: &str,
+    ) -> Result<(), String> {
+        let key = format!("{user_id}|{flow_id}");
+
+        let sas = self
+            .active_verifications
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| "Active SAS verification not found".to_string())?;
+
+        self.runtime.block_on(async {
+            sas.confirm()
+                .await
+                .map_err(|error| format!("Could not confirm verification: {error}"))
+        })
+    }
+
+    /// Reject the SAS exchange because the emoji do not match.
+    pub fn mismatch_verification(
+        &self,
+        user_id: &str,
+        flow_id: &str,
+    ) -> Result<(), String> {
+        let key = format!("{user_id}|{flow_id}");
+
+        let sas = self
+            .active_verifications
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| "Active SAS verification not found".to_string())?;
+
+        self.runtime.block_on(async {
+            sas.mismatch()
+                .await
+                .map_err(|error| format!("Could not reject verification: {error}"))
+        })
     }
 
     /// Send a plain-text message to a Matrix room.
@@ -780,6 +1200,36 @@ impl MatrixClientManager {
             let media = MediaManager::new(client);
 
             media.thumbnail(source, width, height).await
+        })
+    }
+
+    pub fn image(
+        &self,
+        source: matrix_sdk::ruma::events::room::MediaSource,
+    ) -> Result<Vec<u8>, String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?;
+
+        self.runtime.block_on(async {
+            let media = MediaManager::new(client);
+            media.image(source).await
+        })
+    }
+
+    pub fn video(
+        &self,
+        source: matrix_sdk::ruma::events::room::MediaSource,
+    ) -> Result<Vec<u8>, String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?;
+
+        self.runtime.block_on(async {
+            let media = MediaManager::new(client);
+            media.video(source).await
         })
     }
 

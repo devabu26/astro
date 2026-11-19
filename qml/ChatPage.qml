@@ -17,6 +17,8 @@ Item {
     property var mainRoot
 
     property bool wideLayout: width >= units.gu(75)
+    property bool fullscreenLandscapeVideo:
+        roomView.fullscreenVideoActive && width > height
     property bool showConversation: false
 
     property string selectedRoomId: ""
@@ -64,6 +66,18 @@ Item {
 function loadRooms(json, finished) {
     try {
         var data = JSON.parse(json)
+
+        console.log("ASTRO UNREAD DEBUG: Initial room response:", data.rooms.length)
+
+        for (var d = 0; d < data.rooms.length; d++) {
+            console.log(
+                "ASTRO UNREAD DEBUG: Initial:",
+                data.rooms[d].name,
+                "ID:", data.rooms[d].room_id,
+                "Unread:", data.rooms[d].unread_count,
+                "Mentions:", data.rooms[d].mention_count
+            )
+        }
 
         if (!data || !data.rooms) {
             console.log(
@@ -220,8 +234,22 @@ function loadRooms(json, finished) {
                 var result = JSON.parse(json)
                 var counts = result.unread_counts || []
 
+                console.log(
+                    "ASTRO UNREAD DEBUG: Live signal received:",
+                    counts.length,
+                    "room count updates"
+                )
+
                 for (var c = 0; c < counts.length; c++) {
                     var item = counts[c]
+
+                    console.log(
+                        "ASTRO UNREAD DEBUG: Live room:",
+                        item.room_id,
+                        "Unread:", item.unread_count,
+                        "Mentions:", item.mention_count
+                    )
+
                     var roomIndex = -1
 
                     for (var i = 0; i < roomModel.count; i++) {
@@ -279,15 +307,17 @@ function loadRooms(json, finished) {
             Rectangle {
                 id: sidebar
 
-                width: root.wideLayout
-                       ? units.gu(32)
-                       : parent.width
+                width: root.fullscreenLandscapeVideo
+                       ? 0
+                       : root.wideLayout
+                         ? units.gu(32)
+                         : parent.width
 
                 height: parent.height
                 color: "#17232e"
 
-                visible: root.wideLayout ||
-                         !root.showConversation
+                visible: !root.fullscreenLandscapeVideo &&
+                         (root.wideLayout || !root.showConversation)
 
                 Column {
                     anchors.fill: parent
@@ -751,9 +781,11 @@ function loadRooms(json, finished) {
             RoomView {
                 id: roomView
 
-                width: root.wideLayout
-                       ? parent.width - sidebar.width
-                       : parent.width
+                width: root.fullscreenLandscapeVideo
+                       ? parent.width
+                       : root.wideLayout
+                         ? parent.width - sidebar.width
+                         : parent.width
 
                 height: parent.height
 

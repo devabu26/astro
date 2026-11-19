@@ -9,7 +9,7 @@
             "desktop":  "astro.desktop"
         }
     },
-    "version": "1.0.1",
+    "version": "1.0.2",
     "maintainer": "Madabu <email@domain.org>",
     "framework" : "$ENV{CLICK_FRAMEWORK}"
 }

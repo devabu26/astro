@@ -2,6 +2,7 @@
 import QtQuick 2.7
 import Lomiri.Components 1.3
 import Astro.Backend 1.0
+import "Components"
 
 MainView {
     id: root
@@ -111,6 +112,7 @@ MainView {
             root.matrixAuthenticated = false
             root.showingSettings = false
 
+            verificationDialog.closeDialog()
             chatPage.stopRoomLoading()
         }
 
@@ -127,6 +129,7 @@ MainView {
             root.showingSettings = false
             root.existingStorage = false
 
+            verificationDialog.closeDialog()
             chatPage.stopRoomLoading()
         }
 
@@ -143,6 +146,99 @@ MainView {
             // the final network synchronisation response.
             chatPage.loadRooms(json, finished)
         }
+
+        // -----------------------------------------------------
+        // Matrix device verification events
+        // -----------------------------------------------------
+
+        onMatrixLiveTimelineUpdated: {
+            var data
+
+            try {
+                data = JSON.parse(json)
+            } catch (error) {
+                console.warn(
+                    "ASTRO: Could not parse live timeline JSON:",
+                    error
+                )
+                return
+            }
+
+            var events = data.verification_requests || []
+
+            for (var i = 0; i < events.length; i++) {
+                var event = events[i]
+
+                // SAS state updates use the same array as
+                // incoming verification requests.
+                if (event.type === "verification_state") {
+                    if (verificationDialog.visible &&
+                        verificationDialog.userId === event.user_id &&
+                        verificationDialog.flowId === event.flow_id) {
+
+                        verificationDialog.updateVerificationState(
+                            event.state,
+                            event.emojis || []
+                        )
+                    }
+
+                    continue
+                }
+
+                // Incoming verification request.
+                if (event.user_id && event.flow_id) {
+                    if (!verificationDialog.visible) {
+                        verificationDialog.showRequest(
+                            event.user_id,
+                            event.flow_id,
+                            event.room_id || ""
+                        )
+                    } else if (
+                        verificationDialog.userId !== event.user_id ||
+                        verificationDialog.flowId !== event.flow_id
+                    ) {
+                        console.warn(
+                            "ASTRO: Another verification request arrived while a dialog is active:",
+                            event.user_id,
+                            event.flow_id
+                        )
+                    }
+                }
+            }
+        }
+
+        // -----------------------------------------------------
+        // Matrix verification action results
+        // -----------------------------------------------------
+
+
+        onMatrixVerificationActionFinished: {
+            if (!verificationDialog.visible ||
+                verificationDialog.userId !== userId ||
+                verificationDialog.flowId !== flowId) {
+                return
+            }
+
+            if (error !== "") {
+                verificationDialog.showError(error)
+                return
+            }
+
+            if (action === "cancel") {
+                verificationDialog.updateVerificationState(
+                    "cancelled",
+                    []
+                )
+            } else if (action === "mismatch") {
+                verificationDialog.updateVerificationState(
+                    "mismatched",
+                    []
+                )
+            } else {
+                verificationDialog.busy = false
+            }
+        }
+
     }
 
     // =========================================================
@@ -208,6 +304,33 @@ MainView {
             visible: astroBackend.storageReady &&
                      root.matrixAuthenticated &&
                      !root.showingSettings
+        }
+    }
+
+    // =========================================================
+    // Matrix device verification dialog
+    // =========================================================
+
+    DeviceVerificationDialog {
+        id: verificationDialog
+
+        anchors.fill: parent
+        z: 1000
+
+        onAcceptRequested: {
+            astroBackend.acceptVerificationRequest(userId, flowId)
+        }
+
+        onCancelRequested: {
+            astroBackend.cancelVerificationRequest(userId, flowId)
+        }
+
+        onConfirmRequested: {
+            astroBackend.confirmVerification(userId, flowId)
+        }
+
+        onMismatchRequested: {
+            astroBackend.mismatchVerification(userId, flowId)
         }
     }
 }

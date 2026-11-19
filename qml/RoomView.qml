@@ -1,6 +1,8 @@
 import QtQuick 2.7
+import QtMultimedia 5.8
 import Lomiri.Components 1.3
 import "Components"
+import "Components/Rooms"
 
 Item {
     id: root
@@ -9,6 +11,11 @@ Item {
     property string roomId: ""
     property string roomName: "Welcome to Astro"
     property string avatarUrl: ""
+
+
+    // Sender avatar cache, indexed by Matrix MXC URI.
+    property var senderAvatarCache: ({})
+    property var senderAvatarRequests: ({})
     property bool wideLayout: false
 
     // Timeline loading state.
@@ -19,10 +26,76 @@ Item {
 
     // Scroll state.
     property bool isAtBottom: true
+    property real previousMessageContentHeight: 0
     property bool readReceiptSent: false
 
     signal backRequested()
     signal sendMessageRequested(string roomId, string message)
+
+    property var fullscreenVideoOutput: null
+    readonly property bool fullscreenVideoActive:
+        fullscreenVideoOutput !== null
+    property var fullscreenVideoOriginalParent: null
+    property var fullscreenVideoPlayer: null
+    property bool fullscreenControlsVisible: true
+
+    function formatVideoTime(milliseconds) {
+        var totalSeconds = Math.floor(Math.max(0, milliseconds) / 1000)
+        var minutes = Math.floor(totalSeconds / 60)
+        var seconds = totalSeconds % 60
+
+        return minutes + ":" +
+               (seconds < 10 ? "0" : "") + seconds
+    }
+
+    function revealFullscreenControls() {
+        fullscreenControlsVisible = true
+        fullscreenControlsTimer.restart()
+    }
+
+    function seekFullscreenVideo(mouseX, trackWidth) {
+        if (!fullscreenVideoPlayer ||
+            fullscreenVideoPlayer.duration <= 0 ||
+            trackWidth <= 0)
+            return
+
+        var fraction = Math.max(0, Math.min(1, mouseX / trackWidth))
+        fullscreenVideoPlayer.seek(
+            fraction * fullscreenVideoPlayer.duration
+        )
+    }
+
+    function openFullscreenVideo(output, originalParent, mediaPlayer) {
+        if (!output || !originalParent)
+            return
+
+        if (root.fullscreenVideoOutput)
+            closeFullscreenVideo()
+
+        root.fullscreenVideoOutput = output
+        root.fullscreenVideoOriginalParent = originalParent
+        root.fullscreenVideoPlayer = mediaPlayer
+        root.fullscreenControlsVisible = true
+        fullscreenControlsTimer.restart()
+
+        output.parent = fullscreenVideoOverlay
+        fullscreenVideoOverlay.visible = true
+    }
+
+    function closeFullscreenVideo() {
+        if (root.fullscreenVideoOutput &&
+            root.fullscreenVideoOriginalParent) {
+            root.fullscreenVideoOutput.parent =
+                root.fullscreenVideoOriginalParent
+        }
+
+        root.fullscreenVideoOutput = null
+        root.fullscreenVideoOriginalParent = null
+        root.fullscreenVideoPlayer = null
+        root.fullscreenControlsVisible = true
+        fullscreenControlsTimer.stop()
+        fullscreenVideoOverlay.visible = false
+    }
 
     // =====================================
     // Scroll to bottom
@@ -181,6 +254,75 @@ Item {
     }
 
     // =====================================
+    // Sender avatars
+    // =====================================
+
+    function cachedSenderAvatar(uri) {
+        if (!uri)
+            return ""
+
+        return root.senderAvatarCache[uri] || ""
+    }
+
+    function requestSenderAvatar(sender, uri) {
+        if (!root.backend || !root.roomId || !sender || !uri)
+            return
+
+        if (root.cachedSenderAvatar(uri) !== "")
+            return
+
+        // Include the room, sender and URI so responses remain
+        // identifiable even if the user changes rooms.
+        var requestKey = JSON.stringify([
+            root.roomId,
+            sender,
+            uri
+        ])
+
+        if (root.senderAvatarRequests[requestKey])
+            return
+
+        var requests = Object.assign({}, root.senderAvatarRequests)
+        requests[requestKey] = {
+            roomId: root.roomId,
+            sender: sender,
+            uri: uri
+        }
+        root.senderAvatarRequests = requests
+
+        root.backend.requestSenderAvatar(requestKey, uri)
+    }
+
+    function storeSenderAvatar(requestKey, dataUrl) {
+        var request = root.senderAvatarRequests[requestKey]
+
+        if (!request)
+            return
+
+        var requests = Object.assign({}, root.senderAvatarRequests)
+        delete requests[requestKey]
+        root.senderAvatarRequests = requests
+
+        if (!dataUrl)
+            return
+
+        var cache = Object.assign({}, root.senderAvatarCache)
+        cache[request.uri] = dataUrl
+        root.senderAvatarCache = cache
+
+        // Only update messages belonging to the room that
+        // originally requested this avatar.
+        if (root.roomId !== request.roomId)
+            return
+
+        for (var i = 0; i < messageModel.count; i++) {
+            if (messageModel.get(i).senderAvatarUri === request.uri) {
+                messageModel.setProperty(i, "senderAvatarUrl", dataUrl)
+            }
+        }
+    }
+
+    // =====================================
     // Message model
     // =====================================
 
@@ -206,6 +348,7 @@ Item {
         isLoadingOlder = false
         isLoadingInitial = roomId !== ""
         isAtBottom = true
+        previousMessageContentHeight = 0
         readReceiptSent = false
         pendingInitialScroll = false
     }
@@ -266,13 +409,50 @@ Item {
                     )
                     var dateInfo = root.messageDateInfo(date)
 
+                    root.requestSenderAvatar(
+                        message.sender || "",
+                        message.sender_avatar || ""
+                    )
+                    if ((message.msgtype || "m.text") === "m.image") {
+                        roomMedia.requestMessageImage(
+                            message.event_id || "",
+                            message.media_source || null
+                        )
+                    }
+                    if ((message.msgtype || "m.text") === "m.video" && message.media_thumbnail_source) {
+                        roomMedia.requestMessageThumbnail(
+                            message.event_id || "",
+                            message.media_thumbnail_source,
+                            message.media_thumbnail_width || 480,
+                            message.media_thumbnail_height || 270
+                        )
+                    }
+
                     messageModel.append({
                         eventId: message.event_id || "",
                         sender: message.sender || "",
+                        senderDisplayName: message.sender_display_name || "",
+                        senderAvatarUri: message.sender_avatar || "",
+                        senderAvatarUrl: root.cachedSenderAvatar(
+                            message.sender_avatar || ""
+                        ),
                         body: message.body || "",
                         timestamp: date.toLocaleTimeString(),
+                        timestampMs: Number(message.timestamp),
                         dateKey: dateInfo.key,
                         dateLabel: dateInfo.label,
+                        imageUrl: roomMedia.cachedMessageImage(root.roomId, message.event_id || ""),
+                        mediaSourceJson: message.media_source
+                            ? JSON.stringify(message.media_source)
+                            : "",
+                        mediaMimetype: message.media_mimetype || "",
+                        mediaThumbnailSourceJson: message.media_thumbnail_source
+                            ? JSON.stringify(message.media_thumbnail_source)
+                            : "",
+                        mediaThumbnailWidth: Number(message.media_thumbnail_width) || 480,
+                        mediaThumbnailHeight: Number(message.media_thumbnail_height) || 270,
+                        videoThumbnailUrl: roomMedia.cachedMessageThumbnail(root.roomId, message.event_id || ""),
+                        msgtype: message.msgtype || "m.text",
                         isOwn: message.is_own === true,
                         isEncrypted: message.is_encrypted === true
                     })
@@ -378,13 +558,50 @@ Item {
                         )
                         var dateInfo = root.messageDateInfo(date)
 
+                        root.requestSenderAvatar(
+                            message.sender || "",
+                            message.sender_avatar || ""
+                        )
+                        if ((message.msgtype || "m.text") === "m.image") {
+                            roomMedia.requestMessageImage(
+                                message.event_id || "",
+                                message.media_source || null
+                            )
+                        }
+                        if ((message.msgtype || "m.text") === "m.video" && message.media_thumbnail_source) {
+                            roomMedia.requestMessageThumbnail(
+                                message.event_id || "",
+                                message.media_thumbnail_source,
+                                message.media_thumbnail_width || 480,
+                                message.media_thumbnail_height || 270
+                            )
+                        }
+
                         messageModel.insert(insertedCount, {
                             eventId: eventId,
                             sender: message.sender || "",
+                            senderDisplayName: message.sender_display_name || "",
+                            senderAvatarUri: message.sender_avatar || "",
+                            senderAvatarUrl: root.cachedSenderAvatar(
+                                message.sender_avatar || ""
+                            ),
                             body: message.body || "",
                             timestamp: date.toLocaleTimeString(),
+                        timestampMs: Number(message.timestamp),
                             dateKey: dateInfo.key,
                             dateLabel: dateInfo.label,
+                            imageUrl: roomMedia.cachedMessageImage(root.roomId, message.event_id || ""),
+                            mediaSourceJson: message.media_source
+                            ? JSON.stringify(message.media_source)
+                            : "",
+                            mediaMimetype: message.media_mimetype || "",
+                            mediaThumbnailSourceJson: message.media_thumbnail_source
+                                ? JSON.stringify(message.media_thumbnail_source)
+                                : "",
+                            mediaThumbnailWidth: Number(message.media_thumbnail_width) || 480,
+                            mediaThumbnailHeight: Number(message.media_thumbnail_height) || 270,
+                            videoThumbnailUrl: roomMedia.cachedMessageThumbnail(root.roomId, message.event_id || ""),
+                            msgtype: message.msgtype || "m.text",
                             isOwn: message.is_own === true,
                             isEncrypted: message.is_encrypted === true
                         })
@@ -402,8 +619,7 @@ Item {
                 // Stop when the beginning has been reached,
                 // or when no additional messages were inserted.
                 root.hasMoreHistory =
-                    result.reached_start !== true &&
-                    insertedCount > 0
+                    result.reached_start !== true
 
                 console.log(
                     "ASTRO: Inserted",
@@ -463,7 +679,7 @@ Item {
                 // Only follow incoming messages automatically
                 // when the user was already at the bottom.
                 var shouldStickToBottom = root.isAtBottom
-                var addedMessage = false
+                var addedLatestMessage = false
 
                 for (var u = 0; u < updates.length; u++) {
                     var update = updates[u]
@@ -505,13 +721,50 @@ Item {
                     )
                     var dateInfo = root.messageDateInfo(date)
 
+                    root.requestSenderAvatar(
+                        message.sender || "",
+                        message.sender_avatar || ""
+                    )
+                    if ((message.msgtype || "m.text") === "m.image") {
+                        roomMedia.requestMessageImage(
+                            message.event_id || "",
+                            message.media_source || null
+                        )
+                    }
+                    if ((message.msgtype || "m.text") === "m.video" && message.media_thumbnail_source) {
+                        roomMedia.requestMessageThumbnail(
+                            message.event_id || "",
+                            message.media_thumbnail_source,
+                            message.media_thumbnail_width || 480,
+                            message.media_thumbnail_height || 270
+                        )
+                    }
+
                     var messageData = {
                         eventId: eventId,
                         sender: message.sender || "",
+                        senderDisplayName: message.sender_display_name || "",
+                        senderAvatarUri: message.sender_avatar || "",
+                        senderAvatarUrl: root.cachedSenderAvatar(
+                            message.sender_avatar || ""
+                        ),
                         body: message.body || "",
                         timestamp: date.toLocaleTimeString(),
+                        timestampMs: Number(message.timestamp),
                         dateKey: dateInfo.key,
                         dateLabel: dateInfo.label,
+                        imageUrl: roomMedia.cachedMessageImage(root.roomId, message.event_id || ""),
+                        mediaSourceJson: message.media_source
+                            ? JSON.stringify(message.media_source)
+                            : "",
+                        mediaMimetype: message.media_mimetype || "",
+                        mediaThumbnailSourceJson: message.media_thumbnail_source
+                            ? JSON.stringify(message.media_thumbnail_source)
+                            : "",
+                        mediaThumbnailWidth: Number(message.media_thumbnail_width) || 480,
+                        mediaThumbnailHeight: Number(message.media_thumbnail_height) || 270,
+                        videoThumbnailUrl: roomMedia.cachedMessageThumbnail(root.roomId, message.event_id || ""),
+                        msgtype: message.msgtype || "m.text",
                         isOwn: message.is_own === true,
                         isEncrypted: message.is_encrypted === true
                     }
@@ -523,16 +776,47 @@ Item {
                             messageData
                         )
                     } else {
-                        // Append a genuinely new event.
-                        messageModel.append(messageData)
-                        addedMessage = true
+                        // Insert unseen events by their original Matrix
+                        // timestamp. Decryption can make older events
+                        // appear after newer events have already loaded.
+                        var insertionIndex = messageModel.count
+
+                        if (isFinite(messageData.timestampMs)) {
+                            for (
+                                var position = 0;
+                                position < messageModel.count;
+                                position++
+                            ) {
+                                var existingTimestamp = Number(
+                                    messageModel.get(position).timestampMs
+                                )
+
+                                if (
+                                    isFinite(existingTimestamp) &&
+                                    existingTimestamp > messageData.timestampMs
+                                ) {
+                                    insertionIndex = position
+                                    break
+                                }
+                            }
+                        }
+
+                        messageModel.insert(
+                            insertionIndex,
+                            messageData
+                        )
+
+                        // Only follow the event automatically if it was
+                        // inserted at the newest end of the timeline.
+                        if (insertionIndex === messageModel.count - 1)
+                            addedLatestMessage = true
                     }
                 }
 
                 // Do not interrupt someone reading older messages.
                 // Only scroll automatically if they were already
                 // at the bottom before the new message arrived.
-                if (addedMessage && shouldStickToBottom) {
+                if (addedLatestMessage && shouldStickToBottom) {
                     // A new event may need a new read receipt.
                     root.readReceiptSent = false
 
@@ -550,6 +834,30 @@ Item {
                     parseError
                 )
             }
+        }
+
+        // =====================================
+        // Sender avatar responses
+        // =====================================
+
+        onSenderAvatarRetrieved: {
+            root.storeSenderAvatar(requestKey, dataUrl)
+        }
+
+        onSenderAvatarFailed: {
+            // Remove failed requests so a later timeline update
+            // can retry the download.
+            var requests = Object.assign(
+                {},
+                root.senderAvatarRequests
+            )
+            delete requests[requestKey]
+            root.senderAvatarRequests = requests
+
+            console.log(
+                "ASTRO: Sender avatar download failed:",
+                error
+            )
         }
 
         // =====================================
@@ -583,6 +891,34 @@ Item {
             // displayed using the normal timeline renderer.
             root.pendingInitialScroll = true
             root.backend.requestRoomTimeline(root.roomId)
+        }
+    }
+
+    Connections {
+        target: roomMedia
+
+        onImageReady: {
+            if (targetRoomId !== root.roomId)
+                return
+
+            for (var i = 0; i < messageModel.count; i++) {
+                if (messageModel.get(i).eventId === eventId) {
+                    messageModel.setProperty(i, "imageUrl", dataUrl)
+                    break
+                }
+            }
+        }
+
+        onThumbnailReady: {
+            if (targetRoomId !== root.roomId)
+                return
+
+            for (var i = 0; i < messageModel.count; i++) {
+                if (messageModel.get(i).eventId === eventId) {
+                    messageModel.setProperty(i, "videoThumbnailUrl", dataUrl)
+                    break
+                }
+            }
         }
     }
 
@@ -736,9 +1072,24 @@ Item {
 
                         onContentYChanged: {
                             root.updateBottomState()
+                            root.maybeLoadOlderMessages()
                         }
 
                         onContentHeightChanged: {
+                            var oldHeight =
+                                root.previousMessageContentHeight
+
+                            var wasAtBottom =
+                                oldHeight > 0 &&
+                                messageList.contentY >=
+                                    Math.max(
+                                        0,
+                                        oldHeight - messageList.height
+                                    ) - units.gu(5)
+
+                            root.previousMessageContentHeight =
+                                messageList.contentHeight
+
                             if (
                                 root.pendingInitialScroll &&
                                 !root.isLoadingInitial
@@ -746,6 +1097,15 @@ Item {
                                 Qt.callLater(function() {
                                     root.finishInitialScroll()
                                 })
+                            } else if (wasAtBottom) {
+                                // Keep the viewport anchored immediately
+                                // when media changes the timeline height.
+                                messageList.contentY = Math.max(
+                                    0,
+                                    messageList.contentHeight -
+                                        messageList.height
+                                )
+                                root.updateBottomState()
                             } else {
                                 root.updateBottomState()
                             }
@@ -872,6 +1232,36 @@ Item {
                                             width: messageList.width
 
                                             sender: model.sender
+                                            senderDisplayName: model.senderDisplayName
+                                            avatarUrl: model.senderAvatarUrl
+                                            showAvatar: index === 0 ||
+                                                messageModel.get(index - 1).sender !== model.sender
+                                            imageUrl: model.imageUrl
+                                            isImage: model.msgtype === "m.image"
+
+                                            isVideo: model.msgtype === "m.video"
+                                            backend: root.backend
+                                            videoRequestKey: JSON.stringify([
+                                                root.roomId,
+                                                model.eventId
+                                            ])
+                                            videoMediaSourceJson: model.mediaSourceJson
+                                            videoThumbnailUrl: model.videoThumbnailUrl
+                                            videoMimeType: model.mediaMimetype
+                                            fullscreenHost: fullscreenVideoOverlay
+
+                                            onVideoFullscreenRequested: {
+                                                root.openFullscreenVideo(
+                                                    output,
+                                                    originalParent,
+                                                    mediaPlayer
+                                                )
+                                            }
+
+                                            onImageClicked: {
+                                                roomMedia.openImageViewer(imageUrl)
+                                            }
+
                                             body: model.body
                                             timestamp: model.timestamp
 
@@ -999,4 +1389,241 @@ Item {
             }
         }
     }
+
+    // =====================================
+    // =====================================
+    // =====================================
+    // =====================================
+    // Room media
+    // =====================================
+
+    Timer {
+        id: fullscreenControlsTimer
+
+        interval: 3500
+        repeat: false
+
+        onTriggered: {
+            if (root.fullscreenVideoPlayer &&
+                root.fullscreenVideoPlayer.playbackState ===
+                    MediaPlayer.PlayingState) {
+                root.fullscreenControlsVisible = false
+            }
+        }
+    }
+
+    Rectangle {
+        id: fullscreenVideoOverlay
+
+        anchors.fill: parent
+        z: 2000
+        visible: false
+        color: "#080d12"
+
+        MouseArea {
+            anchors.fill: parent
+            z: 1
+
+            onClicked: {
+                if (root.fullscreenControlsVisible) {
+                    root.fullscreenControlsVisible = false
+                    fullscreenControlsTimer.stop()
+                } else {
+                    root.revealFullscreenControls()
+                }
+            }
+        }
+
+        // Close button.
+        Rectangle {
+            anchors {
+                top: parent.top
+                right: parent.right
+                margins: units.gu(2)
+            }
+
+            width: units.gu(6)
+            height: units.gu(6)
+            radius: width / 2
+            z: 10
+            color: "#bb263744"
+            opacity: root.fullscreenControlsVisible ? 1 : 0
+
+            Behavior on opacity {
+                NumberAnimation { duration: 180 }
+            }
+
+            Text {
+                anchors.centerIn: parent
+                text: "×"
+                color: "white"
+                font.pixelSize: units.gu(4)
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: root.closeFullscreenVideo()
+            }
+        }
+
+        // Playback controls and seek bar.
+        Rectangle {
+            id: fullscreenPlaybackControls
+
+            anchors {
+                left: parent.left
+                right: parent.right
+                bottom: parent.bottom
+                margins: units.gu(2)
+            }
+
+            height: units.gu(15)
+            radius: units.gu(1)
+            color: "#dd101820"
+            z: 5
+            opacity: root.fullscreenControlsVisible ? 1 : 0
+            visible: opacity > 0
+
+            Behavior on opacity {
+                NumberAnimation { duration: 180 }
+            }
+
+            Column {
+                anchors.fill: parent
+                anchors.margins: units.gu(1.5)
+                spacing: units.gu(1)
+
+                // Seek track.
+                Item {
+                    id: seekTrack
+
+                    width: parent.width
+                    height: units.gu(2)
+
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width
+                        height: units.gu(0.6)
+                        radius: height / 2
+                        color: "#657580"
+                    }
+
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: root.fullscreenVideoPlayer &&
+                               root.fullscreenVideoPlayer.duration > 0
+                               ? parent.width *
+                                 root.fullscreenVideoPlayer.position /
+                                 root.fullscreenVideoPlayer.duration
+                               : 0
+                        height: units.gu(0.6)
+                        radius: height / 2
+                        color: "#55b8e8"
+                    }
+
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        x: root.fullscreenVideoPlayer &&
+                           root.fullscreenVideoPlayer.duration > 0
+                           ? Math.max(0, Math.min(
+                               parent.width - width,
+                               parent.width *
+                               root.fullscreenVideoPlayer.position /
+                               root.fullscreenVideoPlayer.duration - width / 2
+                             ))
+                           : 0
+                        width: units.gu(2)
+                        height: units.gu(2)
+                        radius: width / 2
+                        color: "#ffffff"
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onPressed: {
+                            root.seekFullscreenVideo(mouse.x, width)
+                            root.revealFullscreenControls()
+                        }
+                        onPositionChanged: {
+                            if (pressed) {
+                                root.seekFullscreenVideo(mouse.x, width)
+                                root.revealFullscreenControls()
+                            }
+                        }
+                    }
+                }
+
+                Row {
+                    width: parent.width
+                    height: units.gu(7)
+                    spacing: units.gu(1)
+
+                    Rectangle {
+                        width: units.gu(7)
+                        height: units.gu(7)
+                        radius: width / 2
+                        color: "#ffffff"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: root.fullscreenVideoPlayer &&
+                                  root.fullscreenVideoPlayer.playbackState ===
+                                      MediaPlayer.PlayingState
+                                  ? "Ⅱ" : "▶"
+                            color: "#000000"
+                            font.pixelSize: units.gu(3)
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: {
+                                if (!root.fullscreenVideoPlayer)
+                                    return
+
+                                if (root.fullscreenVideoPlayer.playbackState ===
+                                    MediaPlayer.PlayingState) {
+                                    root.fullscreenVideoPlayer.pause()
+                                } else {
+                                    if (root.fullscreenVideoPlayer.status ===
+                                        MediaPlayer.EndOfMedia) {
+                                        root.fullscreenVideoPlayer.seek(0)
+                                    }
+
+                                    root.fullscreenVideoPlayer.play()
+                                }
+
+                                root.revealFullscreenControls()
+                            }
+                        }
+                    }
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.fullscreenVideoPlayer
+                              ? root.formatVideoTime(
+                                    root.fullscreenVideoPlayer.position
+                                ) + " / " +
+                                root.formatVideoTime(
+                                    root.fullscreenVideoPlayer.duration
+                                )
+                              : "0:00 / 0:00"
+                        color: "white"
+                        font.pixelSize: units.gu(1.8)
+                    }
+                }
+            }
+
+        }
+    }
+
+    RoomMedia {
+        id: roomMedia
+
+        anchors.fill: parent
+        z: 1000
+
+        backend: root.backend
+        roomId: root.roomId
+    }
+
 }

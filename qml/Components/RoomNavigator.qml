@@ -1,3 +1,4 @@
+
 import QtQuick 2.7
 import Lomiri.Components 1.3
 import QtGraphicalEffects 1.0
@@ -96,7 +97,41 @@ Item {
         return expandedSpaceIds.indexOf(spaceId) !== -1
     }
 
+    function findNavigationRow(roomId, rowType) {
+        for (var i = 0; i < navigationModel.count; i++) {
+            var row = navigationModel.get(i)
+
+            if (
+                String(row.roomId || "") === String(roomId) &&
+                row.rowType === rowType
+            ) {
+                return i
+            }
+        }
+
+        return -1
+    }
+
     function toggleSpace(spaceId) {
+        // Remember the first visible row and its offset before
+        // rebuilding the model.
+        var probeY = roomList.contentY + 2
+        var visibleIndex = roomList.indexAt(2, probeY)
+        var anchorRoomId = ""
+        var anchorRowType = ""
+        var anchorOffset = 0
+
+        if (visibleIndex >= 0) {
+            var visibleRow = navigationModel.get(visibleIndex)
+            var visibleItem = roomList.itemAt(2, probeY)
+
+            if (visibleRow && visibleItem) {
+                anchorRoomId = String(visibleRow.roomId || "")
+                anchorRowType = visibleRow.rowType
+                anchorOffset = visibleItem.y - roomList.contentY
+            }
+        }
+
         var updated = expandedSpaceIds.slice()
         var index = updated.indexOf(spaceId)
 
@@ -107,6 +142,34 @@ Item {
 
         expandedSpaceIds = updated
         rebuild()
+
+        // Restore the same row after the rebuilt model has laid out.
+        Qt.callLater(function() {
+            var targetIndex = findNavigationRow(
+                anchorRoomId,
+                anchorRowType
+            )
+
+            // The previous visible row may have disappeared because
+            // the Space containing it was collapsed.
+            if (targetIndex < 0)
+                targetIndex = findNavigationRow(spaceId, "space")
+
+            if (targetIndex < 0)
+                return
+
+            roomList.positionViewAtIndex(
+                targetIndex,
+                ListView.Beginning
+            )
+
+            // Apply the offset immediately to avoid a second
+            // visible repositioning on the next event-loop cycle.
+            roomList.contentY = Math.max(
+                0,
+                roomList.contentY - anchorOffset
+            )
+        })
     }
 
     function expandAllSpaces() {
@@ -174,7 +237,85 @@ Item {
                 )
             }
         }
+
+        refreshSpaceUnreadCounts()
     }
+
+    // =========================================================
+    // Cumulative Space unread counts
+    // =========================================================
+
+    // Calculate unread totals recursively for a Space.
+    // Each descendant room is counted only once per Space.
+
+    function collectSpaceUnreadCounts(spaceId, ancestors, countedRooms) {
+        if (ancestors.indexOf(spaceId) !== -1)
+            return { unreadCount: 0, mentionCount: 0 }
+
+        var nextAncestors = ancestors.slice()
+        nextAncestors.push(spaceId)
+
+        var totals = {
+            unreadCount: 0,
+            mentionCount: 0
+        }
+
+        for (var i = 0; i < root.roomsModel.count; i++) {
+            var child = root.roomsModel.get(i)
+
+            if (!hasParent(child, spaceId))
+                continue
+
+            if (child.kind === "space") {
+                var nested = collectSpaceUnreadCounts(
+                    child.roomId,
+                    nextAncestors,
+                    countedRooms
+                )
+
+                totals.unreadCount += nested.unreadCount
+                totals.mentionCount += nested.mentionCount
+
+            } else if (child.kind === "room") {
+                if (countedRooms.indexOf(child.roomId) !== -1)
+                    continue
+
+                countedRooms.push(child.roomId)
+
+                totals.unreadCount += Number(child.unreadCount || 0)
+                totals.mentionCount += Number(child.mentionCount || 0)
+            }
+        }
+
+        return totals
+    }
+
+    function spaceUnreadCounts(spaceId) {
+        return collectSpaceUnreadCounts(spaceId, [], [])
+    }
+
+    function refreshSpaceUnreadCounts() {
+        for (var i = 0; i < navigationModel.count; i++) {
+            var entry = navigationModel.get(i)
+
+            if (entry.rowType !== "space")
+                continue
+
+            var totals = spaceUnreadCounts(entry.roomId)
+
+            navigationModel.setProperty(
+                i, "unreadCount", totals.unreadCount
+            )
+
+            navigationModel.setProperty(
+                i, "mentionCount", totals.mentionCount
+            )
+        }
+    }
+
+    // =========================================================
+    // Append Space
+    // =========================================================
 
     function appendSpace(index, depth, ancestors) {
         var space = root.roomsModel.get(index)
@@ -182,6 +323,7 @@ Item {
 
         // Prevent infinite recursion if the Space graph contains
         // a cyclic relationship.
+
         if (ancestors.indexOf(spaceId) !== -1) {
             console.log(
                 "ASTRO: Ignoring cyclic Space relationship:",
@@ -192,6 +334,7 @@ Item {
         }
 
         var expanded = isExpanded(spaceId)
+        var unreadTotals = spaceUnreadCounts(spaceId)
 
         navigationModel.append({
             rowType: "space",
@@ -203,6 +346,8 @@ Item {
             avatarUrl: space.avatarUrl,
             colour: space.colour,
             kind: "space",
+            unreadCount: unreadTotals.unreadCount,
+            mentionCount: unreadTotals.mentionCount,
             depth: depth,
             expanded: expanded
         })
@@ -214,6 +359,7 @@ Item {
         nextAncestors.push(spaceId)
 
         // Add child Spaces and ordinary rooms.
+
         for (var i = 0; i < root.roomsModel.count; i++) {
             var child = root.roomsModel.get(i)
 
@@ -431,6 +577,7 @@ Item {
             id: entry
 
             // Explicit ListModel role access for Qt 5 compatibility.
+
             property string entryRowType: model.rowType || ""
             property string entryName: model.name || ""
             property string entryPreview: model.preview || ""
@@ -443,6 +590,7 @@ Item {
             property int entryMentionCount: Number(model.mentionCount || 0)
             property int entryDepth: model.depth === undefined ? 0 : model.depth
             property bool entryExpanded: model.expanded === true
+
             width: roomList.width
 
             property real avatarSize:
@@ -532,15 +680,20 @@ Item {
                     }
 
                     // -----------------------------------------
-                    // Room entryAvatar
+                    // Room avatar and unread badge
                     // -----------------------------------------
 
                     Rectangle {
+                        id: roomAvatar
+
                         width: avatarSize
                         height: avatarSize
 
                         radius: avatarSize / 2
-                        clip: true
+
+                        // Keep the badge visible outside the avatar.
+                        clip: false
+
                         color: entryColour
 
                         anchors.verticalCenter: parent.verticalCenter
@@ -563,7 +716,7 @@ Item {
                             onStatusChanged: {
                                 if (status === Image.Error) {
                                     console.log(
-                                        "ASTRO: Could not display room entryAvatar:",
+                                        "ASTRO: Could not display room avatar:",
                                         entryRoomId
                                     )
                                 }
@@ -604,10 +757,94 @@ Item {
                                   ? units.gu(2.5)
                                   : units.gu(2.2)
                         }
+
+                        // -------------------------------------
+                        // Unread count badge
+                        // -------------------------------------
+                        Rectangle {
+                            id: avatarUnreadBadge
+
+                            visible: entryUnreadCount > 0
+
+                            width: Math.max(
+                                units.gu(2.4),
+                                avatarUnreadBadgeText.implicitWidth + units.gu(1.1)
+                            )
+
+                            height: units.gu(2.4)
+                            radius: height / 2
+
+                            color: entryMentionCount > 0
+                                ? "#c94f58"
+                                : "#526d85"
+
+                            anchors {
+                                right: parent.right
+                                bottom: parent.bottom
+                                rightMargin: -units.gu(0.5)
+                                bottomMargin: -units.gu(0.5)
+                            }
+
+                            z: 10
+
+                            scale: 1.0
+
+                            SequentialAnimation {
+                                id: unreadPulse
+
+                                NumberAnimation {
+                                    target: avatarUnreadBadge
+                                    property: "scale"
+                                    to: 1.3
+                                    duration: 130
+                                    easing.type: Easing.OutQuad
+                                }
+
+                                NumberAnimation {
+                                    target: avatarUnreadBadge
+                                    property: "scale"
+                                    to: 0.9
+                                    duration: 100
+                                    easing.type: Easing.InOutQuad
+                                }
+
+                                NumberAnimation {
+                                    target: avatarUnreadBadge
+                                    property: "scale"
+                                    to: 1.0
+                                    duration: 130
+                                    easing.type: Easing.OutBack
+                                }
+                            }
+
+                            Connections {
+                                target: entry
+
+                                onEntryUnreadCountChanged: {
+                                    if (avatarUnreadBadge.visible)
+                                        unreadPulse.restart()
+                                }
+                            }
+
+                            Text {
+                                id: avatarUnreadBadgeText
+
+                                anchors.centerIn: parent
+
+                                text: entryUnreadCount > 99
+                                    ? "99+"
+                                    : String(entryUnreadCount)
+
+                                color: "white"
+                                font.bold: true
+                                font.pixelSize: units.gu(1.15)
+                            }
+                        }
+
                     }
 
                     // -----------------------------------------
-                    // Name and entryPreview
+                    // Name and preview
                     // -----------------------------------------
 
                     Column {
@@ -622,65 +859,21 @@ Item {
 
                         spacing: units.gu(0.5)
 
-                        Row {
+                        Text {
                             width: parent.width
-                            spacing: units.gu(0.5)
 
-                            Text {
-                                width: parent.width -
-                                       (unreadBadge.visible
-                                        ? unreadBadge.width + parent.spacing
-                                        : 0)
+                            text: entryName
+                            color: "white"
 
-                                text: entryName
-                                color: "white"
+                            font.bold: true
+                            font.pixelSize:
+                                entryDepth === 0
+                                ? units.gu(1.8)
+                                : entryRowType === "space"
+                                  ? units.gu(1.65)
+                                  : units.gu(1.5)
 
-                                font.bold: true
-                                font.pixelSize:
-                                    entryDepth === 0
-                                    ? units.gu(1.8)
-                                    : entryRowType === "space"
-                                      ? units.gu(1.65)
-                                      : units.gu(1.5)
-
-                                elide: Text.ElideRight
-                            }
-
-                            Rectangle {
-                                id: unreadBadge
-
-                                visible: entryUnreadCount > 0 &&
-                                         entryRowType !== "space" &&
-                                         entryKind !== "space"
-
-                                width: Math.max(
-                                    units.gu(2.4),
-                                    unreadBadgeText.implicitWidth +
-                                    units.gu(1.1)
-                                )
-                                height: units.gu(2.4)
-                                radius: height / 2
-
-                                color: entryMentionCount > 0
-                                       ? "#c94f58"
-                                       : "#526d85"
-
-                                anchors.verticalCenter: parent.verticalCenter
-
-                                Text {
-                                    id: unreadBadgeText
-
-                                    anchors.centerIn: parent
-
-                                    text: entryUnreadCount > 99
-                                          ? "99+"
-                                          : String(entryUnreadCount)
-
-                                    color: "white"
-                                    font.bold: true
-                                    font.pixelSize: units.gu(1.15)
-                                }
-                            }
+                            elide: Text.ElideRight
                         }
 
                         Text {

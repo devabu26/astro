@@ -7,6 +7,12 @@
 #include <QDir>
 #include <QStandardPaths>
 #include <QDebug>
+#include <QCryptographicHash>
+#include <QFileInfo>
+#include <QMimeDatabase>
+#include <QSaveFile>
+#include <QUrl>
+#include <limits>
 
 #include <climits>
 
@@ -150,6 +156,14 @@ void StorageWorker::openStorage(const QString &passphrase)
 
     m_matrixClient = client;
     m_matrixSessionActive = (result == 1);
+
+    // Start unread-count polling for restored Matrix sessions.
+    if (m_timelinePollTimer) {
+        if (m_matrixSessionActive)
+            m_timelinePollTimer->start();
+        else
+            m_timelinePollTimer->stop();
+    }
 
     emit storageOpened();
     emit sessionRestored(result == 1);
@@ -334,6 +348,10 @@ void StorageWorker::loginMatrix(
 
     m_matrixClient = client;
     m_matrixSessionActive = true;
+
+    // Start unread-count polling immediately after login.
+    if (m_timelinePollTimer)
+        m_timelinePollTimer->start();
 
     emit matrixLoginSucceeded();
 }
@@ -731,6 +749,109 @@ void StorageWorker::sendRoomMessage(
 }
 
 // =============================================================
+// Matrix device verification
+// =============================================================
+
+void StorageWorker::runVerificationAction(
+    const QString &userId,
+    const QString &flowId,
+    const QString &actionName,
+    VerificationAction action
+)
+{
+    if (!m_matrixClient) {
+        emit matrixVerificationActionFinished(
+            userId, flowId, actionName,
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    if (userId.isEmpty() || flowId.isEmpty()) {
+        emit matrixVerificationActionFinished(
+            userId, flowId, actionName,
+            QStringLiteral("User ID or verification flow ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray userIdBytes = userId.toUtf8();
+    const QByteArray flowIdBytes = flowId.toUtf8();
+
+    char *error = nullptr;
+
+    const int32_t result = action(
+        m_matrixClient,
+        userIdBytes.constData(),
+        flowIdBytes.constData(),
+        &error
+    );
+
+    QString errorMessage;
+
+    if (result != 1) {
+        errorMessage = error
+            ? QString::fromUtf8(error)
+            : QStringLiteral("Matrix verification action failed");
+    }
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    emit matrixVerificationActionFinished(
+        userId,
+        flowId,
+        actionName,
+        errorMessage
+    );
+}
+
+void StorageWorker::acceptVerificationRequest(
+    const QString &userId,
+    const QString &flowId
+)
+{
+    runVerificationAction(
+        userId, flowId, QStringLiteral("accept"),
+        astro_matrix_accept_verification_request
+    );
+}
+
+void StorageWorker::cancelVerificationRequest(
+    const QString &userId,
+    const QString &flowId
+)
+{
+    runVerificationAction(
+        userId, flowId, QStringLiteral("cancel"),
+        astro_matrix_cancel_verification_request
+    );
+}
+
+void StorageWorker::confirmVerification(
+    const QString &userId,
+    const QString &flowId
+)
+{
+    runVerificationAction(
+        userId, flowId, QStringLiteral("confirm"),
+        astro_matrix_confirm_verification
+    );
+}
+
+void StorageWorker::mismatchVerification(
+    const QString &userId,
+    const QString &flowId
+)
+{
+    runVerificationAction(
+        userId, flowId, QStringLiteral("mismatch"),
+        astro_matrix_mismatch_verification
+    );
+}
+
+// =============================================================
 // Matrix media and room avatar retrieval
 // =============================================================
 
@@ -859,3 +980,558 @@ void StorageWorker::fetchRoomAvatar(
 
     emit roomAvatarRetrieved(roomId, dataUrl);
 }
+
+void StorageWorker::fetchSenderAvatar(
+    const QString &requestKey,
+    const QString &mxcUri,
+    quint32 width,
+    quint32 height
+)
+{
+    if (!m_matrixClient) {
+        emit senderAvatarFailed(
+            requestKey,
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    if (requestKey.isEmpty() || mxcUri.isEmpty()) {
+        emit senderAvatarFailed(
+            requestKey,
+            QStringLiteral("Request key or avatar URI is empty")
+        );
+        return;
+    }
+
+    if (width == 0 || height == 0 ||
+        width > 1024 || height > 1024) {
+
+        emit senderAvatarFailed(
+            requestKey,
+            QStringLiteral("Invalid avatar dimensions")
+        );
+        return;
+    }
+
+    const QByteArray uriBytes = mxcUri.toUtf8();
+
+    uint8_t *data = nullptr;
+    uintptr_t len = 0;
+    char *error = nullptr;
+
+    // Download the thumbnail through the Rust Matrix SDK.
+    const int result = astro_matrix_thumbnail(
+        m_matrixClient,
+        uriBytes.constData(),
+        width,
+        height,
+        &data,
+        &len,
+        &error
+    );
+
+    if (result != 1) {
+        QString message =
+            QStringLiteral("Could not download sender avatar");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+            astro_string_free(error);
+        }
+
+        if (data) {
+            astro_media_bytes_free(data, len);
+        }
+
+        emit senderAvatarFailed(requestKey, message);
+        return;
+    }
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    // Protect against oversized buffers before converting to QByteArray.
+    if (len > static_cast<uintptr_t>(INT_MAX)) {
+        astro_media_bytes_free(data, len);
+
+        emit senderAvatarFailed(
+            requestKey,
+            QStringLiteral("Room avatar is too large")
+        );
+        return;
+    }
+
+    // Copy the Rust-owned bytes before freeing the Rust buffer.
+    const QByteArray encoded(
+        reinterpret_cast<const char *>(data),
+        static_cast<int>(len)
+    );
+
+    astro_media_bytes_free(data, len);
+
+    // Decode the downloaded image.
+    QImage image;
+
+    if (!image.loadFromData(encoded)) {
+        emit senderAvatarFailed(
+            requestKey,
+            QStringLiteral(
+                "Downloaded sender avatar has an unsupported image format"
+            )
+        );
+        return;
+    }
+
+    // Convert the image to PNG for Qt Quick.
+    QByteArray pngData;
+
+    QBuffer buffer(&pngData);
+
+    if (!buffer.open(QIODevice::WriteOnly) ||
+        !image.save(&buffer, "PNG")) {
+
+        emit senderAvatarFailed(
+            requestKey,
+            QStringLiteral("Could not convert sender avatar to PNG")
+        );
+        return;
+    }
+
+    // Send a data URL to QML.
+    const QString dataUrl =
+        QStringLiteral("data:image/png;base64,") +
+        QString::fromLatin1(pngData.toBase64());
+
+    emit senderAvatarRetrieved(requestKey, dataUrl);
+}
+
+void StorageWorker::fetchMessageImage(
+    const QString &requestKey,
+    const QString &mediaSourceJson
+)
+{
+    if (!m_matrixClient) {
+        emit messageImageFailed(
+            requestKey,
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    if (requestKey.isEmpty() || mediaSourceJson.isEmpty()) {
+        emit messageImageFailed(
+            requestKey,
+            QStringLiteral("Request key or media source is empty")
+        );
+        return;
+    }
+
+    const QByteArray sourceBytes = mediaSourceJson.toUtf8();
+
+    uint8_t *data = nullptr;
+    uintptr_t len = 0;
+    char *error = nullptr;
+
+    const int result = astro_matrix_image(
+        m_matrixClient,
+        sourceBytes.constData(),
+        &data,
+        &len,
+        &error
+    );
+
+    if (result != 1) {
+        QString message =
+            QStringLiteral("Could not download message image");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+            astro_string_free(error);
+        }
+
+        if (data) {
+            astro_media_bytes_free(data, len);
+        }
+
+        emit messageImageFailed(requestKey, message);
+        return;
+    }
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    if (!data || len == 0 ||
+        len > static_cast<uintptr_t>(INT_MAX)) {
+
+        if (data) {
+            astro_media_bytes_free(data, len);
+        }
+
+        emit messageImageFailed(
+            requestKey,
+            QStringLiteral("Downloaded image is empty or too large")
+        );
+        return;
+    }
+
+    const QByteArray encoded(
+        reinterpret_cast<const char *>(data),
+        static_cast<int>(len)
+    );
+
+    astro_media_bytes_free(data, len);
+
+    // Preserve animated GIF data instead of flattening it to PNG.
+    if (encoded.startsWith("GIF87a") ||
+        encoded.startsWith("GIF89a")) {
+        const QString dataUrl =
+            QStringLiteral("data:image/gif;base64,") +
+            QString::fromLatin1(encoded.toBase64());
+
+        emit messageImageRetrieved(requestKey, dataUrl);
+        return;
+    }
+
+    QImage image;
+
+    if (!image.loadFromData(encoded)) {
+        emit messageImageFailed(
+            requestKey,
+            QStringLiteral("Downloaded message image has an unsupported format")
+        );
+        return;
+    }
+
+    // Limit large images before passing them to Qt Quick.
+    if (image.width() > 1600 || image.height() > 1600) {
+        image = image.scaled(
+            QSize(1600, 1600),
+            Qt::KeepAspectRatio,
+            Qt::SmoothTransformation
+        );
+    }
+
+    QByteArray pngData;
+    QBuffer buffer(&pngData);
+
+    if (!buffer.open(QIODevice::WriteOnly) ||
+        !image.save(&buffer, "PNG")) {
+
+        emit messageImageFailed(
+            requestKey,
+            QStringLiteral("Could not convert message image to PNG")
+        );
+        return;
+    }
+
+    const QString dataUrl =
+        QStringLiteral("data:image/png;base64,") +
+        QString::fromLatin1(pngData.toBase64());
+
+    emit messageImageRetrieved(requestKey, dataUrl);
+}
+
+
+void StorageWorker::fetchMessageThumbnail(
+    const QString &requestKey,
+    const QString &mediaSourceJson,
+    quint32 width,
+    quint32 height
+)
+{
+    if (!m_matrixClient) {
+        emit messageThumbnailFailed(
+            requestKey,
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    if (requestKey.isEmpty() || mediaSourceJson.isEmpty()) {
+        emit messageThumbnailFailed(
+            requestKey,
+            QStringLiteral("Request key or media source is empty")
+        );
+        return;
+    }
+
+    if (width == 0 || height == 0 || width > 2048 || height > 2048) {
+        emit messageThumbnailFailed(
+            requestKey,
+            QStringLiteral("Thumbnail dimensions are invalid")
+        );
+        return;
+    }
+
+    const QByteArray sourceBytes = mediaSourceJson.toUtf8();
+
+    uint8_t *data = nullptr;
+    uintptr_t len = 0;
+    char *error = nullptr;
+
+    const int result = astro_matrix_media_thumbnail(
+        m_matrixClient,
+        sourceBytes.constData(),
+        width,
+        height,
+        &data,
+        &len,
+        &error
+    );
+
+    if (result != 1) {
+        QString message =
+            QStringLiteral("Could not download video thumbnail");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+            astro_string_free(error);
+        }
+
+        if (data) {
+            astro_media_bytes_free(data, len);
+        }
+
+        emit messageThumbnailFailed(requestKey, message);
+        return;
+    }
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    if (!data || len == 0 ||
+        len > static_cast<uintptr_t>(INT_MAX)) {
+
+        if (data) {
+            astro_media_bytes_free(data, len);
+        }
+
+        emit messageThumbnailFailed(
+            requestKey,
+            QStringLiteral("Downloaded thumbnail is empty or too large")
+        );
+        return;
+    }
+
+    const QByteArray encoded(
+        reinterpret_cast<const char *>(data),
+        static_cast<int>(len)
+    );
+
+    astro_media_bytes_free(data, len);
+
+    QImage image;
+
+    if (!image.loadFromData(encoded)) {
+        emit messageThumbnailFailed(
+            requestKey,
+            QStringLiteral("Downloaded video thumbnail has an unsupported format")
+        );
+        return;
+    }
+
+    if (image.width() > 1024 || image.height() > 1024) {
+        image = image.scaled(
+            QSize(1024, 1024),
+            Qt::KeepAspectRatio,
+            Qt::SmoothTransformation
+        );
+    }
+
+    QByteArray pngData;
+    QBuffer buffer(&pngData);
+
+    if (!buffer.open(QIODevice::WriteOnly) ||
+        !image.save(&buffer, "PNG")) {
+        emit messageThumbnailFailed(
+            requestKey,
+            QStringLiteral("Could not encode video thumbnail")
+        );
+        return;
+    }
+
+    const QString dataUrl =
+        QStringLiteral("data:image/png;base64,") +
+        QString::fromLatin1(pngData.toBase64());
+
+    emit messageThumbnailRetrieved(requestKey, dataUrl);
+}
+
+
+void StorageWorker::fetchMessageVideo(
+    const QString &requestKey,
+    const QString &mediaSourceJson,
+    const QString &mimeType
+)
+{
+    if (!m_matrixClient) {
+        emit messageVideoFailed(
+            requestKey,
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    if (requestKey.isEmpty() || mediaSourceJson.isEmpty()) {
+        emit messageVideoFailed(
+            requestKey,
+            QStringLiteral("Request key or media source is empty")
+        );
+        return;
+    }
+
+    const QString dataPath =
+        QStandardPaths::writableLocation(
+            QStandardPaths::AppDataLocation
+        );
+
+    if (dataPath.isEmpty()) {
+        emit messageVideoFailed(
+            requestKey,
+            QStringLiteral("Could not determine the application data directory")
+        );
+        return;
+    }
+
+    QDir directory;
+    const QString cachePath =
+        directory.filePath(dataPath + QStringLiteral("/video-cache"));
+
+    if (!directory.mkpath(cachePath)) {
+        emit messageVideoFailed(
+            requestKey,
+            QStringLiteral("Could not create the video cache directory")
+        );
+        return;
+    }
+
+    QMimeDatabase mimeDatabase;
+    QString suffix =
+        mimeDatabase.mimeTypeForName(mimeType).preferredSuffix();
+
+    if (suffix.isEmpty() || suffix == QStringLiteral("bin")) {
+        suffix = QStringLiteral("mp4");
+    }
+
+    const QByteArray keyHash =
+        QCryptographicHash::hash(
+            requestKey.toUtf8(),
+            QCryptographicHash::Sha256
+        ).toHex();
+
+    const QString filePath =
+        QDir(cachePath).filePath(
+            QString::fromLatin1(keyHash) +
+            QStringLiteral(".") + suffix
+        );
+
+    const QFileInfo cachedFile(filePath);
+
+    if (cachedFile.exists() && cachedFile.size() > 0) {
+        emit messageVideoRetrieved(
+            requestKey,
+            QUrl::fromLocalFile(filePath).toString()
+        );
+        return;
+    }
+
+    const QByteArray sourceBytes = mediaSourceJson.toUtf8();
+
+    uint8_t *data = nullptr;
+    uintptr_t len = 0;
+    char *error = nullptr;
+
+    const int result = astro_matrix_video(
+        m_matrixClient,
+        sourceBytes.constData(),
+        &data,
+        &len,
+        &error
+    );
+
+    if (result != 1) {
+        QString message =
+            QStringLiteral("Could not download message video");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+            astro_string_free(error);
+        }
+
+        if (data) {
+            astro_media_bytes_free(data, len);
+        }
+
+        emit messageVideoFailed(requestKey, message);
+        return;
+    }
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    if (!data || len == 0 ||
+        len > static_cast<uintptr_t>(
+            std::numeric_limits<qint64>::max()
+        )) {
+
+        if (data) {
+            astro_media_bytes_free(data, len);
+        }
+
+        emit messageVideoFailed(
+            requestKey,
+            QStringLiteral("Downloaded video is empty or too large")
+        );
+        return;
+    }
+
+    QSaveFile output(filePath);
+
+    if (!output.open(QIODevice::WriteOnly)) {
+        astro_media_bytes_free(data, len);
+
+        emit messageVideoFailed(
+            requestKey,
+            QStringLiteral("Could not open video cache file: ") +
+            output.errorString()
+        );
+        return;
+    }
+
+    const qint64 written = output.write(
+        reinterpret_cast<const char *>(data),
+        static_cast<qint64>(len)
+    );
+
+    astro_media_bytes_free(data, len);
+
+    if (written != static_cast<qint64>(len)) {
+        output.cancelWriting();
+
+        emit messageVideoFailed(
+            requestKey,
+            QStringLiteral("Could not write the complete video to cache")
+        );
+        return;
+    }
+
+    if (!output.commit()) {
+        emit messageVideoFailed(
+            requestKey,
+            QStringLiteral("Could not save cached video: ") +
+            output.errorString()
+        );
+        return;
+    }
+
+    emit messageVideoRetrieved(
+        requestKey,
+        QUrl::fromLocalFile(filePath).toString()
+    );
+}
+
