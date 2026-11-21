@@ -87,15 +87,29 @@ add_custom_target(${PROJECT_NAME}_FILES ALL SOURCES ${PROJECT_SRC_FILES})
 # Astro C++ QML backend
 find_package(Qt5 5.12 REQUIRED COMPONENTS Core Gui Qml DBus)
 add_library(AstroBackend MODULE
-    backend/Backend.cpp
-    backend/Backend.h
+    backend/QMLBackend/Backend.cpp
+    backend/QMLBackend/BackendConnections.cpp
+    backend/QMLBackend/BackendSecretService.cpp
+    backend/QMLBackend/BackendStorage.cpp
+    backend/QMLBackend/BackendMatrix.cpp
+    backend/QMLBackend/BackendMedia.cpp
+    backend/QMLBackend/Backend.h
     backend/notifications/NotificationManager.cpp
     backend/notifications/NotificationManager.h
-    backend/StorageWorker.cpp
-    backend/StorageWorker.h
+    backend/StorageWorker/StorageWorker.cpp
+    backend/StorageWorker/StorageWorker.h
+    backend/StorageWorker/StorageWorkerNotifications.cpp
+    backend/StorageWorker/StorageWorkerMatrix.cpp
+    backend/StorageWorker/StorageWorkerDevices.cpp
+    backend/StorageWorker/StorageWorkerMedia.cpp
     backend/astro_core_ffi.h
     backend/plugin.cpp
     backend/plugin.h
+)
+
+target_include_directories(AstroBackend PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/backend
+    ${CMAKE_CURRENT_SOURCE_DIR}/backend/QMLBackend
 )
 
 target_link_libraries(AstroBackend

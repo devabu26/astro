@@ -273,11 +273,20 @@ Item {
                 console.log("Astro: Content Hub state:", transfer.state)
 
                 if (transfer.state === ContentTransfer.InProgress) {
-                    console.log("Astro: Transfer is InProgress; charging file")
+                    console.log("Astro: Transfer direction:", transfer.direction)
+                    console.log("Astro: Transfer source:", transfer.source)
+                    console.log("Astro: Transfer destination:", transfer.destination)
+                    console.log("Astro: Transfer store:", transfer.store)
+                    console.log("Astro: Pending export URL:", root.pendingExportUrl)
 
                     var item = exportContentItemComponent.createObject(root, {
                         "url": root.pendingExportUrl
                     })
+
+                    if (item) {
+                        console.log("Astro: ContentItem URL:", item.url)
+                        console.log("Astro: ContentItem name:", item.name)
+                    }
 
                     if (!item) {
                         root.exportStatus = "Could not prepare the file"
@@ -286,6 +295,14 @@ Item {
                     }
 
                     transfer.items = [item]
+
+                    console.log("Astro: Transfer item count:", transfer.items.length)
+                    if (transfer.items.length > 0) {
+                        console.log("Astro: Transfer item URL:", transfer.items[0].url)
+                        console.log("Astro: Transfer item name:", transfer.items[0].name)
+                    }
+
+                    console.log("Astro: Charging transfer")
                     transfer.state = ContentTransfer.Charged
 
                     root.exportStatus = "Sending file to Files…"
@@ -293,14 +310,9 @@ Item {
                 }
                 else if (transfer.state === ContentTransfer.Collected) {
                     console.log("Astro: Content Hub transfer collected")
+                    console.log("Astro: Waiting for Files to finish handling the file")
 
-                    transfer.finalize()
-
-                    root.activeTransfer = null
-                    root.exporting = false
-                    root.pendingExportUrl = ""
-                    root.exportStatus = "Image exported successfully"
-                    root.destinationPickerOpen = false
+                    root.exportStatus = "Waiting for Files to finish saving…"
                 }
                 else if (transfer.state === ContentTransfer.Aborted) {
                     console.warn("Astro: Content Hub transfer aborted")

@@ -7,6 +7,128 @@ import "Components/Rooms"
 Item {
     id: root
 
+    // RoomView owns the single video player and video output.
+    property string activeVideoKey: ""
+    property var activeVideoOwner: null
+    property var activeVideoOutputHost: null
+
+    // The active player is replaced for each different video.
+    // The VideoOutput itself remains persistent.
+    property var roomSharedVideoPlayer: null
+
+    Component {
+        id: sharedVideoPlayerComponent
+
+        MediaPlayer {
+            autoPlay: false
+
+            onPlaybackStateChanged: {
+                console.log(
+                    "[AstroVideoDiag] playbackState changed:",
+                    playbackState,
+                    "status:", status,
+                    "source:", source
+                )
+            }
+
+            onStatusChanged: {
+                console.log(
+                    "[AstroVideoDiag] status changed:",
+                    status,
+                    "playbackState:", playbackState,
+                    "source:", source
+                )
+
+                console.log(
+                    "[AstroVideoDiag] output orientation:",
+                    roomSharedVideoOutputItem.orientation,
+                    "autoOrientation:",
+                    roomSharedVideoOutputItem.autoOrientation
+                )
+            }
+        }
+    }
+
+    // Keep one renderer alive for the lifetime of RoomView.
+    property var roomSharedVideoOutput: roomSharedVideoOutputItem
+
+    Component.onCompleted: {
+        if (!root.replaceSharedVideoPlayer())
+            console.error("[AstroVideo] Initial MediaPlayer creation failed")
+    }
+
+
+    property string pendingSharedVideoKey: ""
+    property string pendingSharedVideoUrl: ""
+    property var pendingSharedVideoHost: null
+    property var pendingSharedVideoOwner: null
+
+    VideoOutput {
+        id: roomSharedVideoOutputItem
+
+        anchors.fill: parent
+        source: null
+        fillMode: VideoOutput.PreserveAspectFit
+        visible: false
+        z: 0
+    }
+
+    Timer {
+        id: sharedVideoOutputRecreateTimer
+
+        interval: 0
+        repeat: false
+
+        onTriggered: {
+            var requestKey = root.pendingSharedVideoKey
+            var fileUrl = root.pendingSharedVideoUrl
+            var outputHost = root.pendingSharedVideoHost
+            var owner = root.pendingSharedVideoOwner
+
+            root.pendingSharedVideoKey = ""
+            root.pendingSharedVideoUrl = ""
+            root.pendingSharedVideoHost = null
+            root.pendingSharedVideoOwner = null
+
+            if (!requestKey || !fileUrl || !outputHost || !owner)
+                return
+
+            if (root.activeVideoKey !== requestKey ||
+                    root.activeVideoOwner !== owner)
+                return
+
+            // Reuse the persistent renderer instead of recreating
+            // the VideoOutput and its underlying graphics surface.
+            var output = root.roomSharedVideoOutput
+
+            if (!output) {
+                console.error("[AstroVideo] Shared VideoOutput is unavailable")
+                root.activeVideoKey = ""
+                root.activeVideoOwner = null
+                root.activeVideoOutputHost = null
+                return
+            }
+
+            output.parent = outputHost
+            output.visible = true
+            root.activeVideoOutputHost = outputHost
+
+            var player = root.replaceSharedVideoPlayer()
+
+            if (!player) {
+                console.error("[AstroVideo] Could not create replacement player")
+                root.activeVideoKey = ""
+                root.activeVideoOwner = null
+                root.activeVideoOutputHost = null
+                return
+            }
+
+            player.source = fileUrl
+            player.play()
+        }
+    }
+
+
     property var backend
 
     property string openMessageActionsId: ""
@@ -66,7 +188,8 @@ Item {
         root.reactionPickerVisible = false
         root.reactionPickerEventId = ""
 
-        messageModel.clear()
+        root.stopSharedVideo()
+      messageModel.clear()
         messageList.contentY = 0
 
         // Prepare the initial timeline response path.
@@ -223,8 +346,166 @@ Item {
         )
     }
 
-    function openFullscreenVideo(output, originalParent, mediaPlayer) {
-        if (!output || !originalParent)
+    function replaceSharedVideoPlayer() {
+        var oldPlayer = root.roomSharedVideoPlayer
+        var output = root.roomSharedVideoOutput
+
+        var newPlayer = sharedVideoPlayerComponent.createObject(root)
+
+        if (!newPlayer)
+            return null
+
+        // Reconnect the persistent renderer to the fresh decoder.
+        root.roomSharedVideoPlayer = newPlayer
+
+        if (output)
+            output.source = newPlayer
+
+        // Retain the old source until its player is destroyed.
+        if (oldPlayer) {
+            oldPlayer.stop()
+            oldPlayer.destroy()
+        }
+
+        console.log("[AstroVideoDiag] Created fresh MediaPlayer")
+
+        return newPlayer
+    }
+
+    function playMessageVideo(requestKey, fileUrl, outputHost, owner) {
+        if (!requestKey || !fileUrl || !outputHost || !owner)
+            return
+
+        if (root.fullscreenVideoOutput)
+            root.closeFullscreenVideo()
+
+        var sameVideo = root.activeVideoKey === requestKey &&
+                        root.activeVideoOwner === owner
+
+        // Resuming the same video does not require a new renderer.
+        if (sameVideo &&
+                root.roomSharedVideoOutput &&
+                root.roomSharedVideoPlayer.source.toString() === fileUrl) {
+            root.roomSharedVideoOutput.parent = outputHost
+            root.roomSharedVideoOutput.visible = true
+            root.activeVideoOutputHost = outputHost
+
+            if (root.roomSharedVideoPlayer.status === MediaPlayer.EndOfMedia)
+                root.roomSharedVideoPlayer.seek(0)
+
+            root.roomSharedVideoPlayer.play()
+            return
+        }
+
+        // Cancel any pending renderer creation before switching again.
+        sharedVideoOutputRecreateTimer.stop()
+
+        // Changing the source in the recreation timer replaces the
+        // previous media. Do not call stop() here: the Ubuntu Touch
+        // media backend can reset its URI when stop() is called.
+
+        // Keep the renderer alive while the deferred request is prepared.
+        // The timer moves this same output into the new message host.
+        if (root.roomSharedVideoOutput) {
+            root.roomSharedVideoOutput.parent = root
+            root.roomSharedVideoOutput.visible = false
+        }
+
+        root.activeVideoKey = requestKey
+        root.activeVideoOwner = owner
+        root.activeVideoOutputHost = outputHost
+
+        root.pendingSharedVideoKey = requestKey
+        root.pendingSharedVideoUrl = fileUrl
+        root.pendingSharedVideoHost = outputHost
+        root.pendingSharedVideoOwner = owner
+
+        sharedVideoOutputRecreateTimer.start()
+    }
+
+    function releaseMessageVideo(requestKey, outputHost, owner) {
+        if (root.activeVideoKey !== requestKey ||
+                root.activeVideoOwner !== owner)
+            return
+
+        if (root.fullscreenVideoOutput)
+            root.closeFullscreenVideo()
+
+        sharedVideoOutputRecreateTimer.stop()
+
+        root.pendingSharedVideoKey = ""
+        root.pendingSharedVideoUrl = ""
+        root.pendingSharedVideoHost = null
+        root.pendingSharedVideoOwner = null
+
+        root.roomSharedVideoPlayer.stop()
+
+
+        // Retain the VideoOutput; only detach and hide it when idle.
+        if (root.roomSharedVideoOutput) {
+            root.roomSharedVideoOutput.parent = root
+            root.roomSharedVideoOutput.visible = false
+        }
+
+        root.activeVideoKey = ""
+        root.activeVideoOwner = null
+        root.activeVideoOutputHost = null
+    }
+
+    function stopSharedVideo() {
+        console.log(
+            "[AstroVideoDiag] stopSharedVideo ENTER",
+            "visible:", root.visible,
+            "activeKey:", root.activeVideoKey,
+            "playbackState:", root.roomSharedVideoPlayer.playbackState,
+            "status:", root.roomSharedVideoPlayer.status,
+            "source:", root.roomSharedVideoPlayer.source
+        )
+
+        if (root.fullscreenVideoOutput)
+            root.closeFullscreenVideo()
+
+        sharedVideoOutputRecreateTimer.stop()
+
+        root.pendingSharedVideoKey = ""
+        root.pendingSharedVideoUrl = ""
+        root.pendingSharedVideoHost = null
+        root.pendingSharedVideoOwner = null
+
+        root.roomSharedVideoPlayer.stop()
+        console.log(
+            "[AstroVideoDiag] player.stop() returned",
+            "playbackState:", root.roomSharedVideoPlayer.playbackState,
+            "status:", root.roomSharedVideoPlayer.status
+        )
+
+
+
+        console.log(
+            "[AstroVideoDiag] source retained after stop",
+            "playbackState:", root.roomSharedVideoPlayer.playbackState,
+            "status:", root.roomSharedVideoPlayer.status,
+            "source:", root.roomSharedVideoPlayer.source
+        )
+
+        // Retain the VideoOutput; only detach and hide it when idle.
+        if (root.roomSharedVideoOutput) {
+            root.roomSharedVideoOutput.parent = root
+            root.roomSharedVideoOutput.visible = false
+        }
+
+        root.activeVideoKey = ""
+        root.activeVideoOwner = null
+        root.activeVideoOutputHost = null
+    }
+
+    function openFullscreenVideo(
+        output,
+        originalParent,
+        mediaPlayer,
+        downloadItem
+    ) {
+        if (!output || !originalParent || !mediaPlayer)
             return
 
         if (root.fullscreenVideoOutput)
@@ -233,11 +514,9 @@ Item {
         root.fullscreenVideoOutput = output
         root.fullscreenVideoOriginalParent = originalParent
         root.fullscreenVideoPlayer = mediaPlayer
-        root.fullscreenVideoDownloadItem =
-            originalParent.parent &&
-            typeof originalParent.parent.exportVideo === "function"
-            ? originalParent.parent : null
+        root.fullscreenVideoDownloadItem = downloadItem
         root.fullscreenControlsVisible = true
+
         fullscreenControlsTimer.restart()
 
         output.parent = fullscreenVideoOverlay
@@ -568,13 +847,26 @@ Item {
     // Room switching
     // =====================================
 
+    onVisibleChanged: {
+        console.log(
+            "[AstroVideoDiag] RoomView visible changed:",
+            visible,
+            "activeKey:", root.activeVideoKey,
+            "playbackState:", root.roomSharedVideoPlayer.playbackState
+        )
+
+        if (!visible)
+            root.stopSharedVideo()
+    }
+
     onRoomIdChanged: {
         root.roomMenuVisible = false
         root.timelineLoadError = ""
         root.selectedMessageEventId = ""
         bottomScrollAnimation.stop()
 
-        messageModel.clear()
+        root.stopSharedVideo()
+      messageModel.clear()
         messageComposer.clearInput()
         messageComposer.sending = false
 
@@ -624,7 +916,8 @@ Item {
                 var messages = result.messages || []
 
                 root.timelineLoadError = ""
-                messageModel.clear()
+                root.stopSharedVideo()
+      messageModel.clear()
 
                 root.hasMoreHistory =
                     result.reached_start !== true
@@ -1154,10 +1447,6 @@ Item {
             // that the message was sent.
             messageComposer.clearInput()
 
-            // Reload the timeline so the confirmed event is
-            // displayed using the normal timeline renderer.
-            root.pendingInitialScroll = true
-            root.backend.requestRoomTimeline(root.roomId)
         }
     }
 
@@ -1271,7 +1560,16 @@ Item {
                             anchors.fill: parent
 
                             onClicked: {
+                                console.log(
+                                    "[AstroVideoDiag] Back button clicked",
+                                    "visible:", root.visible,
+                                    "activeKey:", root.activeVideoKey,
+                                    "playbackState:",
+                                    root.roomSharedVideoPlayer.playbackState
+                                )
+
                                 messageComposer.dismissKeyboard()
+                                root.stopSharedVideo()
                                 root.backRequested()
                             }
                         }
@@ -1698,13 +1996,34 @@ Item {
                                             videoMediaSourceJson: model.mediaSourceJson
                                             videoThumbnailUrl: model.videoThumbnailUrl
                                             videoMimeType: model.mediaMimetype
-                                            fullscreenHost: root
+                                            fullscreenHost: fullscreenVideoOverlay
+                                            sharedVideoPlayer: root.roomSharedVideoPlayer
+                                            sharedVideoOutput: roomSharedVideoOutput
+                                            sharedPlaybackKey: root.activeVideoKey
+
+                                            onVideoPlaybackRequested: {
+                                                root.playMessageVideo(
+                                                    requestKey,
+                                                    fileUrl,
+                                                    outputHost,
+                                                    owner
+                                                )
+                                            }
+
+                                            onVideoPlaybackReleased: {
+                                                root.releaseMessageVideo(
+                                                    requestKey,
+                                                    outputHost,
+                                                    owner
+                                                )
+                                            }
 
                                             onVideoFullscreenRequested: {
                                                 root.openFullscreenVideo(
                                                     output,
                                                     originalParent,
-                                                    mediaPlayer
+                                                    mediaPlayer,
+                                                    downloadItem
                                                 )
                                             }
                                             onImageClicked: {
@@ -1889,12 +2208,22 @@ Item {
             onDoubleClicked: root.closeFullscreenVideo()
 
             onClicked: {
-                if (root.fullscreenControlsVisible) {
-                    root.fullscreenControlsVisible = false
-                    fullscreenControlsTimer.stop()
+                if (!root.fullscreenVideoPlayer)
+                    return
+
+                if (root.fullscreenVideoPlayer.playbackState ===
+                        MediaPlayer.PlayingState) {
+                    root.fullscreenVideoPlayer.pause()
                 } else {
-                    root.revealFullscreenControls()
+                    if (root.fullscreenVideoPlayer.status ===
+                            MediaPlayer.EndOfMedia) {
+                        root.fullscreenVideoPlayer.seek(0)
+                    }
+
+                    root.fullscreenVideoPlayer.play()
                 }
+
+                root.revealFullscreenControls()
             }
         }
 

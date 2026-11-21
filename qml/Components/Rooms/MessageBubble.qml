@@ -6,7 +6,7 @@ Item {
     id: root
 
     signal imageClicked(string imageUrl)
-    signal videoFullscreenRequested(var output, var originalParent, var mediaPlayer)
+    signal videoFullscreenRequested(var output, var originalParent, var mediaPlayer,var downloadItem)
     signal pasteRequested()
     signal selectionRequested(string selectionId)
     signal selectionCleared(string selectionId)
@@ -16,6 +16,17 @@ Item {
     signal reactionPickerRequested(string eventId, real anchorX, real anchorY)
     signal messageActionTrayToggled(string selectionId, bool visible)
     signal messageActionRequested(string eventId, string action)
+    signal videoPlaybackRequested(
+        string requestKey,
+        string fileUrl,
+        var outputHost,
+        var owner
+    )
+    signal videoPlaybackReleased(
+        string requestKey,
+        var outputHost,
+        var owner
+    )
 
     property string sender: ""
     property string senderDisplayName: ""
@@ -36,6 +47,9 @@ Item {
     property string videoMediaSourceJson: ""
     property string videoThumbnailUrl: ""
     property string videoMimeType: ""
+    property var sharedVideoPlayer: null
+    property var sharedVideoOutput: null
+    property string sharedPlaybackKey: ""
 
     property bool isOwn: false
     property bool isEncrypted: false
@@ -379,29 +393,51 @@ Item {
                     visible: root.isVideo
 
                     sourceComponent: Component {
-                        MessageVideo {
-                            width: parent.width
-                            height: units.gu(25)
+                    MessageVideo {
+                        width: parent.width
+                        height: units.gu(25)
 
-                            backend: root.backend
-                            requestKey: root.videoRequestKey
-                            mediaSourceJson: root.videoMediaSourceJson
-                            thumbnailUrl: root.videoThumbnailUrl
-                            mimeType: root.videoMimeType
-                            fullscreenHost: root.fullscreenHost
+                        backend: root.backend
+                        requestKey: root.videoRequestKey
+                        mediaSourceJson: root.videoMediaSourceJson
+                        thumbnailUrl: root.videoThumbnailUrl
+                        mimeType: root.videoMimeType
+                        fullscreenHost: root.fullscreenHost
 
-                            onSwipeStarted: root.beginMediaSwipe()
-                            onSwipeMoved: root.updateMediaSwipe(dx, dy)
-                            onSwipeEnded: root.finishMediaSwipe(cancelled)
+                        sharedPlayer: root.sharedVideoPlayer
+                        sharedVideoOutput: root.sharedVideoOutput
+                        sharedPlaybackKey: root.sharedPlaybackKey
 
-                            onFullscreenRequested: {
-                                root.videoFullscreenRequested(
-                                    output,
-                                    originalParent,
-                                    mediaPlayer
-                                )
-                            }
+                        onSwipeStarted: root.beginMediaSwipe()
+                        onSwipeMoved: root.updateMediaSwipe(dx, dy)
+                        onSwipeEnded: root.finishMediaSwipe(cancelled)
+
+                        onPlaybackRequested: {
+                            root.videoPlaybackRequested(
+                                requestKey,
+                                fileUrl,
+                                outputHost,
+                                owner
+                            )
                         }
+
+                        onPlaybackReleased: {
+                            root.videoPlaybackReleased(
+                                requestKey,
+                                outputHost,
+                                owner
+                            )
+                        }
+
+                        onFullscreenRequested: {
+                            root.videoFullscreenRequested(
+                                output,
+                                originalParent,
+                                mediaPlayer,
+                                downloadItem
+                            )
+                        }
+                    }
                     }
                 }
 

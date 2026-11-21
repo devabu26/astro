@@ -69,31 +69,16 @@ Column {
         wrapMode: Text.WordWrap
         visible: root.loading || root.errorMessage !== ""
     }
-    Flickable {
-        id: documentViewport
+    Text {
+        id: documentContent
 
         width: parent.width
-        height: units.gu(55)
 
-        clip: true
-        interactive: true
-        flickableDirection: Flickable.VerticalFlick
-        boundsBehavior: Flickable.StopAtBounds
-
-        contentWidth: width
-        contentHeight: Math.max(documentContent.implicitHeight, height)
-
-        Text {
-            id: documentContent
-
-            width: documentViewport.width
-
-            text: root.documentText
-            color: "#dce4eb"
-            font.family: "monospace"
-            font.pixelSize: units.gu(1.45)
-            wrapMode: Text.Wrap
-            textFormat: Text.PlainText
-        }
+        text: root.documentText
+        color: "#dce4eb"
+        font.family: "monospace"
+        font.pixelSize: units.gu(1.45)
+        wrapMode: Text.Wrap
+        textFormat: Text.PlainText
     }
 }

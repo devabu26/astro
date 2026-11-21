@@ -1,12 +1,24 @@
+
 #pragma once
 
 #include <QObject>
 #include <QString>
 #include <QByteArray>
 #include <QTimer>
+#include <cstdint>
 
-#include "astro_core_ffi.h"
+#include "../astro_core_ffi.h"
 
+/*
+ * Background worker responsible for encrypted storage, Matrix operations,
+ * device management, timeline updates and media retrieval.
+ *
+ * Backend owns this object and moves it to a dedicated QThread.
+ * Operations should therefore be dispatched through queued connections
+ * rather than called directly from the QML/UI thread.
+ *
+ * The Rust Matrix client is managed by this class through the FFI.
+ */
 class StorageWorker : public QObject
 {
     Q_OBJECT
@@ -23,7 +35,11 @@ public slots:
 
     void openStorage(const QString &passphrase);
     void closeStorage();
+
+    // The implementation must validate the deletion target before
+    // performing recursive filesystem operations.
     void deleteAllData(const QString &path);
+
 
     // ---------------------------------------------------------
     // Matrix account operations
@@ -36,40 +52,73 @@ public slots:
     );
 
     void logoutMatrix();
+
     void setPushToken(const QString &token);
     void setPushPrivacyLevel(const QString &privacyLevel);
     void setPushNotificationsEnabled(bool enabled);
 
+
     // ---------------------------------------------------------
-    // Matrix room and Space retrieval
+    // Matrix devices, rooms and timelines
     // ---------------------------------------------------------
 
     void fetchMatrixDevices();
     void requestDeviceVerification(const QString &deviceId);
-    void renameMatrixDevice(const QString &deviceId, const QString &displayName);
+    void renameMatrixDevice(
+        const QString &deviceId,
+        const QString &displayName
+    );
     void checkMatrixDeviceManagementUrl(const QString &deviceId);
-    void revokeMatrixDevice(const QString &deviceId, const QString &password);
+    void revokeMatrixDevice(
+        const QString &deviceId,
+        const QString &password
+    );
+
     void fetchMatrixRooms();
     void syncMatrixRooms();
+
     void fetchRoomTimeline(const QString &roomId);
     void refreshRoomTimeline(const QString &roomId);
     void paginateRoomTimeline(const QString &roomId);
     void markRoomAsRead(const QString &roomId);
     void sendRoomMessage(const QString &roomId, const QString &message);
+
     void toggleRoomReaction(
         const QString &roomId,
         const QString &eventId,
         const QString &reactionKey
     );
 
-    // Matrix device verification actions.
-    void acceptVerificationRequest(const QString &userId, const QString &flowId);
-    void cancelVerificationRequest(const QString &userId, const QString &flowId);
-    void confirmVerification(const QString &userId, const QString &flowId);
-    void mismatchVerification(const QString &userId, const QString &flowId);
 
-    // Poll retained Matrix timeline subscriptions.
+    // ---------------------------------------------------------
+    // Matrix end-to-end device verification
+    // ---------------------------------------------------------
+
+    void acceptVerificationRequest(
+        const QString &userId,
+        const QString &flowId
+    );
+
+    void cancelVerificationRequest(
+        const QString &userId,
+        const QString &flowId
+    );
+
+    void confirmVerification(
+        const QString &userId,
+        const QString &flowId
+    );
+
+    void mismatchVerification(
+        const QString &userId,
+        const QString &flowId
+    );
+
+
+    // Called by the worker-thread timer to process retained
+    // Matrix timeline subscriptions.
     void pollRoomTimelineUpdates();
+
 
     // ---------------------------------------------------------
     // Matrix media and avatar retrieval
@@ -114,16 +163,18 @@ public slots:
         const QString &mimeType
     );
 
+
 signals:
 
     // ---------------------------------------------------------
-    // Encrypted storage signals
+    // Encrypted storage results
     // ---------------------------------------------------------
 
     void storageOpened();
     void storageClosed();
     void storageFailed(const QString &error);
     void sessionRestored(bool restored);
+
     void dataDeletionFinished(
         bool deleted,
         bool storageWasUnlocked,
@@ -133,18 +184,26 @@ signals:
         const QString &deletionError
     );
 
+
     // ---------------------------------------------------------
-    // Matrix account signals
+    // Matrix account results
     // ---------------------------------------------------------
 
     void matrixLoginSucceeded();
     void matrixLogoutSucceeded();
 
+
     // ---------------------------------------------------------
-    // Matrix room and Space signals
+    // Matrix device and room results
     // ---------------------------------------------------------
 
     void matrixDevicesUpdated(const QString &json, const QString &error);
+
+    /*
+     * finished distinguishes the cached room response from the
+     * completed homeserver synchronisation response.
+     * Backend relies on this cached-first loading sequence.
+     */
     void matrixRoomsUpdated(const QString &json, bool finished);
     void matrixRoomsFailed(const QString &error);
 
@@ -174,7 +233,8 @@ signals:
         const QString &error
     );
 
-    // Live timeline changes forwarded to Backend and QML.
+    // Live subscription updates are forwarded to Backend, which
+    // also passes relevant events to NotificationManager.
     void matrixLiveTimelineUpdated(const QString &json);
 
     void matrixDeviceVerificationFinished(
@@ -182,8 +242,16 @@ signals:
         const QString &error
     );
 
-    void matrixDeviceRenameFinished(const QString &deviceId, const QString &error);
-    void matrixDeviceRevocationFinished(const QString &deviceId, const QString &error);
+    void matrixDeviceRenameFinished(
+        const QString &deviceId,
+        const QString &error
+    );
+
+    void matrixDeviceRevocationFinished(
+        const QString &deviceId,
+        const QString &error
+    );
+
     void matrixDeviceManagementUrlReady(
         const QString &deviceId,
         const QString &url,
@@ -197,8 +265,9 @@ signals:
         const QString &error
     );
 
+
     // ---------------------------------------------------------
-    // Matrix media signals
+    // Matrix media results
     // ---------------------------------------------------------
 
     void roomAvatarRetrieved(
@@ -262,8 +331,14 @@ signals:
         const QString &error
     );
 
+
 private:
 
+    /*
+     * Common signature for Rust verification actions.
+     * The final argument receives a Rust-allocated error string,
+     * which must be released using the appropriate FFI function.
+     */
     using VerificationAction = int32_t (*)(
         AstroMatrixClient *,
         const char *,
@@ -278,21 +353,30 @@ private:
         VerificationAction action
     );
 
-    // ---------------------------------------------------------
-    // Register a retained Ubuntu push token when a Matrix session is ready.
-   void registerPushTokenIfReady();
 
-   // Rust Matrix client
+    // Register the retained push token when the Matrix client
+    // and authenticated session are ready.
+    void registerPushTokenIfReady();
+
+
+    // ---------------------------------------------------------
+    // Worker-owned state
     // ---------------------------------------------------------
 
+    // Rust Matrix client; its lifecycle is managed through the FFI.
     AstroMatrixClient *m_matrixClient = nullptr;
-   QByteArray m_pushToken;
-   QString m_pushPrivacyLevel = "sender_room";
-   bool m_pushNotificationsEnabled = true;
+
+    // Retained push notification configuration.
+    QByteArray m_pushToken;
+    QString m_pushPrivacyLevel = "sender_room";
+    bool m_pushNotificationsEnabled = true;
+
     // Polls retained timeline subscriptions on this worker's thread.
     QTimer *m_timelinePollTimer = nullptr;
 
     // Retained only while encrypted storage is unlocked.
     QByteArray m_storagePassphrase;
+
+    // Storage may be unlocked without an authenticated Matrix session.
     bool m_matrixSessionActive = false;
 };

@@ -71,6 +71,7 @@ Column {
                             width: parent.width
                             spacing: units.gu(1)
                             visible: root.aboutDocument === ""
+                            height: visible ? implicitHeight : 0
 
                             Rectangle {
                                 width: parent.width
@@ -233,6 +234,7 @@ Column {
                         DocumentViewer {
                             width: parent.width
                             visible: root.aboutDocument !== ""
+                            height: visible ? implicitHeight : 0
 
                             documentTitle: root.aboutDocument
                             documentUrl: root.aboutDocument === "README"

@@ -1,3 +1,4 @@
+
 import QtQuick 2.7
 import QtMultimedia 5.8
 import Lomiri.Components 1.3
@@ -13,7 +14,47 @@ Item {
     property var backend
     property var fullscreenHost
 
-    signal fullscreenRequested(var output, var originalParent, var mediaPlayer)
+    // The player and output are owned by RoomView and shared by all videos.
+    property var sharedPlayer: null
+    property var sharedVideoOutput: null
+    property string sharedPlaybackKey: ""
+
+    readonly property bool isActivePlayback:
+        root.sharedPlaybackKey !== "" &&
+        root.sharedPlaybackKey === root.requestKey
+
+    readonly property bool displayedPlaying:
+        root.isActivePlayback &&
+        root.sharedPlayer &&
+        root.sharedPlayer.playbackState === MediaPlayer.PlayingState
+
+    readonly property int displayedPosition:
+        root.isActivePlayback && root.sharedPlayer
+        ? root.sharedPlayer.position : 0
+
+    readonly property int displayedDuration:
+        root.isActivePlayback && root.sharedPlayer
+        ? root.sharedPlayer.duration : 0
+
+    signal fullscreenRequested(
+        var output,
+        var originalParent,
+        var mediaPlayer,
+        var downloadItem
+    )
+
+    signal playbackRequested(
+        string requestKey,
+        string fileUrl,
+        var outputHost,
+        var owner
+    )
+
+    signal playbackReleased(
+        string requestKey,
+        var outputHost,
+        var owner
+    )
 
     property string videoUrl: ""
     property bool downloading: false
@@ -36,13 +77,26 @@ Item {
 
     function requestVideo() {
         if (root.videoUrl !== "") {
-            if (root.playbackFinished) {
-                player.seek(0)
-                root.playbackFinished = false
+            if (!root.sharedPlayer) {
+                root.errorMessage = "Video playback is unavailable"
+                return
             }
 
-            root.errorMessage = ""
-            player.play()
+            if (root.isActivePlayback) {
+                if (root.playbackFinished) {
+                    root.sharedPlayer.seek(0)
+                    root.playbackFinished = false
+                }
+
+                root.errorMessage = ""
+            }
+
+            root.playbackRequested(
+                root.requestKey,
+                root.videoUrl,
+                videoOutputHost,
+                root
+            )
             return
         }
 
@@ -81,32 +135,63 @@ Item {
     }
 
     function seekVideo(mouseX, trackWidth) {
-        if (player.duration <= 0 || trackWidth <= 0)
+        if (!root.isActivePlayback ||
+            !root.sharedPlayer ||
+            root.displayedDuration <= 0 ||
+            trackWidth <= 0)
             return
 
         var fraction = Math.max(0, Math.min(1, mouseX / trackWidth))
-        player.seek(fraction * player.duration)
+        root.sharedPlayer.seek(fraction * root.displayedDuration)
         root.revealControls()
     }
 
-    function togglePlayback() {
-        if (root.downloading)
-            return
+function togglePlayback() {
+    console.log(
+        "[AstroVideo] togglePlayback",
+        "requestKey:", root.requestKey,
+        "activeKey:", root.sharedPlaybackKey,
+        "isActive:", root.isActivePlayback,
+        "hasPlayer:", !!root.sharedPlayer,
+        "playbackState:",
+            root.sharedPlayer
+                ? root.sharedPlayer.playbackState : -1,
+        "status:",
+            root.sharedPlayer
+                ? root.sharedPlayer.status : -1,
+        "finished:", root.playbackFinished,
+        "downloading:", root.downloading
+    )
 
-        if (player.playbackState === MediaPlayer.PlayingState) {
-            player.pause()
-        } else {
-            root.requestVideo()
-        }
+    if (root.downloading)
+        return
 
-        root.revealControls()
+    if (root.isActivePlayback &&
+        root.sharedPlayer &&
+        root.sharedPlayer.playbackState === MediaPlayer.PlayingState) {
+        console.log("[AstroVideo] ACTION: pause")
+        root.sharedPlayer.pause()
+    } else {
+        console.log("[AstroVideo] ACTION: request playback")
+        root.requestVideo()
     }
+
+    root.revealControls()
+}
 
     function requestFullscreen() {
-        if (!root.fullscreenHost)
+        if (!root.fullscreenHost ||
+            !root.isActivePlayback ||
+            !root.sharedVideoOutput ||
+            !root.sharedPlayer)
             return
 
-        root.fullscreenRequested(videoOutput, videoOutput.parent, player)
+        root.fullscreenRequested(
+            root.sharedVideoOutput,
+            videoOutputHost,
+            root.sharedPlayer,
+            root
+        )
     }
 
     function handleVideoRetrieved(key, fileUrl) {
@@ -122,8 +207,16 @@ Item {
 
         root.videoUrl = fileUrl
         root.playbackFinished = false
-        player.source = fileUrl
-        player.play()
+        root.errorMessage = ""
+
+        // RoomView stops any previous playback, assigns the new source,
+        // reparents the shared output, and starts playback.
+        root.playbackRequested(
+            root.requestKey,
+            root.videoUrl,
+            videoOutputHost,
+            root
+        )
     }
 
     function handleVideoFailed(key, error) {
@@ -157,6 +250,41 @@ Item {
         }
     }
 
+    // Listen to the shared player, but only update this bubble's state
+    // while this message owns the shared playback session.
+    Connections {
+        target: root.sharedPlayer
+
+        onPlaybackStateChanged: {
+            if (!root.isActivePlayback)
+                return
+
+            if (root.sharedPlayer.playbackState ===
+                MediaPlayer.PlayingState) {
+                root.playbackFinished = false
+                root.playbackStarted()
+            }
+        }
+
+        onStatusChanged: {
+            if (!root.isActivePlayback)
+                return
+
+            if (root.sharedPlayer.status === MediaPlayer.EndOfMedia)
+                root.playbackFinished = true
+        }
+
+        onError: {
+            if (!root.isActivePlayback)
+                return
+
+            if (error !== MediaPlayer.NoError) {
+                root.errorMessage =
+                    errorString || "Video playback failed"
+            }
+        }
+    }
+
     Timer {
         id: embeddedControlsTimer
 
@@ -164,34 +292,8 @@ Item {
         repeat: false
 
         onTriggered: {
-            if (player.playbackState === MediaPlayer.PlayingState)
+            if (root.displayedPlaying)
                 root.controlsVisible = false
-        }
-    }
-
-    MediaPlayer {
-        id: player
-
-        autoPlay: false
-
-        onPlaybackStateChanged: {
-            if (player.playbackState === MediaPlayer.PlayingState) {
-                root.playbackFinished = false
-                root.playbackStarted()
-            }
-        }
-
-        onStatusChanged: {
-            if (player.status === MediaPlayer.EndOfMedia) {
-                root.playbackFinished = true
-            }
-        }
-
-        onError: {
-            if (error !== MediaPlayer.NoError) {
-                root.errorMessage =
-                    errorString || "Video playback failed"
-            }
         }
     }
 
@@ -201,12 +303,11 @@ Item {
         color: "#080d12"
         clip: true
 
-        VideoOutput {
-            id: videoOutput
-
+        // RoomView reparents its single VideoOutput into this host when
+        // this message becomes the active video.
+        Item {
+            id: videoOutputHost
             anchors.fill: parent
-            source: player
-            fillMode: VideoOutput.PreserveAspectFit
         }
 
         Image {
@@ -294,7 +395,7 @@ Item {
             visible: !root.downloading &&
                      root.controlsVisible &&
                      (root.videoUrl === "" ||
-                      player.playbackState !== MediaPlayer.PlayingState)
+                      !root.displayedPlaying)
 
             Canvas {
                 anchors.centerIn: parent
@@ -334,9 +435,11 @@ Item {
             z: 4
 
             running: root.downloading ||
-                     player.status === MediaPlayer.LoadingMedia ||
-                     player.status === MediaPlayer.BufferingMedia ||
-                     player.status === MediaPlayer.StalledMedia
+                     (root.isActivePlayback &&
+                      root.sharedPlayer &&
+                      (root.sharedPlayer.status === MediaPlayer.LoadingMedia ||
+                       root.sharedPlayer.status === MediaPlayer.BufferingMedia ||
+                       root.sharedPlayer.status === MediaPlayer.StalledMedia))
             visible: running
         }
 
@@ -358,7 +461,8 @@ Item {
             wrapMode: Text.Wrap
         }
 
-        // Embedded playback controls.
+        // Embedded controls belong only to the message currently
+        // displaying the shared player.
         Rectangle {
             id: embeddedPlaybackControls
 
@@ -374,7 +478,8 @@ Item {
             z: 7
             color: "#dd101820"
 
-            visible: root.videoUrl !== "" &&
+            visible: root.isActivePlayback &&
+                     root.videoUrl !== "" &&
                      !root.downloading &&
                      root.controlsVisible
 
@@ -383,7 +488,6 @@ Item {
                 anchors.margins: units.gu(1)
                 spacing: units.gu(0.5)
 
-                // Seek bar.
                 Item {
                     id: embeddedSeekTrack
 
@@ -400,9 +504,9 @@ Item {
 
                     Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
-                        width: player.duration > 0
-                               ? parent.width * player.position /
-                                 player.duration
+                        width: root.displayedDuration > 0
+                               ? parent.width * root.displayedPosition /
+                                 root.displayedDuration
                                : 0
                         height: units.gu(0.6)
                         radius: height / 2
@@ -423,7 +527,6 @@ Item {
                     }
                 }
 
-                // Playback buttons and time.
                 Row {
                     width: parent.width
                     height: units.gu(5)
@@ -439,8 +542,7 @@ Item {
                             anchors.centerIn: parent
                             width: units.gu(2)
                             height: units.gu(2.5)
-                            visible: player.playbackState !==
-                                     MediaPlayer.PlayingState
+                            visible: !root.displayedPlaying
 
                             onPaint: {
                                 var ctx = getContext("2d")
@@ -460,8 +562,7 @@ Item {
                             text: "Ⅱ"
                             color: "#ffffff"
                             font.pixelSize: units.gu(2.5)
-                            visible: player.playbackState ===
-                                     MediaPlayer.PlayingState
+                            visible: root.displayedPlaying
                         }
 
                         MouseArea {
@@ -473,9 +574,9 @@ Item {
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
 
-                        text: root.formatVideoTime(player.position) +
+                        text: root.formatVideoTime(root.displayedPosition) +
                               " / " +
-                              root.formatVideoTime(player.duration)
+                              root.formatVideoTime(root.displayedDuration)
 
                         color: "#ffffff"
                         font.pixelSize: units.gu(1.5)
@@ -533,7 +634,6 @@ Item {
         }
     }
 
-
     // =====================================
     // Content Hub video export
     // =====================================
@@ -542,7 +642,8 @@ Item {
         id: videoExportPeerPicker
 
         parent: root.fullscreenHost && root.fullscreenHost.visible
-                ? root.fullscreenHost : root
+                ? root.fullscreenHost
+                : (root.fullscreenHost ? root.fullscreenHost.parent : root)
         anchors.fill: parent
         z: 20
         visible: root.destinationPickerOpen
@@ -603,12 +704,9 @@ Item {
                 root.exportStatus = "Sending video to Files…"
             }
             else if (transfer.state === ContentTransfer.Collected) {
-                transfer.finalize()
-                root.activeTransfer = null
-                root.exporting = false
-                root.pendingExportUrl = ""
-                root.destinationPickerOpen = false
-                root.exportStatus = "Video exported successfully"
+                console.log("Astro: Video Content Hub transfer collected")
+                console.log("Astro: Waiting for Files to finish handling the video")
+                root.exportStatus = "Waiting for Files to finish saving the video…"
             }
             else if (transfer.state === ContentTransfer.Aborted) {
                 transfer.finalize()
@@ -623,7 +721,8 @@ Item {
 
     ContentTransferHint {
         parent: root.fullscreenHost && root.fullscreenHost.visible
-                ? root.fullscreenHost : root
+                ? root.fullscreenHost
+                : (root.fullscreenHost ? root.fullscreenHost.parent : root)
         anchors.fill: parent
         z: 30
         activeTransfer: root.activeTransfer
@@ -631,7 +730,8 @@ Item {
 
     Text {
         parent: root.fullscreenHost && root.fullscreenHost.visible
-                ? root.fullscreenHost : root
+                ? root.fullscreenHost
+                : (root.fullscreenHost ? root.fullscreenHost.parent : root)
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
         anchors.bottomMargin: units.gu(18)
@@ -643,6 +743,12 @@ Item {
     }
 
     Component.onDestruction: {
-        player.stop()
+        // Never stop the shared player here. RoomView decides whether
+        // this component still owns the active playback session.
+        root.playbackReleased(
+            root.requestKey,
+            videoOutputHost,
+            root
+        )
     }
 }
