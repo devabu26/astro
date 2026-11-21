@@ -16,6 +16,8 @@ tokio = { version = "=1.54.1", features = ["rt-multi-thread", "sync", "macros"] 
 serde_json = "1"
 futures-util = "0.3"
 eyeball-im = "0.9.1"
+tracing-subscriber = "=0.3.23"
+tracing = "=0.1.44"
 
 [dev-dependencies]
 tokio = { version = "=1.54.1", features = ["macros"] }

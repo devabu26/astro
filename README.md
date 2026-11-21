@@ -2,9 +2,11 @@
 
 Matrix Client For Ubuntu Touch
 
+https://github.com/devabu26/astro/tree/main
+
 ## License
 
-Copyright (C) 2026  Marc D.B [madabu]
+Copyright (C) 2026  Marc D.B [madabu], Sydney, Australia,
     
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU General Public License version 3, as published by the

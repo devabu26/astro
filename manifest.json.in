@@ -6,10 +6,16 @@
     "hooks": {
         "astro": {
             "apparmor": "astro.apparmor",
-            "desktop":  "astro.desktop"
+            "desktop": "astro.desktop",
+            "urls": "astro.dispatcher",
+            "content-hub": "content-hub.json"
+        },
+        "push": {
+            "apparmor": "push-apparmor.json",
+            "push-helper": "push.json"
         }
     },
-    "version": "1.0.2",
+    "version": "@PROJECT_VERSION@",
     "maintainer": "Madabu <email@domain.org>",
-    "framework" : "$ENV{CLICK_FRAMEWORK}"
+    "framework": "$ENV{CLICK_FRAMEWORK}"
 }

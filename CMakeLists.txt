@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.0)
-project(astro C CXX)
+project(astro VERSION 1.0.3 LANGUAGES C CXX)
 
 # Automatically create moc files
 set(CMAKE_AUTOMOC ON)
@@ -19,12 +19,32 @@ set(DESKTOP_FILE_NAME ${PROJECT_NAME}.desktop)
 
 
 configure_file(manifest.json.in ${CMAKE_CURRENT_BINARY_DIR}/manifest.json)
+
+# Generate QML-readable application version information.
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated-qml")
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/BuildInfo.js.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated-qml/BuildInfo.js"
+    @ONLY
+)
+
+install(
+    FILES "${CMAKE_CURRENT_BINARY_DIR}/generated-qml/BuildInfo.js"
+    DESTINATION "${DATA_DIR}qml"
+)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/manifest.json DESTINATION ${CMAKE_INSTALL_PREFIX})
 install(FILES ${PROJECT_NAME}.apparmor DESTINATION ${DATA_DIR})
+
+# Ubuntu Touch push notification helper
+install(PROGRAMS backend/notifications/pushexec DESTINATION ${DATA_DIR})
+install(FILES backend/notifications/push.json DESTINATION ${DATA_DIR})
+install(FILES backend/notifications/push-apparmor.json DESTINATION ${DATA_DIR})
 
 install(DIRECTORY assets DESTINATION ${DATA_DIR})
 
 install(DIRECTORY qml DESTINATION ${DATA_DIR})
+install(FILES README.md LICENSE DESTINATION ${DATA_DIR})
 
 # Translations
 file(GLOB_RECURSE I18N_SRC_FILES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/po qml/*.qml qml/*.js)
@@ -69,6 +89,8 @@ find_package(Qt5 5.12 REQUIRED COMPONENTS Core Gui Qml DBus)
 add_library(AstroBackend MODULE
     backend/Backend.cpp
     backend/Backend.h
+    backend/notifications/NotificationManager.cpp
+    backend/notifications/NotificationManager.h
     backend/StorageWorker.cpp
     backend/StorageWorker.h
     backend/astro_core_ffi.h
@@ -129,6 +151,7 @@ add_custom_command(
         backend/astro-core/src/ffi.rs
         backend/astro-core/src/storage.rs
         backend/astro-core/src/matrix_client.rs
+        backend/astro-core/src/notifications.rs
         backend/astro-core/src/media.rs
         backend/astro-core/src/session_storage.rs
 

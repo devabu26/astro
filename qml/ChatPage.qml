@@ -25,14 +25,36 @@ Item {
     property string selectedRoom: "Welcome to Astro"
     property string selectedPreview: "Your Matrix client starts here."
     property string selectedRoomAvatarUrl: ""
+
+    // Notification navigation request passed to RoomView.
+    property string pendingNotificationEventId: ""
+    property int notificationRequestSerial: 0
     property string storageResult: ""
 
     property bool roomsLoading: false
     property bool moreMenuVisible: false
 
+    // Dismiss the search keyboard without clearing the search.
+    function dismissSearchKeyboard() {
+        chatSearchField.focus = false
+        Qt.inputMethod.hide()
+    }
+
     // =========================================================
     // Room data model
     // =========================================================
+
+    // Background tap target. Kept behind the page controls so
+    // room rows, buttons and other interactive elements retain
+    // their normal click handling.
+    MouseArea {
+        anchors.fill: parent
+        z: -1
+
+        onClicked: {
+            root.dismissSearchKeyboard()
+        }
+    }
 
     ListModel {
         id: roomModel
@@ -63,6 +85,58 @@ Item {
     // =========================================================
 
 
+function roomNameForId(id) {
+    if (!id)
+        return ""
+
+    for (var i = 0; i < roomModel.count; i++) {
+        var room = roomModel.get(i)
+        if (room.roomId === id)
+            return room.name
+    }
+
+    return id
+}
+
+function openNotification(roomId, eventId) {
+    if (!roomId)
+        return
+
+    var roomChanged = root.selectedRoomId !== roomId
+    var found = false
+
+    for (var i = 0; i < roomModel.count; i++) {
+        var room = roomModel.get(i)
+
+        if (room.roomId !== roomId)
+            continue
+
+        root.selectedRoomId = roomId
+        root.selectedRoom = room.name
+        root.selectedPreview = room.preview
+        root.selectedRoomAvatarUrl = room.avatarUrl || ""
+        found = true
+        break
+    }
+
+    // The room may not yet be present in the current room list.
+    if (!found) {
+        root.selectedRoomId = roomId
+        root.selectedRoom = roomId
+        root.selectedPreview = ""
+        root.selectedRoomAvatarUrl = ""
+    }
+
+    root.showConversation = true
+    root.pendingNotificationEventId = eventId || ""
+    root.notificationRequestSerial++
+
+    // RoomView already has this room loaded if it did not change.
+    // Otherwise, retrieve its initial timeline.
+    if (roomChanged && root.backend)
+        root.backend.requestRoomTimeline(roomId)
+}
+
 function loadRooms(json, finished) {
     try {
         var data = JSON.parse(json)
@@ -84,8 +158,7 @@ function loadRooms(json, finished) {
                 "ASTRO: Invalid Matrix rooms response"
             )
 
-            if (finished)
-                root.stopRoomLoading()
+            root.stopRoomLoading()
 
             return
         }
@@ -168,9 +241,8 @@ function loadRooms(json, finished) {
         )
 
         // Cached results populate the UI immediately.
-        // Keep the animation running until network sync finishes.
-        if (finished)
-            root.stopRoomLoading()
+        // Initial loading ends once the first room response arrives.
+        root.stopRoomLoading()
 
     } catch (error) {
         console.log(
@@ -178,8 +250,7 @@ function loadRooms(json, finished) {
             error
         )
 
-        if (finished)
-            root.stopRoomLoading()
+        root.stopRoomLoading()
     }
 }
 
@@ -722,6 +793,8 @@ function loadRooms(json, finished) {
                         selectedRoom: root.selectedRoom
 
                         onRoomSelected: {
+                            root.dismissSearchKeyboard()
+
                             root.selectedRoomId = roomId
                             root.selectedRoom = name
                             root.selectedPreview = preview
@@ -797,6 +870,8 @@ function loadRooms(json, finished) {
                 roomName: root.selectedRoom
                 avatarUrl: root.selectedRoomAvatarUrl
                 wideLayout: root.wideLayout
+                targetEventId: root.pendingNotificationEventId
+                targetRequestSerial: root.notificationRequestSerial
 
                 onBackRequested: {
                     root.showConversation = false

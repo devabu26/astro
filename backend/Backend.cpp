@@ -2,6 +2,7 @@
 
 #include "Backend.h"
 #include "StorageWorker.h"
+#include "notifications/NotificationManager.h"
 
 #include <QCoreApplication>
 #include <QStandardPaths>
@@ -91,6 +92,8 @@ Backend::Backend(QObject *parent)
         QStringLiteral("astro.madabu")
     );
 
+    m_notificationManager = new NotificationManager(this);
+
     // ---------------------------------------------------------
     // Create the dedicated storage thread and worker.
     // ---------------------------------------------------------
@@ -147,6 +150,30 @@ Backend::Backend(QObject *parent)
         Qt::QueuedConnection
     );
 
+    connect(
+        this,
+        &Backend::requestSetPushToken,
+        m_storageWorker,
+        &StorageWorker::setPushToken,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestSetPushPrivacyLevel,
+        m_storageWorker,
+        &StorageWorker::setPushPrivacyLevel,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestSetPushNotificationsEnabled,
+        m_storageWorker,
+        &StorageWorker::setPushNotificationsEnabled,
+        Qt::QueuedConnection
+    );
+
     // ---------------------------------------------------------
     // Matrix room and Space request connections
     // ---------------------------------------------------------
@@ -159,7 +186,54 @@ Backend::Backend(QObject *parent)
         Qt::QueuedConnection
     );
 
-    // ---------------------------------------------------------
+    connect(
+        this,
+        &Backend::requestFetchMatrixDevices,
+        m_storageWorker,
+        &StorageWorker::fetchMatrixDevices,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestStartDeviceVerification,
+        m_storageWorker,
+        &StorageWorker::requestDeviceVerification,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestMatrixDeviceManagementUrl,
+        m_storageWorker,
+        &StorageWorker::checkMatrixDeviceManagementUrl,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixDeviceManagementUrlReady,
+        this,
+        &Backend::matrixDeviceManagementUrlReady,
+        Qt::QueuedConnection
+    );
+
+   connect(
+       this,
+       &Backend::requestRevokeMatrixDevice,
+       m_storageWorker,
+       &StorageWorker::revokeMatrixDevice,
+       Qt::QueuedConnection
+   );
+
+   connect(
+       this,
+       &Backend::requestRenameMatrixDevice,
+       m_storageWorker,
+       &StorageWorker::renameMatrixDevice,
+       Qt::QueuedConnection
+   );
+// ---------------------------------------------------------
     connect(
        this,
        &Backend::requestSyncMatrixRooms,
@@ -177,10 +251,32 @@ Backend::Backend(QObject *parent)
    );
 
    connect(
+       m_storageWorker,
+       &StorageWorker::matrixLiveTimelineUpdated,
+       m_notificationManager,
+       &NotificationManager::processTimelineJson
+   );
+
+   connect(
+       m_notificationManager,
+       &NotificationManager::notificationReceived,
+       this,
+       &Backend::notificationReceived
+   );
+
+   connect(
        this,
        &Backend::requestFetchRoomTimeline,
        m_storageWorker,
        &StorageWorker::fetchRoomTimeline,
+       Qt::QueuedConnection
+   );
+
+   connect(
+       this,
+       &Backend::requestRefreshRoomTimelineWorker,
+       m_storageWorker,
+       &StorageWorker::refreshRoomTimeline,
        Qt::QueuedConnection
    );
 
@@ -205,6 +301,14 @@ Backend::Backend(QObject *parent)
         &Backend::requestSendRoomMessage,
         m_storageWorker,
         &StorageWorker::sendRoomMessage,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestToggleRoomReaction,
+        m_storageWorker,
+        &StorageWorker::toggleRoomReaction,
         Qt::QueuedConnection
     );
 
@@ -297,6 +401,24 @@ Backend::Backend(QObject *parent)
         }
     );
 
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixReactionToggled,
+        this,
+        [this](
+            const QString &roomId,
+            const QString &eventId,
+            const QString &reactionKey,
+            bool added,
+            const QString &error
+        )
+        {
+            emit matrixReactionToggled(
+                roomId, eventId, reactionKey, added, error
+            );
+        }
+    );
+
 
    // Matrix media request connections
     // ---------------------------------------------------------
@@ -322,6 +444,14 @@ Backend::Backend(QObject *parent)
         &Backend::requestFetchMessageImage,
         m_storageWorker,
         &StorageWorker::fetchMessageImage,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestExportMessageImage,
+        m_storageWorker,
+        &StorageWorker::exportMessageImage,
         Qt::QueuedConnection
     );
 
@@ -404,6 +534,21 @@ Backend::Backend(QObject *parent)
     );
 
     // ---------------------------------------------------------
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixRoomsFailed,
+        this,
+        [this](const QString &error)
+        {
+            m_storageOperationInProgress = false;
+
+            emit storageStatusChanged(
+                QStringLiteral("Matrix room sync failed: ") + error
+            );
+        },
+        Qt::QueuedConnection
+    );
+
     // Matrix session restoration
     // ---------------------------------------------------------
 
@@ -502,34 +647,69 @@ Backend::Backend(QObject *parent)
     );
 
     // Matrix room and Space response connections
-    // =========================================================
-
-    connect(
-    m_storageWorker,
-    &StorageWorker::matrixRoomsUpdated,
-   this,
-   [this](const QString &json, bool finished)
-   {
-       // Forward cached or freshly synchronised rooms to QML.
-       // QML can queue avatar requests while handling the cached list.
-       emit matrixRoomsRetrieved(json, finished);
-
-       // Schedule network sync only after cached rooms reach QML.
-       if (!finished) {
-           emit requestSyncMatrixRooms();
-           return;
-       }
-
-       m_storageOperationInProgress = false;
-
-       emit storageStatusChanged(
-           QStringLiteral("Matrix rooms retrieved")
-       );
-   }
-);
-
    // =========================================================
-   // Matrix media and room avatar response connections
+
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixRoomsUpdated,
+       this,
+       [this](const QString &json, bool finished)
+       {
+           // Forward cached or freshly synchronised rooms to QML.
+           // QML can queue avatar requests while handling the cached list.
+           emit matrixRoomsRetrieved(json, finished);
+
+           // Schedule network sync only after cached rooms reach QML.
+           if (!finished) {
+               emit requestSyncMatrixRooms();
+               return;
+           }
+
+           m_storageOperationInProgress = false;
+
+           emit storageStatusChanged(
+               QStringLiteral("Matrix rooms retrieved")
+           );
+       },
+       Qt::QueuedConnection
+   );
+
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixDevicesUpdated,
+       this,
+       [this](const QString &json, const QString &error) {
+           emit matrixDevicesRetrieved(json, error);
+       },
+       Qt::QueuedConnection
+   );
+
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixDeviceVerificationFinished,
+       this,
+       &Backend::matrixDeviceVerificationFinished,
+       Qt::QueuedConnection
+   );
+
+
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixDeviceRevocationFinished,
+       this,
+       &Backend::matrixDeviceRevocationFinished,
+       Qt::QueuedConnection
+   );
+
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixDeviceRenameFinished,
+       this,
+       &Backend::matrixDeviceRenameFinished,
+       Qt::QueuedConnection
+   );
+// =========================================================
+     // Matrix media and room avatar response connections
    // =========================================================
 
    // ---------------------------------------------------------
@@ -615,6 +795,37 @@ Backend::Backend(QObject *parent)
         )
         {
             emit messageImageFailed(requestKey, error);
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::messageImageExported,
+        this,
+        [this](
+            const QString &requestKey,
+            const QString &fileUrl,
+            const QString &fileName
+        )
+        {
+            emit messageImageExported(
+                requestKey,
+                fileUrl,
+                fileName
+            );
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::messageImageExportFailed,
+        this,
+        [this](
+            const QString &requestKey,
+            const QString &error
+        )
+        {
+            emit messageImageExportFailed(requestKey, error);
         }
     );
 
@@ -1258,6 +1469,32 @@ void Backend::openStorage(const QString &passphrase)
 // Matrix login
 // =============================================================
 
+void Backend::setPushToken(const QString &token)
+{
+    if (token.isEmpty()) {
+        return;
+    }
+
+    emit requestSetPushToken(token);
+}
+
+void Backend::setPushNotificationsEnabled(bool enabled)
+{
+    emit requestSetPushNotificationsEnabled(enabled);
+}
+
+void Backend::setPushPrivacyLevel(const QString &privacyLevel)
+{
+    if (privacyLevel != "sender_room"
+        && privacyLevel != "full_message"
+        && privacyLevel != "private") {
+        qWarning() << "ASTRO: Invalid notification privacy level";
+        return;
+    }
+
+    emit requestSetPushPrivacyLevel(privacyLevel);
+}
+
 void Backend::loginMatrix(
     const QString &homeserver,
     const QString &username,
@@ -1299,7 +1536,20 @@ void Backend::loginMatrix(
 // Matrix room and Space retrieval
 // =============================================================
 
-void Backend::refreshMatrixRooms()
+void Backend::refreshMatrixDevices()
+{
+    if (!m_storageReady) {
+        emit matrixDevicesRetrieved(
+            QString(),
+            QStringLiteral("Encrypted storage is not open")
+        );
+        return;
+    }
+
+    emit requestFetchMatrixDevices();
+}
+
+bool Backend::refreshMatrixRooms()
 {
     if (m_storageOperationInProgress) {
         emit storageStatusChanged(
@@ -1308,7 +1558,7 @@ void Backend::refreshMatrixRooms()
             )
         );
 
-        return;
+        return false;
     }
 
     if (!m_storageReady) {
@@ -1316,7 +1566,7 @@ void Backend::refreshMatrixRooms()
             QStringLiteral("Unlock encrypted storage first")
         );
 
-        return;
+        return false;
     }
 
     m_storageOperationInProgress = true;
@@ -1326,11 +1576,84 @@ void Backend::refreshMatrixRooms()
     );
 
     emit requestFetchMatrixRooms();
+    return true;
 }
 
 // =============================================================
 // Matrix media and room avatar requests
 // =============================================================
+
+void Backend::requestDeviceVerification(const QString &deviceId)
+{
+    if (!m_storageReady || deviceId.isEmpty()) {
+        emit matrixDeviceVerificationFinished(
+            deviceId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Device ID is empty")
+        );
+        return;
+    }
+
+    emit requestStartDeviceVerification(deviceId);
+}
+
+void Backend::renameMatrixDevice(
+    const QString &deviceId,
+    const QString &displayName
+)
+{
+    if (!m_storageReady || deviceId.isEmpty() || displayName.trimmed().isEmpty()) {
+        emit matrixDeviceRenameFinished(
+            deviceId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : deviceId.isEmpty()
+                    ? QStringLiteral("Device ID is empty")
+                    : QStringLiteral("Device name cannot be empty")
+        );
+        return;
+    }
+
+    emit requestRenameMatrixDevice(deviceId, displayName.trimmed());
+}
+
+void Backend::checkMatrixDeviceManagementUrl(
+    const QString &deviceId
+) {
+    if (!m_storageReady || deviceId.isEmpty()) {
+        emit matrixDeviceManagementUrlReady(
+            deviceId,
+            QString(),
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Device ID is empty")
+        );
+        return;
+    }
+
+    emit requestMatrixDeviceManagementUrl(deviceId);
+}
+
+void Backend::revokeMatrixDevice(
+    const QString &deviceId,
+    const QString &password
+)
+{
+    if (!m_storageReady || deviceId.isEmpty() || password.isEmpty()) {
+        emit matrixDeviceRevocationFinished(
+            deviceId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : deviceId.isEmpty()
+                    ? QStringLiteral("Device ID is empty")
+                    : QStringLiteral("Account password is required")
+        );
+        return;
+    }
+
+    emit requestRevokeMatrixDevice(deviceId, password);
+}
 
 void Backend::requestRoomAvatar(
     const QString &roomId,
@@ -1428,6 +1751,37 @@ void Backend::requestMessageImage(
 
 
 
+void Backend::exportMessageImage(
+    const QString &requestKey,
+    const QString &mediaSourceJson,
+    const QString &mimeType,
+    const QString &fileName
+)
+{
+    if (!m_storageReady) {
+        emit messageImageExportFailed(
+            requestKey,
+            QStringLiteral("Encrypted storage is not open")
+        );
+        return;
+    }
+
+    if (requestKey.isEmpty() || mediaSourceJson.isEmpty()) {
+        emit messageImageExportFailed(
+            requestKey,
+            QStringLiteral("Request key or media source is empty")
+        );
+        return;
+    }
+
+    emit requestExportMessageImage(
+        requestKey,
+        mediaSourceJson,
+        mimeType,
+        fileName
+    );
+}
+
 void Backend::requestMessageThumbnail(
     const QString &requestKey,
     const QString &mediaSourceJson,
@@ -1524,6 +1878,30 @@ void Backend::requestRoomTimeline(const QString &roomId)
     emit requestFetchRoomTimeline(roomId);
 }
 
+// Explicitly purge and reload one room's Matrix SDK event cache.
+void Backend::requestRefreshRoomTimeline(const QString &roomId)
+{
+    if (!m_storageReady) {
+        emit matrixTimelineRetrieved(
+            roomId,
+            QString(),
+            QStringLiteral("Encrypted storage is not open")
+        );
+        return;
+    }
+
+    if (roomId.isEmpty()) {
+        emit matrixTimelineRetrieved(
+            roomId,
+            QString(),
+            QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    emit requestRefreshRoomTimelineWorker(roomId);
+}
+
 // Request another batch of older messages for an existing room timeline.
 void Backend::requestOlderRoomTimeline(const QString &roomId)
 {
@@ -1592,6 +1970,31 @@ void Backend::sendRoomMessage(
     emit requestSendRoomMessage(roomId, message);
 }
 
+
+void Backend::toggleRoomReaction(
+    const QString &roomId,
+    const QString &eventId,
+    const QString &reactionKey
+)
+{
+    if (!m_storageReady) {
+        emit matrixReactionToggled(
+            roomId, eventId, reactionKey, false,
+            QStringLiteral("Encrypted storage is not open")
+        );
+        return;
+    }
+
+    if (roomId.isEmpty() || eventId.isEmpty() || reactionKey.isEmpty()) {
+        emit matrixReactionToggled(
+            roomId, eventId, reactionKey, false,
+            QStringLiteral("Room ID, event ID and reaction key are required")
+        );
+        return;
+    }
+
+    emit requestToggleRoomReaction(roomId, eventId, reactionKey);
+}
 
 void Backend::acceptVerificationRequest(
     const QString &userId,

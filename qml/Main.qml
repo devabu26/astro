@@ -1,8 +1,10 @@
 
 import QtQuick 2.7
+import Qt.labs.settings 1.0
 import Lomiri.Components 1.3
 import Astro.Backend 1.0
 import "Components"
+import "Settings"
 
 MainView {
     id: root
@@ -21,7 +23,110 @@ MainView {
 
     property bool existingStorage: astroBackend.hasExistingStorage()
     property bool matrixAuthenticated: false
+    property bool matrixRoomsReady: false
     property bool showingSettings: false
+    property string pendingNotificationRoomId: ""
+    property string pendingNotificationEventId: ""
+
+    Settings {
+        id: notificationPreferences
+        category: "Notifications"
+        property string privacyLevel: "sender_room"
+        property bool pushNotificationsEnabled: true
+        property bool bannerNotificationsEnabled: true
+
+        onBannerNotificationsEnabledChanged: {
+            if (!bannerNotificationsEnabled && notificationBanner)
+                notificationBanner.clearNotifications()
+        }
+    }
+
+    function handlePushNotification(payload) {
+        if (!notificationPreferences.bannerNotificationsEnabled)
+            return
+
+        try {
+            var envelope = JSON.parse(payload)
+            var data = envelope.message || envelope
+
+            if (typeof data === "string")
+                data = JSON.parse(data)
+
+            var notification = envelope.notification || {}
+            var card = notification.card || {}
+
+            notificationBanner.showNotification(
+                card.summary || data.sender || "New message",
+                card.body || data.body || "You have a new message",
+                data.room_id || envelope.room_id || "",
+                data.event_id || envelope.event_id || "",
+                data.room_name || envelope.room_name || ""
+            )
+        } catch (error) {
+            console.warn(
+                "ASTRO: Could not parse push notification:",
+                error
+            )
+        }
+    }
+
+    function handleNotificationUrl(argument) {
+        var url = String(argument)
+
+        if (url.indexOf("astro://open") !== 0)
+            return
+
+        var queryStart = url.indexOf("?")
+        if (queryStart < 0)
+            return
+
+        var query = url.substring(queryStart + 1).split("#")[0]
+        var parameters = query.split("&")
+        var values = {}
+
+        for (var i = 0; i < parameters.length; i++) {
+            var pair = parameters[i].split("=")
+            if (pair.length < 2)
+                continue
+
+            try {
+                values[decodeURIComponent(pair[0])] =
+                    decodeURIComponent(pair.slice(1).join("="))
+            } catch (error) {
+                console.warn("ASTRO: Invalid notification URL parameter")
+            }
+        }
+
+        if (!values.room_id)
+            return
+
+        pendingNotificationRoomId = values.room_id
+        pendingNotificationEventId = values.event_id || ""
+
+        root.openPendingNotificationIfReady()
+    }
+
+    function handleLaunchArguments() {
+        var args = Qt.application.arguments || []
+
+        for (var i = 0; i < args.length; i++)
+            root.handleNotificationUrl(args[i])
+    }
+
+    function openPendingNotificationIfReady() {
+        if (!matrixAuthenticated
+            || !matrixRoomsReady
+            || !pendingNotificationRoomId)
+            return
+
+        var roomId = pendingNotificationRoomId
+        var eventId = pendingNotificationEventId
+
+        pendingNotificationRoomId = ""
+        pendingNotificationEventId = ""
+
+        chatPage.openNotification(roomId, eventId)
+    }
 
     // =========================================================
     // Backend instance
@@ -29,6 +134,36 @@ MainView {
 
     Backend {
         id: astroBackend
+    }
+
+    Component.onCompleted: {
+        astroBackend.setPushPrivacyLevel(
+            notificationPreferences.privacyLevel
+        )
+        astroBackend.setPushNotificationsEnabled(
+            notificationPreferences.pushNotificationsEnabled
+        )
+        root.handleLaunchArguments()
+    }
+
+    Connections {
+        target: UriHandler
+
+        onOpened: {
+            for (var i = 0; i < uris.length; i++)
+                root.handleNotificationUrl(uris[i])
+        }
+    }
+
+    // Register Astro with the Ubuntu Touch push service.
+    NotificationPushClient {
+        onPushTokenAvailable: {
+            astroBackend.setPushToken(token)
+        }
+
+        onNotificationReceived: {
+            root.handlePushNotification(payload)
+        }
     }
 
     // =========================================================
@@ -48,8 +183,15 @@ MainView {
 
             chatPage.storageResult = status
 
+            // A failed network room sync has no final rooms response.
+            // Stop the loading animation while retaining cached rooms.
+            if (status.indexOf("Matrix room sync failed:") === 0) {
+                chatPage.stopRoomLoading()
+            }
+
             if (!astroBackend.storageReady) {
                 root.matrixAuthenticated = false
+                root.matrixRoomsReady = false
                 chatPage.stopRoomLoading()
             }
         }
@@ -60,16 +202,16 @@ MainView {
 
         onMatrixSessionRestored: {
             root.matrixAuthenticated = restored
+            root.matrixRoomsReady = false
 
             if (restored) {
                 console.log(
                     "ASTRO: Session restored; fetching Matrix rooms"
                 )
 
-                // Start the diamond animation before requesting rooms.
-                chatPage.startRoomLoading()
-
-                astroBackend.refreshMatrixRooms()
+                if (astroBackend.refreshMatrixRooms()) {
+                    chatPage.startRoomLoading()
+                }
             }
         }
 
@@ -88,6 +230,7 @@ MainView {
             )
 
             root.matrixAuthenticated = true
+            root.matrixRoomsReady = false
 
             console.log(
                 "ASTRO: matrixAuthenticated =",
@@ -98,10 +241,9 @@ MainView {
                 "ASTRO: Login complete; fetching Matrix rooms"
             )
 
-            // Start the diamond animation before requesting rooms.
-            chatPage.startRoomLoading()
-
-            astroBackend.refreshMatrixRooms()
+            if (astroBackend.refreshMatrixRooms()) {
+                chatPage.startRoomLoading()
+            }
         }
 
         // -----------------------------------------------------
@@ -110,6 +252,7 @@ MainView {
 
         onMatrixLogoutSucceeded: {
             root.matrixAuthenticated = false
+            root.matrixRoomsReady = false
             root.showingSettings = false
 
             verificationDialog.closeDialog()
@@ -126,6 +269,7 @@ MainView {
             )
 
             root.matrixAuthenticated = false
+            root.matrixRoomsReady = false
             root.showingSettings = false
             root.existingStorage = false
 
@@ -145,9 +289,24 @@ MainView {
             // loadRooms() stops the animation only after
             // the final network synchronisation response.
             chatPage.loadRooms(json, finished)
+            root.matrixRoomsReady = true
+            root.openPendingNotificationIfReady()
         }
 
         // -----------------------------------------------------
+        onNotificationReceived: {
+            if (!notificationPreferences.bannerNotificationsEnabled)
+                return
+
+            notificationBanner.showNotification(
+                sender,
+                body,
+                roomId,
+                eventId,
+                chatPage.roomNameForId(roomId)
+            )
+        }
+
         // Matrix device verification events
         // -----------------------------------------------------
 
@@ -182,17 +341,27 @@ MainView {
                         )
                     }
 
+                    if (event.state === "done")
+                        settingsPage.refreshDevices()
+
                     continue
                 }
 
-                // Incoming verification request.
+                // Incoming or outgoing verification request.
                 if (event.user_id && event.flow_id) {
                     if (!verificationDialog.visible) {
-                        verificationDialog.showRequest(
-                            event.user_id,
-                            event.flow_id,
-                            event.room_id || ""
-                        )
+                        if (event.is_outgoing === true) {
+                            verificationDialog.showOutgoingRequest(
+                                event.user_id,
+                                event.flow_id
+                            )
+                        } else {
+                            verificationDialog.showRequest(
+                                event.user_id,
+                                event.flow_id,
+                                event.room_id || ""
+                            )
+                        }
                     } else if (
                         verificationDialog.userId !== event.user_id ||
                         verificationDialog.flowId !== event.flow_id
@@ -279,6 +448,7 @@ MainView {
             anchors.fill: parent
 
             backend: astroBackend
+            notificationPreferences: notificationPreferences
 
             visible: astroBackend.storageReady &&
                      root.matrixAuthenticated &&
@@ -310,6 +480,19 @@ MainView {
     // =========================================================
     // Matrix device verification dialog
     // =========================================================
+
+    NotificationBanner {
+        id: notificationBanner
+        anchors.top: parent.top
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.topMargin: units.gu(2)
+        width: parent.width - units.gu(4)
+        z: 2000
+
+        onOpenRequested: {
+            chatPage.openNotification(roomId, eventId)
+        }
+    }
 
     DeviceVerificationDialog {
         id: verificationDialog

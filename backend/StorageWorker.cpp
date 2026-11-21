@@ -13,6 +13,7 @@
 #include <QSaveFile>
 #include <QUrl>
 #include <limits>
+#include <QDateTime>
 
 #include <climits>
 
@@ -34,14 +35,110 @@ StorageWorker::StorageWorker(QObject *parent)
     );
 }
 
+void StorageWorker::setPushToken(const QString &token)
+{
+    QByteArray newToken = token.toUtf8();
+
+    if (newToken.isEmpty()) {
+        return;
+    }
+
+    if (m_pushToken != newToken) {
+        m_pushToken.fill('\0');
+        m_pushToken = newToken;
+    }
+
+    newToken.fill('\0');
+    registerPushTokenIfReady();
+}
+
+void StorageWorker::setPushPrivacyLevel(const QString &privacyLevel)
+{
+    if (privacyLevel != "sender_room"
+        && privacyLevel != "full_message"
+        && privacyLevel != "private") {
+        qWarning() << "ASTRO: Invalid notification privacy level";
+        return;
+    }
+
+    if (m_pushPrivacyLevel == privacyLevel) {
+        return;
+    }
+
+    m_pushPrivacyLevel = privacyLevel;
+    registerPushTokenIfReady();
+}
+
+void StorageWorker::setPushNotificationsEnabled(bool enabled)
+{
+    if (m_pushNotificationsEnabled == enabled) {
+        return;
+    }
+
+    m_pushNotificationsEnabled = enabled;
+    registerPushTokenIfReady();
+}
+
+void StorageWorker::registerPushTokenIfReady()
+{
+    if (!m_matrixSessionActive || !m_matrixClient || m_pushToken.isEmpty()) {
+        return;
+    }
+
+    if (!m_pushNotificationsEnabled) {
+        char *error = nullptr;
+
+        const int result = astro_matrix_unregister_push_token(
+            m_matrixClient,
+            m_pushToken.constData(),
+            &error
+        );
+
+        if (error) {
+            qWarning() << "ASTRO: Matrix push pusher removal error:" << error;
+            astro_string_free(error);
+        }
+
+        if (result != 0) {
+            qWarning() << "ASTRO: Matrix push pusher unregistration failed";
+        } else {
+            qInfo() << "ASTRO: Matrix push pusher unregistered";
+        }
+
+        return;
+    }
+
+    char *error = nullptr;
+
+    const QByteArray privacyLevel = m_pushPrivacyLevel.toUtf8();
+
+    const int result = astro_matrix_register_push_token(
+        m_matrixClient,
+        m_pushToken.constData(),
+        privacyLevel.constData(),
+        &error
+    );
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    if (result != 0) {
+        qWarning() << "ASTRO: Matrix push pusher registration failed";
+    } else {
+        qInfo() << "ASTRO: Matrix push pusher registered";
+    }
+}
+
 StorageWorker::~StorageWorker()
 {
     if (m_timelinePollTimer) {
         m_timelinePollTimer->stop();
     }
 
-    // Clear the retained passphrase before destruction.
+    // Clear retained credentials and push token before destruction.
     m_storagePassphrase.fill('\0');
+    m_pushToken.fill('\0');
 
     // Release the Rust Matrix client if one is still active.
     if (m_matrixClient) {
@@ -156,6 +253,7 @@ void StorageWorker::openStorage(const QString &passphrase)
 
     m_matrixClient = client;
     m_matrixSessionActive = (result == 1);
+    registerPushTokenIfReady();
 
     // Start unread-count polling for restored Matrix sessions.
     if (m_timelinePollTimer) {
@@ -348,6 +446,7 @@ void StorageWorker::loginMatrix(
 
     m_matrixClient = client;
     m_matrixSessionActive = true;
+    registerPushTokenIfReady();
 
     // Start unread-count polling immediately after login.
     if (m_timelinePollTimer)
@@ -405,7 +504,7 @@ void StorageWorker::logoutMatrix()
 void StorageWorker::fetchMatrixRooms()
 {
     if (!m_matrixClient) {
-        emit storageFailed(
+        emit matrixRoomsFailed(
             QStringLiteral("No active Matrix session")
         );
         return;
@@ -428,7 +527,7 @@ void StorageWorker::fetchMatrixRooms()
             astro_string_free(error);
         }
 
-        emit storageFailed(message);
+        emit matrixRoomsFailed(message);
         return;
     }
 
@@ -444,10 +543,46 @@ void StorageWorker::fetchMatrixRooms()
     emit matrixRoomsUpdated(result, false);
 }
 
+void StorageWorker::fetchMatrixDevices()
+{
+    if (!m_matrixClient) {
+        emit matrixDevicesUpdated(
+            QString(),
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    char *error = nullptr;
+    char *json = astro_matrix_get_devices_json(m_matrixClient, &error);
+
+    if (!json) {
+        const QString message = error
+            ? QString::fromUtf8(error)
+            : QStringLiteral("Could not retrieve registered Matrix devices");
+
+        if (error) {
+            astro_string_free(error);
+        }
+
+        emit matrixDevicesUpdated(QString(), message);
+        return;
+    }
+
+    const QString result = QString::fromUtf8(json);
+    astro_string_free(json);
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    emit matrixDevicesUpdated(result, QString());
+}
+
 void StorageWorker::syncMatrixRooms()
 {
     if (!m_matrixClient) {
-        emit storageFailed(
+        emit matrixRoomsFailed(
             QStringLiteral("No active Matrix session")
         );
         return;
@@ -470,7 +605,7 @@ void StorageWorker::syncMatrixRooms()
             astro_string_free(error);
         }
 
-        emit storageFailed(message);
+        emit matrixRoomsFailed(message);
         return;
     }
 
@@ -535,6 +670,62 @@ void StorageWorker::fetchRoomTimeline(const QString &roomId)
     }
 
     // Begin polling after the first timeline subscription is established.
+    if (m_timelinePollTimer && !m_timelinePollTimer->isActive()) {
+        m_timelinePollTimer->start();
+    }
+
+    emit matrixTimelineUpdated(roomId, result, QString());
+}
+
+void StorageWorker::refreshRoomTimeline(const QString &roomId)
+{
+    if (!m_matrixClient) {
+        emit matrixTimelineUpdated(
+            roomId,
+            QString(),
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    if (roomId.isEmpty()) {
+        emit matrixTimelineUpdated(
+            roomId,
+            QString(),
+            QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+
+    char *json = astro_matrix_refresh_room_timeline_json(
+        m_matrixClient,
+        roomIdBytes.constData(),
+        &error
+    );
+
+    if (!json) {
+        QString message =
+            QStringLiteral("Could not refresh room timeline");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+            astro_string_free(error);
+        }
+
+        emit matrixTimelineUpdated(roomId, QString(), message);
+        return;
+    }
+
+    const QString result = QString::fromUtf8(json);
+    astro_string_free(json);
+
+    if (error) {
+        astro_string_free(error);
+    }
+
     if (m_timelinePollTimer && !m_timelinePollTimer->isActive()) {
         m_timelinePollTimer->start();
     }
@@ -748,6 +939,62 @@ void StorageWorker::sendRoomMessage(
     emit matrixMessageSent(roomId, result, QString());
 }
 
+void StorageWorker::toggleRoomReaction(
+    const QString &roomId,
+    const QString &eventId,
+    const QString &reactionKey
+)
+{
+    if (!m_matrixClient) {
+        emit matrixReactionToggled(
+            roomId, eventId, reactionKey, false,
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    if (roomId.isEmpty() || eventId.isEmpty() || reactionKey.isEmpty()) {
+        emit matrixReactionToggled(
+            roomId, eventId, reactionKey, false,
+            QStringLiteral("Room ID, event ID and reaction key are required")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    const QByteArray eventIdBytes = eventId.toUtf8();
+    const QByteArray reactionKeyBytes = reactionKey.toUtf8();
+
+    char *error = nullptr;
+    const int32_t result = astro_matrix_toggle_room_reaction(
+        m_matrixClient,
+        roomIdBytes.constData(),
+        eventIdBytes.constData(),
+        reactionKeyBytes.constData(),
+        &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+
+    if (result < 0) {
+        if (errorMessage.isEmpty()) {
+            errorMessage = QStringLiteral("Could not toggle Matrix reaction");
+        }
+        emit matrixReactionToggled(
+            roomId, eventId, reactionKey, false, errorMessage
+        );
+        return;
+    }
+
+    emit matrixReactionToggled(
+        roomId, eventId, reactionKey, result == 1, QString()
+    );
+}
+
 // =============================================================
 // Matrix device verification
 // =============================================================
@@ -854,6 +1101,130 @@ void StorageWorker::mismatchVerification(
 // =============================================================
 // Matrix media and room avatar retrieval
 // =============================================================
+
+void StorageWorker::requestDeviceVerification(
+    const QString &deviceId
+)
+{
+    if (!m_matrixClient || deviceId.isEmpty()) {
+        emit matrixDeviceVerificationFinished(
+            deviceId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Device ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray deviceIdBytes = deviceId.toUtf8();
+    char *error = nullptr;
+
+    const int32_t result = astro_matrix_request_device_verification(
+        m_matrixClient,
+        deviceIdBytes.constData(),
+        &error
+    );
+
+    QString errorMessage;
+
+    if (result != 1) {
+        errorMessage = error
+            ? QString::fromUtf8(error)
+            : QStringLiteral("Could not start device verification");
+    }
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    emit matrixDeviceVerificationFinished(deviceId, errorMessage);
+}
+
+void StorageWorker::renameMatrixDevice(
+    const QString &deviceId,
+    const QString &displayName
+)
+{
+    if (!m_matrixClient || deviceId.isEmpty() || displayName.trimmed().isEmpty()) {
+        emit matrixDeviceRenameFinished(
+            deviceId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : deviceId.isEmpty()
+                    ? QStringLiteral("Device ID is empty")
+                    : QStringLiteral("Device name cannot be empty")
+        );
+        return;
+    }
+
+    const QByteArray deviceIdBytes = deviceId.toUtf8();
+    const QByteArray displayNameBytes = displayName.trimmed().toUtf8();
+    char *error = nullptr;
+
+    const int32_t result = astro_matrix_rename_device(
+        m_matrixClient,
+        deviceIdBytes.constData(),
+        displayNameBytes.constData(),
+        &error
+    );
+
+    QString errorMessage;
+
+    if (result != 1) {
+        errorMessage = error
+            ? QString::fromUtf8(error)
+            : QStringLiteral("Could not rename Matrix device");
+    }
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    emit matrixDeviceRenameFinished(deviceId, errorMessage);
+}
+
+void StorageWorker::revokeMatrixDevice(
+    const QString &deviceId,
+    const QString &password
+)
+{
+    if (!m_matrixClient || deviceId.isEmpty() || password.isEmpty()) {
+        emit matrixDeviceRevocationFinished(
+            deviceId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : deviceId.isEmpty()
+                    ? QStringLiteral("Device ID is empty")
+                    : QStringLiteral("Account password is required")
+        );
+        return;
+    }
+
+    const QByteArray deviceIdBytes = deviceId.toUtf8();
+    const QByteArray passwordBytes = password.toUtf8();
+    char *error = nullptr;
+
+    const int32_t result = astro_matrix_revoke_device(
+        m_matrixClient,
+        deviceIdBytes.constData(),
+        passwordBytes.constData(),
+        &error
+    );
+
+    QString errorMessage;
+
+    if (result != 1) {
+        errorMessage = error
+            ? QString::fromUtf8(error)
+            : QStringLiteral("Could not sign out Matrix device");
+    }
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    emit matrixDeviceRevocationFinished(deviceId, errorMessage);
+}
 
 void StorageWorker::fetchRoomAvatar(
     const QString &roomId,
@@ -1107,6 +1478,58 @@ void StorageWorker::fetchSenderAvatar(
     emit senderAvatarRetrieved(requestKey, dataUrl);
 }
 
+void StorageWorker::checkMatrixDeviceManagementUrl(
+    const QString &deviceId
+) {
+    if (!m_matrixClient || deviceId.isEmpty()) {
+        emit matrixDeviceManagementUrlReady(
+            deviceId,
+            QString(),
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Device ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray deviceIdBytes = deviceId.toUtf8();
+
+    char *url = nullptr;
+    char *error = nullptr;
+
+    const int32_t result = astro_matrix_device_management_url(
+        m_matrixClient,
+        deviceIdBytes.constData(),
+        &url,
+        &error
+    );
+
+    QString urlString;
+    QString errorMessage;
+
+    if (result == 1 && url) {
+        urlString = QString::fromUtf8(url);
+    } else if (result < 0) {
+        errorMessage = error
+            ? QString::fromUtf8(error)
+            : QStringLiteral("Could not discover device-management support");
+    }
+
+    if (url) {
+        astro_string_free(url);
+    }
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    emit matrixDeviceManagementUrlReady(
+        deviceId,
+        urlString,
+        errorMessage
+    );
+}
+
 void StorageWorker::fetchMessageImage(
     const QString &requestKey,
     const QString &mediaSourceJson
@@ -1187,6 +1610,12 @@ void StorageWorker::fetchMessageImage(
     // Preserve animated GIF data instead of flattening it to PNG.
     if (encoded.startsWith("GIF87a") ||
         encoded.startsWith("GIF89a")) {
+
+        qInfo() << "ASTRO DEBUG: Preserving GIF:"
+        << "bytes =" << encoded.size()
+        << "GIF87a =" << encoded.startsWith("GIF87a")
+        << "GIF89a =" << encoded.startsWith("GIF89a");
+
         const QString dataUrl =
             QStringLiteral("data:image/gif;base64,") +
             QString::fromLatin1(encoded.toBase64());
@@ -1232,6 +1661,225 @@ void StorageWorker::fetchMessageImage(
         QString::fromLatin1(pngData.toBase64());
 
     emit messageImageRetrieved(requestKey, dataUrl);
+}
+
+
+void StorageWorker::exportMessageImage(
+    const QString &requestKey,
+    const QString &mediaSourceJson,
+    const QString &mimeType,
+    const QString &fileName
+)
+{
+    if (!m_matrixClient) {
+        emit messageImageExportFailed(
+            requestKey,
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    if (requestKey.isEmpty() || mediaSourceJson.isEmpty()) {
+        emit messageImageExportFailed(
+            requestKey,
+            QStringLiteral("Request key or media source is empty")
+        );
+        return;
+    }
+
+    const QString cachePath =
+        QStandardPaths::writableLocation(
+            QStandardPaths::CacheLocation
+        ) + QStringLiteral("/media-exports");
+
+    QDir directory;
+
+    if (!directory.mkpath(cachePath)) {
+        emit messageImageExportFailed(
+            requestKey,
+            QStringLiteral("Could not create media export directory")
+        );
+        return;
+    }
+
+    // Remove abandoned temporary exports older than 24 hours.
+    const QDateTime expiryTime =
+        QDateTime::currentDateTime().addSecs(-24 * 60 * 60);
+
+    const QFileInfoList oldExports =
+        QDir(cachePath).entryInfoList(
+            QDir::Files | QDir::NoDotAndDotDot
+        );
+
+    for (const QFileInfo &info : oldExports) {
+        if (info.lastModified() < expiryTime) {
+            QFile::remove(info.absoluteFilePath());
+        }
+    }
+
+    // Determine a safe filename.
+    QString safeName = QFileInfo(fileName).fileName().trimmed();
+
+    for (int i = 0; i < safeName.size(); ++i) {
+        const QChar character = safeName.at(i);
+
+        if (character.unicode() < 32 ||
+            QStringLiteral("/\\:*?\"<>|").contains(character)) {
+            safeName[i] = QLatin1Char('_');
+        }
+    }
+
+    while (safeName.startsWith('.'))
+        safeName.remove(0, 1);
+
+    safeName = safeName.trimmed();
+
+    QMimeDatabase mimeDatabase;
+    const QString suffix =
+        mimeDatabase.mimeTypeForName(mimeType).preferredSuffix();
+
+    if (safeName.isEmpty())
+        safeName = QStringLiteral("image");
+
+    if (QFileInfo(safeName).suffix().isEmpty() &&
+        !suffix.isEmpty() &&
+        suffix != QStringLiteral("bin")) {
+        safeName += QStringLiteral(".") + suffix;
+    }
+
+    // Hash the request key to avoid filename collisions.
+    const QByteArray keyHash =
+        QCryptographicHash::hash(
+            requestKey.toUtf8(),
+            QCryptographicHash::Sha256
+        ).toHex();
+
+    const QString filePath =
+        QDir(cachePath).filePath(
+            QString::fromLatin1(keyHash) +
+            QStringLiteral("_") +
+            safeName
+        );
+
+    const QByteArray sourceBytes = mediaSourceJson.toUtf8();
+
+    uint8_t *data = nullptr;
+    uintptr_t len = 0;
+    char *error = nullptr;
+
+    const int result = astro_matrix_image(
+        m_matrixClient,
+        sourceBytes.constData(),
+        &data,
+        &len,
+        &error
+    );
+
+    if (result != 1) {
+        QString message =
+            QStringLiteral("Could not download original message image");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+            astro_string_free(error);
+        }
+
+        if (data)
+            astro_media_bytes_free(data, len);
+
+        emit messageImageExportFailed(requestKey, message);
+        return;
+    }
+
+    if (error)
+        astro_string_free(error);
+
+    if (!data || len == 0 ||
+        len > static_cast<uintptr_t>(
+            std::numeric_limits<qint64>::max()
+        )) {
+
+        if (data)
+            astro_media_bytes_free(data, len);
+
+        emit messageImageExportFailed(
+            requestKey,
+            QStringLiteral("Downloaded image is empty or too large")
+        );
+        return;
+    }
+
+    QSaveFile output(filePath);
+
+    if (!output.open(QIODevice::WriteOnly)) {
+        astro_media_bytes_free(data, len);
+
+        emit messageImageExportFailed(
+            requestKey,
+            QStringLiteral("Could not open export file: ") +
+            output.errorString()
+        );
+        return;
+    }
+
+    const qint64 written = output.write(
+        reinterpret_cast<const char *>(data),
+        static_cast<qint64>(len)
+    );
+
+    astro_media_bytes_free(data, len);
+
+    if (written != static_cast<qint64>(len)) {
+        output.cancelWriting();
+
+        emit messageImageExportFailed(
+            requestKey,
+            QStringLiteral("Could not write the complete image")
+        );
+        return;
+    }
+
+    if (!output.commit()) {
+        emit messageImageExportFailed(
+            requestKey,
+            QStringLiteral("Could not save exported image: ") +
+            output.errorString()
+        );
+        return;
+    }
+
+    // Ensure the exported file is readable by its owner.
+    QFile::Permissions permissions = QFile::permissions(filePath);
+    permissions |= QFileDevice::ReadOwner;
+
+    if (!QFile::setPermissions(filePath, permissions)) {
+        emit messageImageExportFailed(
+            requestKey,
+            QStringLiteral("Could not set read permissions on exported file")
+        );
+        return;
+    }
+
+    // Verify that the completed export is present and readable.
+    QFileInfo exportedInfo(filePath);
+
+    if (!exportedInfo.exists() ||
+        !exportedInfo.isFile() ||
+        !exportedInfo.isReadable() ||
+        exportedInfo.size() != static_cast<qint64>(len)) {
+
+        emit messageImageExportFailed(
+            requestKey,
+            QStringLiteral("Exported file failed verification")
+        );
+        return;
+    }
+
+    emit messageImageExported(
+        requestKey,
+        QUrl::fromLocalFile(filePath).toString(),
+        safeName
+    );
 }
 
 

@@ -1,9 +1,5 @@
 use matrix_sdk::{
-    media::{
-        MediaFormat,
-        MediaRequestParameters,
-        MediaThumbnailSettings,
-    },
+    media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
     ruma::events::room::MediaSource,
     Client,
 };
@@ -25,9 +21,10 @@ impl<'a> MediaManager<'a> {
     ) -> Result<Vec<u8>, String> {
         let request = MediaRequestParameters {
             source,
-            format: MediaFormat::Thumbnail(
-                MediaThumbnailSettings::new(width.into(), height.into()),
-            ),
+            format: MediaFormat::Thumbnail(MediaThumbnailSettings::new(
+                width.into(),
+                height.into(),
+            )),
         };
 
         self.client
@@ -37,10 +34,7 @@ impl<'a> MediaManager<'a> {
             .map_err(|e| format!("Thumbnail download failed: {e}"))
     }
 
-    pub async fn video(
-        &self,
-        source: MediaSource,
-    ) -> Result<Vec<u8>, String> {
+    pub async fn video(&self, source: MediaSource) -> Result<Vec<u8>, String> {
         let request = MediaRequestParameters {
             source,
             format: MediaFormat::File,
@@ -53,22 +47,10 @@ impl<'a> MediaManager<'a> {
             .map_err(|e| format!("Video download failed: {e}"))
     }
 
-    pub async fn image(
-        &self,
-        source: MediaSource,
-    ) -> Result<Vec<u8>, String> {
-        let format = match &source {
-            MediaSource::Encrypted(_) => MediaFormat::File,
-            MediaSource::Plain(_) => {
-                MediaFormat::Thumbnail(
-                    MediaThumbnailSettings::new(1280u32.into(), 1280u32.into()),
-                )
-            }
-        };
-
+    pub async fn image(&self, source: MediaSource) -> Result<Vec<u8>, String> {
         let request = MediaRequestParameters {
             source,
-            format,
+            format: MediaFormat::File,
         };
 
         self.client

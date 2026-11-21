@@ -5,12 +5,13 @@ import Lomiri.Components 1.3
 Rectangle {
     id: root
 
-    height: units.gu(9)
+    height: inputFrame.height + units.gu(3)
     color: "#1b2935"
 
     signal sendRequested(string message)
 
     property bool sending: false
+    property bool pasteVisible: false
 
     function submitMessage() {
         var message = root.currentMessage().trim()
@@ -19,6 +20,15 @@ Rectangle {
             return
 
         root.sendRequested(message)
+    }
+
+    function dismissKeyboard() {
+        messageInput.focus = false
+    }
+
+    function pasteFromClipboard() {
+        messageInput.forceActiveFocus()
+        messageInput.paste()
     }
 
     function currentMessage() {
@@ -31,12 +41,28 @@ Rectangle {
     }
 
     function clearInput() {
+        // Cancel any active keyboard composition.
         Qt.inputMethod.reset()
+
+        // Clear the committed text immediately.
         messageInput.text = ""
         messageInput.cursorPosition = 0
+        messageInput.deselect()
+
+        // Clear again after the input method has processed
+        // its composition reset. This prevents stale pre-edit
+        // text from reappearing in the editor.
+        Qt.callLater(function() {
+            Qt.inputMethod.reset()
+            messageInput.text = ""
+            messageInput.cursorPosition = 0
+            messageInput.deselect()
+        })
     }
 
     Rectangle {
+        id: inputFrame
+
         anchors {
             left: parent.left
             right: sendButton.left
@@ -45,8 +71,22 @@ Rectangle {
             verticalCenter: parent.verticalCenter
         }
 
-        height: units.gu(6)
+        height: messageInput.lineCount <= 1
+                ? units.gu(6)
+                : Math.min(
+                    units.gu(16),
+                    units.gu(12) +
+                    Math.max(0, messageInput.lineCount - 2) * units.gu(2)
+                )
 
+        Behavior on height {
+            NumberAnimation {
+                duration: 200
+                easing.type: Easing.OutCubic
+            }
+        }
+
+        clip: true
         radius: units.gu(2)
         color: "#263744"
 
@@ -55,12 +95,12 @@ Rectangle {
 
             anchors {
                 left: parent.left
-                right: parent.right
+                right: clipboardButton.left
                 top: parent.top
                 bottom: parent.bottom
 
                 leftMargin: units.gu(1.5)
-                rightMargin: units.gu(1.5)
+                rightMargin: units.gu(1)
                 topMargin: units.gu(1)
                 bottomMargin: units.gu(1)
             }
@@ -77,6 +117,8 @@ Rectangle {
             verticalAlignment: TextEdit.AlignVCenter
 
             selectByMouse: true
+            clip: true
+
 
             Keys.onReturnPressed: {
                 if (event.modifiers & Qt.ShiftModifier) {
@@ -107,6 +149,113 @@ Rectangle {
          && messageInput.preeditText.length === 0
 
                 enabled: false
+            }
+        }
+
+        Rectangle {
+            id: clipboardButton
+
+            anchors {
+                right: parent.right
+                rightMargin: units.gu(1)
+                verticalCenter: parent.verticalCenter
+            }
+
+            width: units.gu(4)
+            height: units.gu(4)
+            radius: units.gu(1)
+            color: clipboardMouse.pressed ? "#40596b" : "transparent"
+
+            Text {
+                anchors.centerIn: parent
+                text: "▤"
+                color: "#b8cbd8"
+                font.pixelSize: units.gu(2.5)
+            }
+
+            MouseArea {
+                id: clipboardMouse
+                anchors.fill: parent
+
+                onClicked: {
+                    root.pasteVisible = !root.pasteVisible
+                }
+            }
+        }
+    }
+
+
+    // Floating text-editing toolbar.
+    Rectangle {
+        id: pastePopover
+
+        anchors {
+            right: inputFrame.right
+            bottom: inputFrame.top
+            bottomMargin: units.gu(1)
+        }
+
+        width: units.gu(25)
+        height: units.gu(6)
+        radius: units.gu(1.5)
+        color: "#354b5b"
+        border.color: "#587184"
+        visible: root.pasteVisible && !root.sending
+        z: 10
+
+        Row {
+            anchors.fill: parent
+            anchors.margins: units.gu(0.5)
+            spacing: units.gu(0.5)
+
+            Repeater {
+                model: [
+                    { label: "Paste", action: "paste" },
+                    { label: "Copy", action: "copy" },
+                    { label: "Select All", action: "selectAll" }
+                ]
+
+                delegate: Rectangle {
+                    width: (parent.width - units.gu(1)) / 3
+                    height: parent.height
+                    radius: units.gu(1)
+                    color: toolbarMouse.pressed
+                           ? "#526e82" : "transparent"
+
+                    opacity: modelData.action === "copy" &&
+                             messageInput.selectionStart ===
+                             messageInput.selectionEnd ? 0.45 : 1
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: modelData.label
+                        color: "white"
+                        font.pixelSize: units.gu(1.5)
+                    }
+
+                    MouseArea {
+                        id: toolbarMouse
+                        anchors.fill: parent
+
+                        enabled: modelData.action !== "copy" ||
+                                 messageInput.selectionStart !==
+                                 messageInput.selectionEnd
+
+                        onClicked: {
+                            if (modelData.action === "paste") {
+                                messageInput.forceActiveFocus()
+                                messageInput.paste()
+                                root.pasteVisible = false
+                            } else if (modelData.action === "copy") {
+                                messageInput.copy()
+                                root.pasteVisible = false
+                            } else if (modelData.action === "selectAll") {
+                                messageInput.forceActiveFocus()
+                                messageInput.cursorPosition = 0
+                                messageInput.select(messageInput.text.length, 0)                            }
+                        }
+                    }
+                }
             }
         }
     }

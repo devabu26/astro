@@ -35,4 +35,4 @@ matrix-stores/
 # Local logs
 *.log
 .clickable/
-scaffold"
+scaffold/

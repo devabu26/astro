@@ -13,6 +13,10 @@ Item {
     property var thumbnailRequests: ({})
 
     property string viewedImageUrl: ""
+    property string viewedEventId: ""
+    property string viewedMediaSourceJson: ""
+    property string viewedMimeType: "application/octet-stream"
+    property string viewedFileName: "media"
     property bool imageViewerOpen: false
 
 
@@ -179,11 +183,22 @@ Item {
         }
     }
 
-    function openImageViewer(imageUrl) {
+    function openImageViewer(
+        imageUrl,
+        eventId,
+        mediaSourceJson,
+        mimeType,
+        fileName
+    ) {
         if (!imageUrl)
             return
 
         root.viewedImageUrl = imageUrl
+        root.viewedEventId = eventId || ""
+        root.viewedMediaSourceJson = mediaSourceJson || ""
+        root.viewedMimeType = mimeType || "application/octet-stream"
+        root.viewedFileName = fileName || "media"
+
         root.imageViewerOpen = true
         imageViewer.resetView()
     }
@@ -191,6 +206,11 @@ Item {
     function closeImageViewer() {
         root.imageViewerOpen = false
         root.viewedImageUrl = ""
+        root.viewedEventId = ""
+        root.viewedMediaSourceJson = ""
+        root.viewedMimeType = "application/octet-stream"
+        root.viewedFileName = "media"
+
         imageViewer.resetView()
     }
 
@@ -206,6 +226,11 @@ Item {
 
         imageUrl: root.viewedImageUrl
         opened: root.imageViewerOpen
+        backend: root.backend
+
+        mediaSourceJson: root.viewedMediaSourceJson
+        mediaMimeType: root.viewedMimeType
+        mediaFileName: root.viewedFileName
 
         onCloseRequested: root.closeImageViewer()
     }

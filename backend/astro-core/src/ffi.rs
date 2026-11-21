@@ -83,6 +83,8 @@ pub unsafe extern "C" fn astro_matrix_login(
     password: *const c_char,
     error_out: *mut *mut c_char,
 ) -> *mut MatrixClientManager {
+    crate::init_tracing();
+
     if !error_out.is_null() {
         *error_out = ptr::null_mut();
     }
@@ -126,6 +128,8 @@ pub unsafe extern "C" fn astro_matrix_restore(
     client_out: *mut *mut MatrixClientManager,
     error_out: *mut *mut c_char,
 ) -> i32 {
+    crate::init_tracing();
+
     if !error_out.is_null() {
         *error_out = ptr::null_mut();
     }
@@ -163,6 +167,88 @@ pub unsafe extern "C" fn astro_matrix_restore(
                 error_out,
                 "Unexpected Rust panic while restoring Matrix session",
             );
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_register_push_token(
+    handle: *mut MatrixClientManager,
+    push_token: *const c_char,
+    privacy_level: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let push_token = unsafe { read_input(push_token, "Ubuntu push token")? };
+        let privacy_level = unsafe {
+            read_input(privacy_level, "notification privacy level")?
+        };
+
+        if push_token.is_empty() {
+            return Err("Ubuntu push token must not be empty".to_string());
+        }
+
+        let manager = unsafe { &*handle };
+        manager.register_push_token(push_token, privacy_level)
+    }));
+
+    match result {
+        Ok(Ok(())) => 0,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic during push registration");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_unregister_push_token(
+    handle: *mut MatrixClientManager,
+    push_token: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let push_token = unsafe { read_input(push_token, "Ubuntu push token")? };
+
+        if push_token.is_empty() {
+            return Err("Ubuntu push token must not be empty".to_string());
+        }
+
+        let manager = unsafe { &*handle };
+        manager.unregister_push_token(push_token)
+    }));
+
+    match result {
+        Ok(Ok(())) => 0,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic during push unregistration");
             -1
         }
     }
@@ -214,6 +300,53 @@ pub unsafe extern "C" fn astro_matrix_send_room_message(
     }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_toggle_room_reaction(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    event_id: *const c_char,
+    reaction_key: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        let event_id = read_input(event_id, "Event ID")?;
+        let reaction_key = read_input(reaction_key, "Reaction key")?;
+
+        let manager = &*handle;
+        manager.toggle_room_reaction(room_id, event_id, reaction_key)
+    }));
+
+    match result {
+        Ok(Ok(added)) => {
+            if added {
+                1
+            } else {
+                0
+            }
+        }
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while toggling Matrix reaction",
+            );
+            -1
+        }
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn astro_matrix_accept_verification_request(
@@ -245,7 +378,10 @@ pub unsafe extern "C" fn astro_matrix_accept_verification_request(
             -1
         }
         Err(_) => {
-            set_error(error_out, "Unexpected Rust panic while accepting verification");
+            set_error(
+                error_out,
+                "Unexpected Rust panic while accepting verification",
+            );
             -1
         }
     }
@@ -281,7 +417,10 @@ pub unsafe extern "C" fn astro_matrix_cancel_verification_request(
             -1
         }
         Err(_) => {
-            set_error(error_out, "Unexpected Rust panic while cancelling verification");
+            set_error(
+                error_out,
+                "Unexpected Rust panic while cancelling verification",
+            );
             -1
         }
     }
@@ -317,7 +456,125 @@ pub unsafe extern "C" fn astro_matrix_confirm_verification(
             -1
         }
         Err(_) => {
-            set_error(error_out, "Unexpected Rust panic while confirming verification");
+            set_error(
+                error_out,
+                "Unexpected Rust panic while confirming verification",
+            );
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_rename_device(
+    handle: *mut MatrixClientManager,
+    device_id: *const c_char,
+    display_name: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let device_id = read_input(device_id, "Device ID")?;
+        let display_name = read_input(display_name, "Device display name")?;
+        let manager = unsafe { &*handle };
+        manager.rename_device(device_id, display_name)
+    }));
+
+    match result {
+        Ok(Ok(())) => 1,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while renaming Matrix device",
+            );
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_revoke_device(
+    handle: *mut MatrixClientManager,
+    device_id: *const c_char,
+    password: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let device_id = read_input(device_id, "Device ID")?;
+        let password = read_input(password, "Account password")?;
+        let manager = unsafe { &*handle };
+        manager.revoke_device(device_id, password)
+    }));
+
+    match result {
+        Ok(Ok(())) => 1,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while signing out Matrix device",
+            );
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_request_device_verification(
+    handle: *mut MatrixClientManager,
+    device_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let device_id = read_input(device_id, "Device ID")?;
+        let manager = unsafe { &*handle };
+        manager.request_device_verification(device_id)
+    }));
+
+    match result {
+        Ok(Ok(())) => 1,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while starting device verification",
+            );
             -1
         }
     }
@@ -353,8 +610,52 @@ pub unsafe extern "C" fn astro_matrix_mismatch_verification(
             -1
         }
         Err(_) => {
-            set_error(error_out, "Unexpected Rust panic while rejecting verification");
+            set_error(
+                error_out,
+                "Unexpected Rust panic while rejecting verification",
+            );
             -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_get_devices_json(
+    handle: *mut MatrixClientManager,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manager = unsafe { &*handle };
+        manager.devices_json()
+    }));
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(value) => value.into_raw(),
+            Err(_) => {
+                set_error(error_out, "Device data contained an invalid null character");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while retrieving Matrix devices",
+            );
+            ptr::null_mut()
         }
     }
 }
@@ -521,6 +822,52 @@ pub unsafe extern "C" fn astro_matrix_mark_room_as_read(
                 "Unexpected Rust panic while sending Matrix read receipt",
             );
             -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_refresh_room_timeline_json(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = unsafe { read_input(room_id, "Room ID")? };
+        let manager = unsafe { &mut *handle };
+        manager.refresh_room_timeline_json(room_id)
+    }));
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(value) => value.into_raw(),
+            Err(_) => {
+                set_error(
+                    error_out,
+                    "Timeline data contained an invalid null character",
+                );
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while refreshing Matrix timeline",
+            );
+            ptr::null_mut()
         }
     }
 }
@@ -783,9 +1130,8 @@ pub unsafe extern "C" fn astro_matrix_media_thumbnail(
             .to_str()
             .map_err(|_| "Media source JSON is not valid UTF-8".to_string())?;
 
-        let source: matrix_sdk::ruma::events::room::MediaSource =
-            serde_json::from_str(source_json)
-                .map_err(|e| format!("Invalid Matrix media source: {e}"))?;
+        let source: matrix_sdk::ruma::events::room::MediaSource = serde_json::from_str(source_json)
+            .map_err(|e| format!("Invalid Matrix media source: {e}"))?;
 
         manager.thumbnail(source, width, height)
     }));
@@ -864,9 +1210,8 @@ pub unsafe extern "C" fn astro_matrix_image(
             .to_str()
             .map_err(|_| "Media source JSON is not valid UTF-8".to_string())?;
 
-        let source: matrix_sdk::ruma::events::room::MediaSource =
-            serde_json::from_str(source_json)
-                .map_err(|e| format!("Invalid Matrix media source: {e}"))?;
+        let source: matrix_sdk::ruma::events::room::MediaSource = serde_json::from_str(source_json)
+            .map_err(|e| format!("Invalid Matrix media source: {e}"))?;
 
         manager.image(source)
     }));
@@ -894,9 +1239,67 @@ pub unsafe extern "C" fn astro_matrix_image(
         }
 
         Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while downloading image");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_device_management_url(
+    handle: *mut MatrixClientManager,
+    device_id: *const c_char,
+    url_out: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !url_out.is_null() {
+        *url_out = ptr::null_mut();
+    }
+
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    if url_out.is_null() {
+        set_error(error_out, "URL output pointer must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let device_id = read_input(device_id, "Device ID")?;
+        let manager = unsafe { &*handle };
+        manager.device_management_url(device_id)
+    }));
+
+    match result {
+        Ok(Ok(Some(url))) => {
+            match std::ffi::CString::new(url) {
+                Ok(url) => {
+                    unsafe {
+                        *url_out = url.into_raw();
+                    }
+                    1
+                }
+                Err(_) => {
+                    set_error(error_out, "Account-management URL contains invalid data");
+                    -1
+                }
+            }
+        }
+        Ok(Ok(None)) => 0,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
             set_error(
                 error_out,
-                "Unexpected Rust panic while downloading image",
+                "Unexpected Rust panic while discovering device management support",
             );
             -1
         }
@@ -945,9 +1348,8 @@ pub unsafe extern "C" fn astro_matrix_video(
             .to_str()
             .map_err(|_| "Media source JSON is not valid UTF-8".to_string())?;
 
-        let source: matrix_sdk::ruma::events::room::MediaSource =
-            serde_json::from_str(source_json)
-                .map_err(|e| format!("Invalid Matrix media source: {e}"))?;
+        let source: matrix_sdk::ruma::events::room::MediaSource = serde_json::from_str(source_json)
+            .map_err(|e| format!("Invalid Matrix media source: {e}"))?;
 
         manager.video(source)
     }));
@@ -975,10 +1377,7 @@ pub unsafe extern "C" fn astro_matrix_video(
         }
 
         Err(_) => {
-            set_error(
-                error_out,
-                "Unexpected Rust panic while downloading video",
-            );
+            set_error(error_out, "Unexpected Rust panic while downloading video");
             -1
         }
     }

@@ -12,6 +12,7 @@ Item {
     property string userId: ""
     property string flowId: ""
     property string roomId: ""
+    property bool isOutgoing: false
 
     // Verification state
     property string verificationState: "request"
@@ -29,8 +30,23 @@ Item {
         userId = user
         flowId = flow
         roomId = room || ""
+        isOutgoing = false
 
         verificationState = "request"
+        emojis = []
+        busy = false
+        errorMessage = ""
+
+        visible = true
+    }
+
+    function showOutgoingRequest(user, flow) {
+        userId = user
+        flowId = flow
+        roomId = ""
+        isOutgoing = true
+
+        verificationState = "outgoing_waiting"
         emojis = []
         busy = false
         errorMessage = ""
@@ -60,6 +76,7 @@ Item {
         errorMessage = ""
         emojis = []
         verificationState = "request"
+        isOutgoing = false
     }
 
     // Dark background overlay
@@ -121,7 +138,9 @@ Item {
             Text {
                 width: parent.width
 
-                text: "Verify that this device belongs to:"
+                text: root.isOutgoing
+                      ? "Verify another session belonging to:"
+                      : "Verify that this device belongs to:"
                 color: "#b8c7d3"
 
                 font.pixelSize: units.gu(1.6)
@@ -165,7 +184,8 @@ Item {
                 width: parent.width
                 spacing: units.gu(1)
 
-                visible: root.verificationState === "request"
+                visible: root.verificationState === "request" &&
+                         !root.isOutgoing
 
                 Text {
                     width: parent.width
@@ -235,6 +255,7 @@ Item {
                 spacing: units.gu(1)
 
                 visible:
+                    root.verificationState === "outgoing_waiting" ||
                     root.verificationState === "started" ||
                     root.verificationState === "accepted" ||
                     root.verificationState === "created"

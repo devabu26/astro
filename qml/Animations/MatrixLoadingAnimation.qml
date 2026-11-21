@@ -15,6 +15,7 @@ Item {
     // The parent controls when the animation starts and stops.
     property bool active: false
     property bool exitPending: false
+    property bool resetting: false
 
     // Destination is the centre point of the diamond,
     // expressed in this component's coordinates.
@@ -100,6 +101,9 @@ Item {
         }
 
         onStopped: {
+            if (root.resetting)
+                return
+
             if (root.active) {
                 pulseAnimation.start()
             } else if (root.exitPending) {
@@ -165,38 +169,100 @@ Item {
     }
 
     // =========================================================
+    // =========================================================
+    // Animation recovery after page navigation
+    // =========================================================
+
+    function resumeIfNeeded() {
+       if (!root.active || !root.parent || !root.parent.visible)
+           return
+
+       if (travelAnimation.running || pulseAnimation.running)
+           return
+
+       resetting = true
+       exitAnimation.stop()
+       exitPending = false
+
+       visible = true
+       opacity = 1
+
+       diamond.x = targetX - diamond.width / 2
+       diamond.y = targetY - diamond.height / 2
+       diamond.scale = 0.65
+
+       resetting = false
+       pulseAnimation.start()
+    }
+
+    Timer {
+       interval: 750
+       repeat: true
+       running: root.active && root.parent !== null && root.parent.visible
+       onTriggered: root.resumeIfNeeded()
+    }
+
+    Connections {
+       target: root.parent
+       onVisibleChanged: {
+           if (root.parent && root.parent.visible && root.active)
+               Qt.callLater(root.resumeIfNeeded)
+       }
+    }
+
     // Animation state control
     // =========================================================
 
-   onActiveChanged: {
-    if (active) {
-        // Cancel any previous animation.
-        travelAnimation.stop()
-        pulseAnimation.stop()
-        exitAnimation.stop()
+    onActiveChanged: {
+        if (active) {
+            // Prevent stopped callbacks from starting old animations.
+            resetting = true
 
-        exitPending = false
+            travelAnimation.stop()
+            pulseAnimation.stop()
+            exitAnimation.stop()
 
-        // Reset the diamond to the screen centre.
-        visible = true
-        opacity = 1
+            exitPending = false
 
-        diamond.x = (width - diamond.width) / 2
-        diamond.y = (height - diamond.height) / 2
-        diamond.scale = 1
+            // Restore the animation's initial appearance and position.
+            visible = true
+            opacity = 1
 
-        // Travel to the sidebar.
-        travelAnimation.start()
+            diamond.x = (width - diamond.width) / 2
+            diamond.y = (height - diamond.height) / 2
+            diamond.scale = 1
 
-    } else {
-        // Stop pulsing and finish the travel animation first.
-        pulseAnimation.stop()
+            resetting = false
 
-        if (travelAnimation.running) {
-            exitPending = true
-        } else if (visible) {
-            exitAnimation.start()
+            // Start after the current layout/navigation changes settle.
+            Qt.callLater(function() {
+                if (!root.active)
+                    return
+
+                if (travelAnimation.running ||
+                    pulseAnimation.running ||
+                    exitAnimation.running)
+                    return
+
+                // Recalculate the centre using the current dimensions.
+                diamond.x = (root.width - diamond.width) / 2
+                diamond.y = (root.height - diamond.height) / 2
+
+                travelAnimation.start()
+            })
+
+        } else {
+            resetting = true
+
+            pulseAnimation.stop()
+
+            resetting = false
+
+            if (travelAnimation.running) {
+                exitPending = true
+            } else if (visible) {
+                exitAnimation.start()
+            }
         }
     }
-}
 }

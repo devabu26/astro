@@ -1,6 +1,7 @@
 import QtQuick 2.7
 import QtMultimedia 5.8
 import Lomiri.Components 1.3
+import Ubuntu.Content 1.1
 
 Item {
     id: root
@@ -16,11 +17,19 @@ Item {
 
     property string videoUrl: ""
     property bool downloading: false
+    property bool exporting: false
+    property bool destinationPickerOpen: false
+    property string pendingExportUrl: ""
+    property string exportStatus: ""
+    property var activeTransfer: null
     property bool playbackFinished: false
     property string errorMessage: ""
     property bool controlsVisible: true
 
     signal playbackStarted()
+    signal swipeStarted()
+    signal swipeMoved(real dx, real dy)
+    signal swipeEnded(bool cancelled)
 
     width: parent ? parent.width : units.gu(40)
     height: units.gu(25)
@@ -125,6 +134,17 @@ Item {
         root.errorMessage = error || "Video download failed"
     }
 
+    // Export the already-downloaded original video file.
+    function exportVideo() {
+        if (root.videoUrl === "" || root.exporting)
+            return
+
+        root.exporting = true
+        root.pendingExportUrl = root.videoUrl
+        root.exportStatus = "Choose where to save the video"
+        root.destinationPickerOpen = true
+    }
+
     Connections {
         target: root.backend
 
@@ -202,8 +222,62 @@ Item {
             anchors.fill: parent
             z: 1
 
+            property real swipePressX: 0
+            property real swipePressY: 0
+            property bool swipeClaimed: false
+
+            onPressed: {
+                swipePressX = mouse.x
+                swipePressY = mouse.y
+                swipeClaimed = false
+                root.swipeStarted()
+            }
+
+            onPositionChanged: {
+                if (!pressed)
+                    return
+
+                var dx = mouse.x - swipePressX
+                var dy = mouse.y - swipePressY
+
+                if (!swipeClaimed &&
+                    Math.abs(dx) > units.gu(0.65) &&
+                    Math.abs(dx) > Math.abs(dy) * 1.05) {
+                    swipeClaimed = true
+                    preventStealing = true
+                }
+
+                if (swipeClaimed)
+                    root.swipeMoved(dx, dy)
+            }
+
+            onReleased: {
+                if (swipeClaimed)
+                    root.swipeEnded(false)
+
+                preventStealing = false
+            }
+
+            onCanceled: {
+                if (swipeClaimed)
+                    root.swipeEnded(true)
+
+                swipeClaimed = false
+                preventStealing = false
+            }
+
+            onDoubleClicked: {
+                if (!swipeClaimed)
+                    root.requestFullscreen()
+            }
+
             onClicked: {
-                root.revealControls()
+                if (!swipeClaimed) {
+                    root.revealControls()
+                    root.togglePlayback()
+                }
+
+                swipeClaimed = false
             }
         }
 
@@ -215,7 +289,7 @@ Item {
             height: units.gu(9)
             radius: width / 2
 
-            color: "#ffffff"
+            color: "#bb263744"
 
             visible: !root.downloading &&
                      root.controlsVisible &&
@@ -231,7 +305,7 @@ Item {
                 onPaint: {
                     var ctx = getContext("2d")
                     ctx.clearRect(0, 0, width, height)
-                    ctx.fillStyle = "#111111"
+                    ctx.fillStyle = "#ffffff"
                     ctx.beginPath()
                     ctx.moveTo(0, 0)
                     ctx.lineTo(width, height / 2)
@@ -359,7 +433,7 @@ Item {
                         width: units.gu(5)
                         height: units.gu(5)
                         radius: width / 2
-                        color: "#ffffff"
+                        color: "#bb263744"
 
                         Canvas {
                             anchors.centerIn: parent
@@ -371,7 +445,7 @@ Item {
                             onPaint: {
                                 var ctx = getContext("2d")
                                 ctx.clearRect(0, 0, width, height)
-                                ctx.fillStyle = "#111111"
+                                ctx.fillStyle = "#ffffff"
                                 ctx.beginPath()
                                 ctx.moveTo(0, 0)
                                 ctx.lineTo(width, height / 2)
@@ -384,7 +458,7 @@ Item {
                         Text {
                             anchors.centerIn: parent
                             text: "Ⅱ"
-                            color: "#111111"
+                            color: "#ffffff"
                             font.pixelSize: units.gu(2.5)
                             visible: player.playbackState ===
                                      MediaPlayer.PlayingState
@@ -410,9 +484,30 @@ Item {
                     Item {
                         width: Math.max(
                             0,
-                            parent.width - units.gu(17)
+                            parent.width - units.gu(25)
                         )
                         height: 1
+                    }
+
+                    Rectangle {
+                        width: units.gu(5)
+                        height: units.gu(5)
+                        radius: width / 2
+                        color: "#245b78"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "↓"
+                            color: "#ffffff"
+                            font.pixelSize: units.gu(3)
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: root.videoUrl !== "" &&
+                                     !root.exporting
+                            onClicked: root.exportVideo()
+                        }
                     }
 
                     Rectangle {
@@ -436,6 +531,115 @@ Item {
                 }
             }
         }
+    }
+
+
+    // =====================================
+    // Content Hub video export
+    // =====================================
+
+    ContentPeerPicker {
+        id: videoExportPeerPicker
+
+        parent: root.fullscreenHost && root.fullscreenHost.visible
+                ? root.fullscreenHost : root
+        anchors.fill: parent
+        z: 20
+        visible: root.destinationPickerOpen
+
+        contentType: ContentType.All
+        handler: ContentHandler.Destination
+
+        onPeerSelected: {
+            peer.selectionType = ContentTransfer.Single
+            root.activeTransfer = peer.request()
+
+            if (!root.activeTransfer) {
+                root.exportStatus = "Could not start file transfer"
+                root.exporting = false
+                root.destinationPickerOpen = false
+                root.pendingExportUrl = ""
+                return
+            }
+
+            root.exportStatus = "Preparing video transfer…"
+        }
+
+        onCancelPressed: {
+            root.destinationPickerOpen = false
+            root.exporting = false
+            root.pendingExportUrl = ""
+            root.exportStatus = ""
+        }
+    }
+
+    Component {
+        id: videoExportContentItemComponent
+        ContentItem {}
+    }
+
+    Connections {
+        target: root.activeTransfer
+
+        onStateChanged: {
+            var transfer = root.activeTransfer
+
+            if (!transfer)
+                return
+
+            if (transfer.state === ContentTransfer.InProgress) {
+                var item = videoExportContentItemComponent.createObject(
+                    root, { "url": root.pendingExportUrl }
+                )
+
+                if (!item) {
+                    root.exportStatus = "Could not prepare the video"
+                    transfer.state = ContentTransfer.Aborted
+                    return
+                }
+
+                transfer.items = [item]
+                transfer.state = ContentTransfer.Charged
+                root.exportStatus = "Sending video to Files…"
+            }
+            else if (transfer.state === ContentTransfer.Collected) {
+                transfer.finalize()
+                root.activeTransfer = null
+                root.exporting = false
+                root.pendingExportUrl = ""
+                root.destinationPickerOpen = false
+                root.exportStatus = "Video exported successfully"
+            }
+            else if (transfer.state === ContentTransfer.Aborted) {
+                transfer.finalize()
+                root.activeTransfer = null
+                root.exporting = false
+                root.pendingExportUrl = ""
+                root.destinationPickerOpen = false
+                root.exportStatus = "Video transfer failed or was cancelled"
+            }
+        }
+    }
+
+    ContentTransferHint {
+        parent: root.fullscreenHost && root.fullscreenHost.visible
+                ? root.fullscreenHost : root
+        anchors.fill: parent
+        z: 30
+        activeTransfer: root.activeTransfer
+    }
+
+    Text {
+        parent: root.fullscreenHost && root.fullscreenHost.visible
+                ? root.fullscreenHost : root
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: units.gu(18)
+        z: 31
+        visible: root.exportStatus !== ""
+        text: root.exportStatus
+        color: "white"
+        font.pixelSize: units.gu(1.7)
     }
 
     Component.onDestruction: {

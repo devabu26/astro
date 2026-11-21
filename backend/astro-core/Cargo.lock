@@ -111,6 +111,8 @@ dependencies = [
  "matrix-sdk-ui",
  "serde_json",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

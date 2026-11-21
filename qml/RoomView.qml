@@ -8,9 +8,22 @@ Item {
     id: root
 
     property var backend
+
+    property string openMessageActionsId: ""
+    property var activeMessageBubble: null
+    property string reactionPickerEventId: ""
+    property real reactionPickerX: 0
+    property real reactionPickerY: 0
+    property bool reactionPickerVisible: false
     property string roomId: ""
     property string roomName: "Welcome to Astro"
     property string avatarUrl: ""
+
+    // Event requested by an in-app notification.
+    property string targetEventId: ""
+    property int targetRequestSerial: 0
+    property string pendingTargetEventId: ""
+    property int targetPaginationStartCount: -1
 
 
     // Sender avatar cache, indexed by Matrix MXC URI.
@@ -23,11 +36,155 @@ Item {
     property bool isLoadingOlder: false
     property bool hasMoreHistory: true
     property bool pendingInitialScroll: false
+    property bool roomMenuVisible: false
+    property string timelineLoadError: ""
 
     // Scroll state.
     property bool isAtBottom: true
     property real previousMessageContentHeight: 0
     property bool readReceiptSent: false
+    property string selectedMessageEventId: ""
+
+    function refreshTimeline() {
+        if (
+            !root.backend ||
+            root.roomId === "" ||
+            root.isLoadingInitial ||
+            root.isLoadingOlder
+        ) {
+            return
+        }
+
+        root.roomMenuVisible = false
+
+        messageComposer.dismissKeyboard()
+        bottomScrollAnimation.stop()
+
+        // Clear transient message UI and the visible history.
+        root.selectedMessageEventId = ""
+        root.openMessageActionsId = ""
+        root.reactionPickerVisible = false
+        root.reactionPickerEventId = ""
+
+        messageModel.clear()
+        messageList.contentY = 0
+
+        // Prepare the initial timeline response path.
+        root.hasMoreHistory = true
+        root.isLoadingOlder = false
+        root.isLoadingInitial = true
+        root.pendingInitialScroll = false
+        root.pendingTargetEventId = ""
+        root.targetPaginationStartCount = -1
+        root.isAtBottom = true
+        root.previousMessageContentHeight = 0
+        root.timelineLoadError = ""
+
+        console.log(
+            "ASTRO: Refreshing room timeline:",
+            root.roomId
+        )
+
+        // Purge this room's Matrix SDK event cache, then reload it.
+        root.backend.requestRefreshRoomTimeline(root.roomId)
+    }
+
+    function tryNavigateToPendingEvent() {
+        if (root.pendingTargetEventId === "")
+            return
+
+        if (root.roomId === "" ||
+            root.isLoadingInitial ||
+            root.isLoadingOlder)
+            return
+
+        // First search the messages already in the model.
+        for (var i = 0; i < messageModel.count; i++) {
+            if (messageModel.get(i).eventId !==
+                root.pendingTargetEventId)
+                continue
+
+            var delegate = messageRepeater.itemAt(i)
+
+            // Wait for the Repeater delegate to be laid out.
+            if (!delegate) {
+                Qt.callLater(root.tryNavigateToPendingEvent)
+                return
+            }
+
+            var position = delegate.mapToItem(
+                messageList.contentItem, 0, 0
+            )
+
+            var desiredY = position.y -
+                (messageList.height - delegate.height) / 2
+
+            var maximumY = Math.max(
+                0,
+                messageList.contentHeight - messageList.height
+            )
+
+            messageList.contentY = Math.max(
+                0, Math.min(maximumY, desiredY)
+            )
+
+            // Reuse the existing message-selection highlight.
+            root.selectedMessageEventId =
+                root.pendingTargetEventId
+
+            root.pendingTargetEventId = ""
+            root.targetPaginationStartCount = -1
+            root.updateBottomState()
+
+            console.log(
+                "ASTRO: Notification target located:",
+                root.selectedMessageEventId
+            )
+            return
+        }
+
+        // The event is not in the loaded portion of the timeline.
+        if (!root.hasMoreHistory) {
+            console.warn(
+                "ASTRO: Notification event is not present in room history:",
+                root.pendingTargetEventId
+            )
+            root.pendingTargetEventId = ""
+            root.targetPaginationStartCount = -1
+            return
+        }
+
+        if (!root.backend || messageModel.count === 0)
+            return
+
+        // Each successful page must add messages. This prevents
+        // endless requests if the server returns no usable overlap.
+        if (root.targetPaginationStartCount >= 0 &&
+            messageModel.count <= root.targetPaginationStartCount) {
+            console.warn(
+                "ASTRO: Stopping notification history search; no older messages were added"
+            )
+            root.pendingTargetEventId = ""
+            root.targetPaginationStartCount = -1
+            return
+        }
+
+        root.targetPaginationStartCount = messageModel.count
+        root.isLoadingOlder = true
+
+        console.log(
+            "ASTRO: Loading older history to locate notification event:",
+            root.pendingTargetEventId
+        )
+
+        root.backend.requestOlderRoomTimeline(root.roomId)
+    }
+
+    onTargetRequestSerialChanged: {
+        root.pendingTargetEventId = root.targetEventId
+        root.targetPaginationStartCount = -1
+        Qt.callLater(root.tryNavigateToPendingEvent)
+    }
 
     signal backRequested()
     signal sendMessageRequested(string roomId, string message)
@@ -37,6 +194,7 @@ Item {
         fullscreenVideoOutput !== null
     property var fullscreenVideoOriginalParent: null
     property var fullscreenVideoPlayer: null
+    property var fullscreenVideoDownloadItem: null
     property bool fullscreenControlsVisible: true
 
     function formatVideoTime(milliseconds) {
@@ -75,6 +233,10 @@ Item {
         root.fullscreenVideoOutput = output
         root.fullscreenVideoOriginalParent = originalParent
         root.fullscreenVideoPlayer = mediaPlayer
+        root.fullscreenVideoDownloadItem =
+            originalParent.parent &&
+            typeof originalParent.parent.exportVideo === "function"
+            ? originalParent.parent : null
         root.fullscreenControlsVisible = true
         fullscreenControlsTimer.restart()
 
@@ -92,6 +254,7 @@ Item {
         root.fullscreenVideoOutput = null
         root.fullscreenVideoOriginalParent = null
         root.fullscreenVideoPlayer = null
+        root.fullscreenVideoDownloadItem = null
         root.fullscreenControlsVisible = true
         fullscreenControlsTimer.stop()
         fullscreenVideoOverlay.visible = false
@@ -186,6 +349,77 @@ Item {
 
         root.readReceiptSent = true
         root.backend.markRoomAsRead(root.roomId)
+    }
+
+    function handleMessageSelection(selectionId) {
+        if (!selectionId)
+            return
+
+        root.selectedMessageEventId = selectionId
+
+        for (var i = 0; i < messageRepeater.count; i++) {
+            var delegate = messageRepeater.itemAt(i)
+
+            if (
+                delegate &&
+                delegate.messageSelectionId !== selectionId
+            ) {
+                delegate.clearMessageSelection()
+            }
+        }
+    }
+
+    function handleMessageSelectionCleared(selectionId) {
+        if (root.selectedMessageEventId === selectionId)
+            root.selectedMessageEventId = ""
+    }
+
+    function handleMessageTouched(selectionId) {
+        if (
+            !selectionId ||
+            !root.selectedMessageEventId ||
+            root.selectedMessageEventId === selectionId
+        ) {
+            return
+        }
+
+        var previousSelectionId = root.selectedMessageEventId
+
+        for (var i = 0; i < messageRepeater.count; i++) {
+            var delegate = messageRepeater.itemAt(i)
+
+            if (
+                delegate &&
+                delegate.messageSelectionId === previousSelectionId
+            ) {
+                delegate.clearMessageSelection()
+                break
+            }
+        }
+    }
+
+    function handleMessageTap(selectionId, wasAllowed) {
+        if (!selectionId)
+            return
+
+        var currentSelectionId = root.selectedMessageEventId
+
+        if (currentSelectionId !== "") {
+            for (var i = 0; i < messageRepeater.count; i++) {
+                var delegate = messageRepeater.itemAt(i)
+
+                if (delegate &&
+                        delegate.messageSelectionId === currentSelectionId) {
+                    delegate.clearMessageSelection()
+                    break
+                }
+            }
+
+            return
+        }
+
+        if (wasAllowed)
+            root.selectedMessageEventId = selectionId
     }
 
     // =====================================
@@ -335,6 +569,9 @@ Item {
     // =====================================
 
     onRoomIdChanged: {
+        root.roomMenuVisible = false
+        root.timelineLoadError = ""
+        root.selectedMessageEventId = ""
         bottomScrollAnimation.stop()
 
         messageModel.clear()
@@ -371,6 +608,9 @@ Item {
             if (error !== "") {
                 root.isLoadingInitial = false
                 root.pendingInitialScroll = false
+                root.timelineLoadError = error
+                root.pendingTargetEventId = ""
+                root.targetPaginationStartCount = -1
 
                 console.log(
                     "ASTRO: Timeline retrieval failed:",
@@ -383,6 +623,7 @@ Item {
                 var result = JSON.parse(json)
                 var messages = result.messages || []
 
+                root.timelineLoadError = ""
                 messageModel.clear()
 
                 root.hasMoreHistory =
@@ -397,12 +638,13 @@ Item {
                 for (var i = 0; i < messages.length; i++) {
                     var message = messages[i]
 
-                    console.log(
-                        "ASTRO DEBUG: Timeline message:",
-                        "sender =", message.sender,
-                        "encrypted =", message.is_encrypted,
-                        "body =", message.body
-                    )
+                console.log(
+                    "STICKER DEBUG:",
+                    "msgtype =", message.msgtype,
+                    "body =", message.body,
+                    "media =", !!message.media_source,
+                    "mime =", message.media_mimetype
+                )
 
                     var date = new Date(
                         Number(message.timestamp)
@@ -413,7 +655,10 @@ Item {
                         message.sender || "",
                         message.sender_avatar || ""
                     )
-                    if ((message.msgtype || "m.text") === "m.image") {
+                    if (
+                        (message.msgtype || "m.text") === "m.image" ||
+                        (message.msgtype || "m.text") === "m.sticker"
+                    ) {
                         roomMedia.requestMessageImage(
                             message.event_id || "",
                             message.media_source || null
@@ -454,7 +699,8 @@ Item {
                         videoThumbnailUrl: roomMedia.cachedMessageThumbnail(root.roomId, message.event_id || ""),
                         msgtype: message.msgtype || "m.text",
                         isOwn: message.is_own === true,
-                        isEncrypted: message.is_encrypted === true
+                        isEncrypted: message.is_encrypted === true,
+                        reactionsJson: JSON.stringify(message.reactions || [])
                     })
                 }
 
@@ -473,11 +719,13 @@ Item {
 
                     root.isLoadingInitial = false
                     root.finishInitialScroll()
+                    root.tryNavigateToPendingEvent()
                 })
 
             } catch (parseError) {
                 root.isLoadingInitial = false
                 root.pendingInitialScroll = false
+                root.timelineLoadError = "parse"
 
                 console.log(
                     "ASTRO: Could not parse room timeline:",
@@ -496,6 +744,8 @@ Item {
 
             if (error !== "") {
                 root.isLoadingOlder = false
+                root.pendingTargetEventId = ""
+                root.targetPaginationStartCount = -1
 
                 console.log(
                     "ASTRO: Older timeline retrieval failed:",
@@ -562,7 +812,10 @@ Item {
                             message.sender || "",
                             message.sender_avatar || ""
                         )
-                        if ((message.msgtype || "m.text") === "m.image") {
+                        if (
+                        (message.msgtype || "m.text") === "m.image" ||
+                        (message.msgtype || "m.text") === "m.sticker"
+                    ) {
                             roomMedia.requestMessageImage(
                                 message.event_id || "",
                                 message.media_source || null
@@ -603,7 +856,8 @@ Item {
                             videoThumbnailUrl: roomMedia.cachedMessageThumbnail(root.roomId, message.event_id || ""),
                             msgtype: message.msgtype || "m.text",
                             isOwn: message.is_own === true,
-                            isEncrypted: message.is_encrypted === true
+                            isEncrypted: message.is_encrypted === true,
+                        reactionsJson: JSON.stringify(message.reactions || [])
                         })
 
                         seenEventIds[eventId] = true
@@ -651,11 +905,14 @@ Item {
                         )
 
                         root.updateBottomState()
+                        root.tryNavigateToPendingEvent()
                     })
                 })
 
             } catch (parseError) {
                 root.isLoadingOlder = false
+                root.pendingTargetEventId = ""
+                root.targetPaginationStartCount = -1
 
                 console.log(
                     "ASTRO: Could not parse older timeline:",
@@ -725,7 +982,10 @@ Item {
                         message.sender || "",
                         message.sender_avatar || ""
                     )
-                    if ((message.msgtype || "m.text") === "m.image") {
+                    if (
+                        (message.msgtype || "m.text") === "m.image" ||
+                        (message.msgtype || "m.text") === "m.sticker"
+                    ) {
                         roomMedia.requestMessageImage(
                             message.event_id || "",
                             message.media_source || null
@@ -766,7 +1026,8 @@ Item {
                         videoThumbnailUrl: roomMedia.cachedMessageThumbnail(root.roomId, message.event_id || ""),
                         msgtype: message.msgtype || "m.text",
                         isOwn: message.is_own === true,
-                        isEncrypted: message.is_encrypted === true
+                        isEncrypted: message.is_encrypted === true,
+                        reactionsJson: JSON.stringify(message.reactions || [])
                     }
 
                     if (existingIndex >= 0) {
@@ -833,6 +1094,12 @@ Item {
                     "ASTRO: Could not process live timeline update:",
                     parseError
                 )
+            }
+        }
+
+        onMatrixReactionToggled: {
+            if (error !== "") {
+                console.log("ASTRO: Could not toggle reaction:", error)
             }
         }
 
@@ -973,6 +1240,7 @@ Item {
                     height: units.gu(8)
 
                     color: "#1b2935"
+                    z: 10
 
                     // Back button on narrow layouts.
                     Rectangle {
@@ -1003,6 +1271,7 @@ Item {
                             anchors.fill: parent
 
                             onClicked: {
+                                messageComposer.dismissKeyboard()
                                 root.backRequested()
                             }
                         }
@@ -1034,7 +1303,7 @@ Item {
                             left: conversationAvatar.right
                             leftMargin: units.gu(2)
                             verticalCenter: parent.verticalCenter
-                            right: parent.right
+                            right: roomMenuButton.left
                             rightMargin: units.gu(1)
                         }
 
@@ -1045,6 +1314,98 @@ Item {
                         font.bold: true
 
                         elide: Text.ElideRight
+                    }
+
+                    // Room options button.
+                    Rectangle {
+                        id: roomMenuButton
+
+                        anchors {
+                            right: parent.right
+                            rightMargin: units.gu(1)
+                            verticalCenter: parent.verticalCenter
+                        }
+
+                        width: units.gu(5)
+                        height: units.gu(5)
+                        radius: units.gu(1)
+
+                        color: roomMenuMouse.pressed
+                               ? "#40596b" : "transparent"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "⋮"
+                            color: "white"
+                            font.pixelSize: units.gu(3)
+                        }
+
+                        MouseArea {
+                            id: roomMenuMouse
+                            anchors.fill: parent
+                            enabled: !root.isLoadingInitial &&
+                                     !root.isLoadingOlder
+
+                            onClicked: {
+                                root.roomMenuVisible =
+                                    !root.roomMenuVisible
+                            }
+                        }
+                    }
+
+                    // Room options dropdown.
+                    Rectangle {
+                        id: roomOptionsMenu
+
+                        anchors {
+                            right: parent.right
+                            rightMargin: units.gu(1)
+                            top: parent.bottom
+                        }
+
+                        width: units.gu(27)
+                        height: units.gu(6)
+
+                        radius: units.gu(1.5)
+                        color: "#354b5b"
+                        border.color: "#587184"
+
+                        visible: root.roomMenuVisible
+                        z: 100
+
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.margins: units.gu(0.5)
+
+                            radius: units.gu(1)
+                            color: refreshTimelineMouse.pressed
+                                   ? "#526e82" : "transparent"
+
+                            opacity: root.isLoadingInitial ||
+                                     root.isLoadingOlder ? 0.5 : 1
+
+                            Text {
+                                anchors {
+                                    left: parent.left
+                                    leftMargin: units.gu(2)
+                                    verticalCenter: parent.verticalCenter
+                                }
+
+                                text: "Refresh timeline"
+                                color: "white"
+                                font.pixelSize: units.gu(1.8)
+                            }
+
+                            MouseArea {
+                                id: refreshTimelineMouse
+                                anchors.fill: parent
+
+                                enabled: !root.isLoadingInitial &&
+                                         !root.isLoadingOlder
+
+                                onClicked: root.refreshTimeline()
+                            }
+                        }
                     }
                 }
 
@@ -1057,7 +1418,7 @@ Item {
 
                     height: parent.height -
                             units.gu(8) -
-                            units.gu(9)
+                            messageComposer.height
 
                     Flickable {
                         id: messageList
@@ -1114,6 +1475,24 @@ Item {
                         onMovementEnded: {
                             root.updateBottomState()
                             root.maybeLoadOlderMessages()
+                        }
+
+                        // Tapping unused chat space clears message
+                        // selection and dismisses the composer keyboard.
+                        MouseArea {
+                            anchors.fill: parent
+                            z: 0
+
+                            onClicked: {
+                                for (var i = 0; i < messageRepeater.count; i++) {
+                                    var delegate = messageRepeater.itemAt(i)
+
+                                    if (delegate)
+                                        delegate.clearMessageSelection()
+                                }
+
+                                messageComposer.dismissKeyboard()
+                            }
                         }
 
                         Column {
@@ -1189,7 +1568,9 @@ Item {
 
                                 width: parent.width
 
-                                text: "No messages to display"
+                                text: root.timelineLoadError !== ""
+                                      ? "Couldn't load messages. Use the menu to retry."
+                                      : "No messages to display"
                                 color: "#9aabba"
 
                                 horizontalAlignment: Text.AlignHCenter
@@ -1201,9 +1582,21 @@ Item {
                             // =====================================
 
                             Repeater {
+                                id: messageRepeater
                                 model: messageModel
 
                                 delegate: Item {
+                                    id: messageDelegate
+
+                                    property string messageSelectionId:
+                                        model.eventId !== ""
+                                        ? model.eventId
+                                        : "message-" + index
+
+                                    function clearMessageSelection() {
+                                        messageBubbleItem.clearTextSelection()
+                                    }
+
                                     width: messageList.width
                                     height: messageDelegateColumn.height
 
@@ -1229,7 +1622,62 @@ Item {
                                         }
 
                                         MessageBubble {
+                                            id: messageBubbleItem
+
                                             width: messageList.width
+                                            selectionId: messageDelegate.messageSelectionId
+                                            actionTrayVisible: root.openMessageActionsId !== "" && root.openMessageActionsId === messageDelegate.messageSelectionId
+                                            tapSelectionAllowed: root.selectedMessageEventId === "" || root.selectedMessageEventId === messageDelegate.messageSelectionId
+                                            messageSelected: !messageBubbleItem.isImage && !messageBubbleItem.isVideo && root.selectedMessageEventId === messageDelegate.messageSelectionId
+
+                                            onMessageActionTrayToggled: {
+                                                root.openMessageActionsId = visible ? selectionId : ""
+                                                root.activeMessageBubble = visible ? messageBubbleItem : null
+                                            }
+
+                                            onReactionPickerRequested: {
+                                                var anchor = messageBubbleItem.mapToItem(
+                                                    root,
+                                                    anchorX,
+                                                    anchorY
+                                                )
+
+                                                root.reactionPickerEventId = eventId
+                                                root.reactionPickerX = anchor.x
+                                                root.reactionPickerY = anchor.y
+                                                root.reactionPickerVisible = true
+                                            }
+
+                                            onReactionRequested: {
+                                                if (root.backend) {
+                                                    root.backend.toggleRoomReaction(
+                                                        root.roomId,
+                                                        eventId,
+                                                        reactionKey
+                                                    )
+                                                }
+                                            }
+
+                                            onSelectionRequested: {
+                                                root.handleMessageSelection(selectionId)
+                                            }
+
+                                            onSelectionCleared: {
+                                                root.handleMessageSelectionCleared(selectionId)
+                                            }
+
+                                            onMessageTouched: {
+                                                messageComposer.dismissKeyboard()
+                                                 if (root.openMessageActionsId !== "" &&
+                                                        root.openMessageActionsId !== selectionId) {
+                                                    root.openMessageActionsId = ""
+                                                    root.activeMessageBubble = null
+                                                }
+                                            }
+
+                                            onMessageTapRequested: {
+                                                root.handleMessageTap(selectionId, wasAllowed)
+                                            }
 
                                             sender: model.sender
                                             senderDisplayName: model.senderDisplayName
@@ -1237,7 +1685,9 @@ Item {
                                             showAvatar: index === 0 ||
                                                 messageModel.get(index - 1).sender !== model.sender
                                             imageUrl: model.imageUrl
-                                            isImage: model.msgtype === "m.image"
+                                            isImage: model.msgtype === "m.image" ||
+                                                model.msgtype === "m.sticker"
+                                            isSticker: model.msgtype === "m.sticker"
 
                                             isVideo: model.msgtype === "m.video"
                                             backend: root.backend
@@ -1248,7 +1698,7 @@ Item {
                                             videoMediaSourceJson: model.mediaSourceJson
                                             videoThumbnailUrl: model.videoThumbnailUrl
                                             videoMimeType: model.mediaMimetype
-                                            fullscreenHost: fullscreenVideoOverlay
+                                            fullscreenHost: root
 
                                             onVideoFullscreenRequested: {
                                                 root.openFullscreenVideo(
@@ -1257,13 +1707,24 @@ Item {
                                                     mediaPlayer
                                                 )
                                             }
-
                                             onImageClicked: {
-                                                roomMedia.openImageViewer(imageUrl)
+                                                messageComposer.dismissKeyboard()
+                                                 roomMedia.openImageViewer(
+                                                    imageUrl,
+                                                    model.eventId,
+                                                    model.mediaSourceJson,
+                                                    model.mediaMimetype,
+                                                    model.body
+                                                )
+                                            }
+
+                                            onPasteRequested: {
+                                                messageComposer.pasteFromClipboard()
                                             }
 
                                             body: model.body
                                             timestamp: model.timestamp
+                                            reactionsJson: model.reactionsJson
 
                                             isOwn: model.isOwn
                                             isEncrypted: model.isEncrypted
@@ -1328,7 +1789,8 @@ Item {
                             anchors.fill: parent
 
                             onClicked: {
-                                root.scrollToBottom()
+                                messageComposer.dismissKeyboard()
+                                 root.scrollToBottom()
                             }
                         }
                     }
@@ -1423,6 +1885,8 @@ Item {
         MouseArea {
             anchors.fill: parent
             z: 1
+
+            onDoubleClicked: root.closeFullscreenVideo()
 
             onClicked: {
                 if (root.fullscreenControlsVisible) {
@@ -1562,16 +2026,37 @@ Item {
                         width: units.gu(7)
                         height: units.gu(7)
                         radius: width / 2
-                        color: "#ffffff"
+                        color: "#bb263744"
+
+                        Canvas {
+                            anchors.centerIn: parent
+                            width: units.gu(2)
+                            height: units.gu(2.5)
+                            visible: !root.fullscreenVideoPlayer ||
+                                     root.fullscreenVideoPlayer.playbackState !==
+                                         MediaPlayer.PlayingState
+
+                            onPaint: {
+                                var ctx = getContext("2d")
+                                ctx.clearRect(0, 0, width, height)
+                                ctx.fillStyle = "#ffffff"
+                                ctx.beginPath()
+                                ctx.moveTo(0, 0)
+                                ctx.lineTo(width, height / 2)
+                                ctx.lineTo(0, height)
+                                ctx.closePath()
+                                ctx.fill()
+                            }
+                        }
 
                         Text {
                             anchors.centerIn: parent
-                            text: root.fullscreenVideoPlayer &&
-                                  root.fullscreenVideoPlayer.playbackState ===
-                                      MediaPlayer.PlayingState
-                                  ? "Ⅱ" : "▶"
-                            color: "#000000"
+                            text: "Ⅱ"
+                            color: "#ffffff"
                             font.pixelSize: units.gu(3)
+                            visible: root.fullscreenVideoPlayer &&
+                                     root.fullscreenVideoPlayer.playbackState ===
+                                         MediaPlayer.PlayingState
                         }
 
                         MouseArea {
@@ -1610,10 +2095,73 @@ Item {
                         color: "white"
                         font.pixelSize: units.gu(1.8)
                     }
+
+                    Item {
+                        width: Math.max(0, parent.width - units.gu(27))
+                        height: 1
+                    }
+
+                    Rectangle {
+                        width: units.gu(7)
+                        height: units.gu(7)
+                        radius: width / 2
+                        color: "#245b78"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "↓"
+                            color: "white"
+                            font.pixelSize: units.gu(3.5)
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: root.fullscreenVideoDownloadItem !== null &&
+                                     !root.fullscreenVideoDownloadItem.exporting
+
+                            onClicked: {
+                                if (root.fullscreenVideoDownloadItem)
+                                    root.fullscreenVideoDownloadItem.exportVideo()
+                            }
+                        }
+                    }
                 }
             }
 
         }
+    }
+
+    MouseArea {
+        id: dismissMessageActionsArea
+        anchors.fill: parent
+        z: 900
+        visible: root.openMessageActionsId !== ""
+        enabled: visible
+        propagateComposedEvents: true
+
+        onPressed: {
+            var insideActiveMessage = false
+
+            if (root.activeMessageBubble) {
+                var point = root.activeMessageBubble.mapFromItem(
+                    root, mouse.x, mouse.y
+                )
+                insideActiveMessage =
+                    point.x >= 0 &&
+                    point.y >= 0 &&
+                    point.x <= root.activeMessageBubble.width &&
+                    point.y <= root.activeMessageBubble.height
+            }
+
+            if (!insideActiveMessage) {
+                root.openMessageActionsId = ""
+                root.activeMessageBubble = null
+            }
+
+            mouse.accepted = false
+        }
+
+        onClicked: mouse.accepted = false
     }
 
     RoomMedia {
@@ -1624,6 +2172,54 @@ Item {
 
         backend: root.backend
         roomId: root.roomId
+    }
+
+
+    // Room-wide reaction picker overlay. Kept outside the clipped message list.
+    MouseArea {
+        anchors.fill: parent
+        z: 2999
+        visible: root.reactionPickerVisible
+        enabled: visible
+        preventStealing: true
+
+        onClicked: root.reactionPickerVisible = false
+    }
+
+    EmojiReactionPicker {
+        id: roomEmojiReactionPicker
+
+        z: 3000
+        visible: root.reactionPickerVisible
+
+        x: Math.max(
+            units.gu(1),
+            Math.min(
+                root.width - width - units.gu(1),
+                root.reactionPickerX - width + units.gu(4)
+            )
+        )
+
+        y: root.reactionPickerY >= height + units.gu(2)
+           ? root.reactionPickerY - height - units.gu(1)
+           : Math.min(
+                 root.height - height - units.gu(1),
+                 root.reactionPickerY + units.gu(5)
+             )
+
+        onReactionSelected: {
+            root.reactionPickerVisible = false
+
+            if (root.backend && root.reactionPickerEventId !== "") {
+                root.backend.toggleRoomReaction(
+                    root.roomId,
+                    root.reactionPickerEventId,
+                    reactionKey
+                )
+            }
+        }
+
+        onDismissed: root.reactionPickerVisible = false
     }
 
 }

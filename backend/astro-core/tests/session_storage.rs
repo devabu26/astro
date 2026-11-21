@@ -45,12 +45,9 @@ fn session_round_trip_and_wrong_passphrase() {
     )
     .unwrap();
 
-    let restored = astro_core::session_storage::load_session(
-        &path,
-        "correct-test-passphrase",
-    )
-    .unwrap()
-    .expect("session should be restored");
+    let restored = astro_core::session_storage::load_session(&path, "correct-test-passphrase")
+        .unwrap()
+        .expect("session should be restored");
 
     assert_eq!(restored.homeserver, TEST_HOMESERVER);
     assert_eq!(restored.store_id.as_deref(), Some(TEST_STORE_ID));
@@ -111,8 +108,7 @@ fn session_file_delete_is_idempotent() {
 fn missing_session_returns_none() {
     let path = test_path();
 
-    let result =
-        astro_core::session_storage::load_session(&path, "test-passphrase").unwrap();
+    let result = astro_core::session_storage::load_session(&path, "test-passphrase").unwrap();
 
     assert!(result.is_none());
 }

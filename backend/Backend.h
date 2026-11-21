@@ -5,6 +5,7 @@
 
 class QThread;
 class StorageWorker;
+class NotificationManager;
 
 class Backend : public QObject
 {
@@ -44,6 +45,9 @@ public:
     // ---------------------------------------------------------
     // Matrix account operations
     // ---------------------------------------------------------
+    Q_INVOKABLE void checkMatrixDeviceManagementUrl(
+        const QString &deviceId
+    );
 
     Q_INVOKABLE void loginMatrix(
         const QString &homeserver,
@@ -52,12 +56,15 @@ public:
     );
 
     Q_INVOKABLE void logoutMatrix();
+    Q_INVOKABLE void setPushToken(const QString &token);
+    Q_INVOKABLE void setPushPrivacyLevel(const QString &privacyLevel);
+    Q_INVOKABLE void setPushNotificationsEnabled(bool enabled);
 
     // ---------------------------------------------------------
     // Matrix rooms and Spaces
     // ---------------------------------------------------------
 
-    Q_INVOKABLE void refreshMatrixRooms();
+    Q_INVOKABLE bool refreshMatrixRooms();
 
     // ---------------------------------------------------------
     // Matrix media and room avatars
@@ -78,6 +85,13 @@ public:
         const QString &mediaSourceJson
     );
 
+    Q_INVOKABLE void exportMessageImage(
+        const QString &requestKey,
+        const QString &mediaSourceJson,
+        const QString &mimeType,
+        const QString &fileName
+    );
+
     Q_INVOKABLE void requestMessageThumbnail(
         const QString &requestKey,
         const QString &mediaSourceJson,
@@ -92,14 +106,24 @@ public:
     );
 
     Q_INVOKABLE void requestRoomTimeline(const QString &roomId);
+    Q_INVOKABLE void requestRefreshRoomTimeline(const QString &roomId);
     Q_INVOKABLE void requestOlderRoomTimeline(const QString &roomId);
     Q_INVOKABLE void markRoomAsRead(const QString &roomId);
     Q_INVOKABLE void sendRoomMessage(const QString &roomId, const QString &message);
+    Q_INVOKABLE void toggleRoomReaction(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &reactionKey
+    );
 
     // Matrix device verification
     Q_INVOKABLE void acceptVerificationRequest(const QString &userId, const QString &flowId);
     Q_INVOKABLE void cancelVerificationRequest(const QString &userId, const QString &flowId);
     Q_INVOKABLE void confirmVerification(const QString &userId, const QString &flowId);
+    Q_INVOKABLE void refreshMatrixDevices();
+    Q_INVOKABLE void requestDeviceVerification(const QString &deviceId);
+    Q_INVOKABLE void renameMatrixDevice(const QString &deviceId, const QString &displayName);
+    Q_INVOKABLE void revokeMatrixDevice(const QString &deviceId, const QString &password);
     Q_INVOKABLE void mismatchVerification(const QString &userId, const QString &flowId);
 
 signals:
@@ -128,11 +152,17 @@ signals:
     void matrixSessionRestored(bool restored);
     void matrixLoginSucceeded();
     void matrixLogoutSucceeded();
-
+    void requestMatrixDeviceManagementUrl(const QString &deviceId);
+    void matrixDeviceManagementUrlReady(
+        const QString &deviceId,
+        const QString &url,
+        const QString &error
+    );
     // ---------------------------------------------------------
     // Matrix room and Space signals
     // ---------------------------------------------------------
 
+    void matrixDevicesRetrieved(const QString &json, const QString &error);
     void matrixRoomsRetrieved(const QString &json, bool finished);
 
     void matrixTimelineRetrieved(
@@ -153,8 +183,30 @@ signals:
         const QString &error
     );
 
+    void matrixReactionToggled(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &reactionKey,
+        bool added,
+        const QString &error
+    );
+
     // Incoming and updated room timeline events.
     void matrixLiveTimelineUpdated(const QString &json);
+    void notificationReceived(
+        const QString &sender,
+        const QString &body,
+        const QString &roomId,
+        const QString &eventId
+    );
+
+    void matrixDeviceVerificationFinished(
+        const QString &deviceId,
+        const QString &error
+    );
+
+    void matrixDeviceRenameFinished(const QString &deviceId, const QString &error);
+    void matrixDeviceRevocationFinished(const QString &deviceId, const QString &error);
 
     void matrixVerificationActionFinished(
         const QString &userId,
@@ -197,6 +249,17 @@ signals:
         const QString &error
     );
 
+    void messageImageExported(
+        const QString &requestKey,
+        const QString &fileUrl,
+        const QString &fileName
+    );
+
+    void messageImageExportFailed(
+        const QString &requestKey,
+        const QString &error
+    );
+
     void messageThumbnailRetrieved(
         const QString &requestKey,
         const QString &dataUrl
@@ -233,14 +296,27 @@ signals:
     );
 
     void requestLogoutMatrix();
+    void requestSetPushToken(const QString &token);
+    void requestSetPushPrivacyLevel(const QString &privacyLevel);
+    void requestSetPushNotificationsEnabled(bool enabled);
 
     // Matrix room requests.
+    void requestFetchMatrixDevices();
+    void requestStartDeviceVerification(const QString &deviceId);
+    void requestRenameMatrixDevice(const QString &deviceId, const QString &displayName);
+    void requestRevokeMatrixDevice(const QString &deviceId, const QString &password);
     void requestFetchMatrixRooms();
     void requestSyncMatrixRooms();
     void requestFetchRoomTimeline(const QString &roomId);
+    void requestRefreshRoomTimelineWorker(const QString &roomId);
     void requestPaginateRoomTimeline(const QString &roomId);
     void requestMarkRoomAsRead(const QString &roomId);
     void requestSendRoomMessage(const QString &roomId, const QString &message);
+    void requestToggleRoomReaction(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &reactionKey
+    );
 
     void requestAcceptVerificationRequest(
         const QString &userId, const QString &flowId
@@ -275,6 +351,13 @@ signals:
         const QString &mediaSourceJson
     );
 
+    void requestExportMessageImage(
+        const QString &requestKey,
+        const QString &mediaSourceJson,
+        const QString &mimeType,
+        const QString &fileName
+    );
+
     void requestFetchMessageThumbnail(
         const QString &requestKey,
         const QString &mediaSourceJson,
@@ -302,6 +385,7 @@ private:
 
     QThread *m_storageThread = nullptr;
     StorageWorker *m_storageWorker = nullptr;
+    NotificationManager *m_notificationManager = nullptr;
 
     // ---------------------------------------------------------
     // Internal helpers

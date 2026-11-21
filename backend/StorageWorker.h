@@ -36,17 +36,31 @@ public slots:
     );
 
     void logoutMatrix();
+    void setPushToken(const QString &token);
+    void setPushPrivacyLevel(const QString &privacyLevel);
+    void setPushNotificationsEnabled(bool enabled);
 
     // ---------------------------------------------------------
     // Matrix room and Space retrieval
     // ---------------------------------------------------------
 
+    void fetchMatrixDevices();
+    void requestDeviceVerification(const QString &deviceId);
+    void renameMatrixDevice(const QString &deviceId, const QString &displayName);
+    void checkMatrixDeviceManagementUrl(const QString &deviceId);
+    void revokeMatrixDevice(const QString &deviceId, const QString &password);
     void fetchMatrixRooms();
     void syncMatrixRooms();
     void fetchRoomTimeline(const QString &roomId);
+    void refreshRoomTimeline(const QString &roomId);
     void paginateRoomTimeline(const QString &roomId);
     void markRoomAsRead(const QString &roomId);
     void sendRoomMessage(const QString &roomId, const QString &message);
+    void toggleRoomReaction(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &reactionKey
+    );
 
     // Matrix device verification actions.
     void acceptVerificationRequest(const QString &userId, const QString &flowId);
@@ -78,6 +92,13 @@ public slots:
     void fetchMessageImage(
         const QString &requestKey,
         const QString &mediaSourceJson
+    );
+
+    void exportMessageImage(
+        const QString &requestKey,
+        const QString &mediaSourceJson,
+        const QString &mimeType,
+        const QString &fileName
     );
 
     void fetchMessageThumbnail(
@@ -123,7 +144,9 @@ signals:
     // Matrix room and Space signals
     // ---------------------------------------------------------
 
+    void matrixDevicesUpdated(const QString &json, const QString &error);
     void matrixRoomsUpdated(const QString &json, bool finished);
+    void matrixRoomsFailed(const QString &error);
 
     void matrixTimelineUpdated(
         const QString &roomId,
@@ -143,8 +166,29 @@ signals:
         const QString &error
     );
 
+    void matrixReactionToggled(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &reactionKey,
+        bool added,
+        const QString &error
+    );
+
     // Live timeline changes forwarded to Backend and QML.
     void matrixLiveTimelineUpdated(const QString &json);
+
+    void matrixDeviceVerificationFinished(
+        const QString &deviceId,
+        const QString &error
+    );
+
+    void matrixDeviceRenameFinished(const QString &deviceId, const QString &error);
+    void matrixDeviceRevocationFinished(const QString &deviceId, const QString &error);
+    void matrixDeviceManagementUrlReady(
+        const QString &deviceId,
+        const QString &url,
+        const QString &error
+    );
 
     void matrixVerificationActionFinished(
         const QString &userId,
@@ -187,6 +231,17 @@ signals:
         const QString &error
     );
 
+    void messageImageExported(
+        const QString &requestKey,
+        const QString &fileUrl,
+        const QString &fileName
+    );
+
+    void messageImageExportFailed(
+        const QString &requestKey,
+        const QString &error
+    );
+
     void messageThumbnailRetrieved(
         const QString &requestKey,
         const QString &dataUrl
@@ -224,11 +279,16 @@ private:
     );
 
     // ---------------------------------------------------------
-    // Rust Matrix client
+    // Register a retained Ubuntu push token when a Matrix session is ready.
+   void registerPushTokenIfReady();
+
+   // Rust Matrix client
     // ---------------------------------------------------------
 
     AstroMatrixClient *m_matrixClient = nullptr;
-
+   QByteArray m_pushToken;
+   QString m_pushPrivacyLevel = "sender_room";
+   bool m_pushNotificationsEnabled = true;
     // Polls retained timeline subscriptions on this worker's thread.
     QTimer *m_timelinePollTimer = nullptr;
 

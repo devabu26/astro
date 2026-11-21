@@ -53,7 +53,7 @@ fn decode_file(data: &[u8]) -> Result<(u32, &[u8], &[u8]), String> {
     Ok((version, &data[HEADER_SIZE..export_end], &data[export_end..]))
 }
 
-fn encode_file(export: &[u8], encrypted_session: &[u8]) -> Result<Vec<u8>, String> {
+fn encode_file(version: u32, export: &[u8], encrypted_session: &[u8]) -> Result<Vec<u8>, String> {
     let export_len = u32::try_from(export.len()).map_err(|_| "Cipher export is too large")?;
 
     let session_len =
@@ -71,7 +71,11 @@ fn encode_file(export: &[u8], encrypted_session: &[u8]) -> Result<Vec<u8>, Strin
     let mut data = Vec::with_capacity(total);
 
     data.extend_from_slice(MAGIC);
-    data.extend_from_slice(&VERSION.to_le_bytes());
+    if version != VERSION && version != LEGACY_VERSION {
+        return Err("Unsupported session file version".into());
+    }
+
+    data.extend_from_slice(&version.to_le_bytes());
     data.extend_from_slice(&export_len.to_le_bytes());
     data.extend_from_slice(&session_len.to_le_bytes());
     data.extend_from_slice(export);
@@ -158,14 +162,16 @@ pub fn save_session(
     path: &Path,
     passphrase: &str,
     homeserver: &str,
-    store_id: &str,
+    store_id: Option<&str>,
     session: &MatrixSession,
 ) -> Result<(), String> {
     if homeserver.trim().is_empty() {
         return Err("Homeserver URL must not be empty".into());
     }
 
-    validate_store_id(store_id)?;
+    if let Some(store_id) = store_id {
+        validate_store_id(store_id)?;
+    }
 
     let cipher = match fs::metadata(path) {
         Ok(_) => {
@@ -186,14 +192,26 @@ pub fn save_session(
         .export(passphrase)
         .map_err(|error| format!("Could not protect session encryption key: {error}"))?;
 
-    // The homeserver, store identifier and Matrix session are encrypted together.
-    let payload = (homeserver.to_owned(), store_id.to_owned(), session.clone());
+    // Preserve the original payload layout for version-2 sessions.
+    // Version-3 sessions include their isolated SDK store identifier.
+    let (version, encrypted_session) = match store_id {
+        Some(store_id) => {
+            let payload = (homeserver.to_owned(), store_id.to_owned(), session.clone());
+            let encrypted = cipher
+                .encrypt_value(&payload)
+                .map_err(|error| format!("Could not encrypt Matrix session: {error}"))?;
+            (VERSION, encrypted)
+        }
+        None => {
+            let payload = (homeserver.to_owned(), session.clone());
+            let encrypted = cipher
+                .encrypt_value(&payload)
+                .map_err(|error| format!("Could not encrypt Matrix session: {error}"))?;
+            (LEGACY_VERSION, encrypted)
+        }
+    };
 
-    let encrypted_session = cipher
-        .encrypt_value(&payload)
-        .map_err(|error| format!("Could not encrypt Matrix session: {error}"))?;
-
-    let data = encode_file(&export, &encrypted_session)?;
+    let data = encode_file(version, &export, &encrypted_session)?;
 
     write_atomic(path, &data)
 }
