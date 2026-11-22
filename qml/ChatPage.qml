@@ -102,7 +102,6 @@ function openNotification(roomId, eventId) {
     if (!roomId)
         return
 
-    var roomChanged = root.selectedRoomId !== roomId
     var found = false
 
     for (var i = 0; i < roomModel.count; i++) {
@@ -131,9 +130,10 @@ function openNotification(roomId, eventId) {
     root.pendingNotificationEventId = eventId || ""
     root.notificationRequestSerial++
 
-    // RoomView already has this room loaded if it did not change.
-    // Otherwise, retrieve its initial timeline.
-    if (roomChanged && root.backend)
+    // Always retrieve a fresh timeline snapshot. This also recovers
+    // when a notification targets the room already displayed but
+    // its current timeline is empty or failed to load.
+    if (root.backend)
         root.backend.requestRoomTimeline(roomId)
 }
 
@@ -869,6 +869,16 @@ function loadRooms(json, finished) {
                 roomId: root.selectedRoomId
                 roomName: root.selectedRoom
                 avatarUrl: root.selectedRoomAvatarUrl
+
+                avatarFallbackColour: {
+                       for (var i = 0; i < roomModel.count; i++) {
+                            var room = roomModel.get(i)
+                            if (room.roomId === root.selectedRoomId)
+                                return room.colour || "#a16b9b"
+                            }
+                            return "#a16b9b"
+                    }
+
                 wideLayout: root.wideLayout
                 targetEventId: root.pendingNotificationEventId
                 targetRequestSerial: root.notificationRequestSerial

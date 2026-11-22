@@ -271,6 +271,7 @@ Item {
     property string roomId: ""
     property string roomName: "Welcome to Astro"
     property string avatarUrl: ""
+    property string avatarFallbackColour: "#a16b9b"
 
     // Event requested by an in-app notification.
     property string targetEventId: ""
@@ -1874,7 +1875,7 @@ Item {
                         }
                     }
 
-                    Image {
+                    Rectangle {
                         id: conversationAvatar
 
                         anchors {
@@ -1887,12 +1888,32 @@ Item {
 
                         width: units.gu(5)
                         height: units.gu(5)
+                        radius: units.gu(1)
 
-                        source: root.avatarUrl
-                        fillMode: Image.PreserveAspectCrop
-                        asynchronous: true
-                        cache: true
-                        visible: source !== ""
+                        color: root.avatarFallbackColour
+                        clip: true
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: root.roomName.length > 0
+                                ? root.roomName.charAt(0).toUpperCase()
+                                : "#"
+                            color: "white"
+                            font.pixelSize: units.gu(2.5)
+                            font.bold: true
+                            visible: conversationAvatarImage.status !== Image.Ready
+                        }
+
+                        Image {
+                            id: conversationAvatarImage
+                            anchors.fill: parent
+
+                            source: root.avatarUrl
+                            fillMode: Image.PreserveAspectCrop
+                            asynchronous: true
+                            cache: true
+                            visible: status === Image.Ready
+                        }
                     }
 
                     Text {

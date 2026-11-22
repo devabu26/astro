@@ -1151,6 +1151,60 @@ impl MatrixClientManager {
             .get_room(&parsed_room_id)
             .ok_or_else(|| format!("Matrix room not found: {room_id}"))?;
 
+
+        // Reuse an existing SDK Timeline when this room has already
+        // been opened. Building another Timeline for the same room
+        // can register duplicate room-cache state.
+        if let Some(timeline) = self.timelines.get(room_id) {
+            let runtime = std::sync::Arc::clone(&self.runtime);
+
+            let (json, update_stream) = runtime.block_on(async {
+                // Take a fresh snapshot and subscription together.
+                let (items, updates) = timeline.subscribe().await;
+
+                let messages: Vec<serde_json::Value> = items
+                    .iter()
+                    .filter_map(|item| {
+                        timeline_item_to_json(
+                            item.as_ref(),
+                            own_user_id.as_deref(),
+                        )
+                    })
+                    .collect();
+
+                let json = serde_json::json!({
+                    "room_id": room_id,
+                    "messages": messages,
+                    "reached_start": false
+                })
+                .to_string();
+
+                Ok::<_, String>(
+                    (json, Box::pin(updates) as TimelineUpdateStream)
+                )
+            })?;
+
+            // Replace Astro's previous subscription with the fresh one.
+            // Keep the original SDK Timeline alive.
+            self.timeline_update_streams
+                .insert(room_id.to_owned(), update_stream);
+
+            if let Ok(mut active_room) = self.active_timeline_room.lock() {
+                *active_room = Some(room_id.to_owned());
+            } else {
+                eprintln!(
+                    "ASTRO DEBUG: Could not update active timeline room state"
+                );
+            }
+
+            eprintln!(
+                "ASTRO DEBUG: Reused existing room timeline: {room_id}"
+            );
+
+            return Ok(json);
+        }
+
+
         let (timeline, json, update_stream) = self.runtime.block_on(async {
             let timeline = TimelineBuilder::new(&room)
                 .build()
