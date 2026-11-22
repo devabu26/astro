@@ -1,7 +1,7 @@
 use crate::matrix_client::MatrixClientManager;
 use crate::storage::StorageManager;
 
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::ptr;
@@ -294,6 +294,67 @@ pub unsafe extern "C" fn astro_matrix_send_room_message(
             set_error(
                 error_out,
                 "Unexpected Rust panic while sending Matrix message",
+            );
+            ptr::null_mut()
+        }
+    }
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_send_room_attachment(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    file_path: *const c_char,
+    content_type: *const c_char,
+    caption: *const c_char,
+    progress_callback: Option<extern "C" fn(*mut c_void, usize, usize)>,
+    progress_context: *mut c_void,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        let file_path = read_input(file_path, "Attachment file path")?;
+        let content_type = read_input(content_type, "Attachment MIME type")?;
+        let caption = read_input(caption, "Attachment caption")?;
+
+        let manager = &*handle;
+
+        manager.send_room_attachment(
+            room_id,
+            file_path,
+            content_type,
+            caption,
+            progress_callback,
+            progress_context,
+        )
+    }));
+
+    match result {
+        Ok(Ok(event_id)) => match CString::new(event_id) {
+            Ok(value) => value.into_raw(),
+            Err(_) => {
+                set_error(error_out, "Invalid event ID returned by Matrix");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while sending Matrix attachment",
             );
             ptr::null_mut()
         }

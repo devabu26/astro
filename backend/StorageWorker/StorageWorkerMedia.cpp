@@ -985,3 +985,154 @@ void StorageWorker::fetchMessageVideo(
         QUrl::fromLocalFile(filePath).toString()
     );
 }
+
+
+// =============================================================
+// Matrix room attachment uploads
+// =============================================================
+
+struct AstroAttachmentProgressContext {
+    StorageWorker *worker = nullptr;
+    QString requestKey;
+    QString roomId;
+};
+
+extern "C" void astroMatrixAttachmentProgress(
+    void *context,
+    uintptr_t current,
+    uintptr_t total
+)
+{
+    auto *progress =
+        static_cast<AstroAttachmentProgressContext *>(context);
+
+    if (!progress || !progress->worker)
+        return;
+
+    emit progress->worker->matrixAttachmentProgress(
+        progress->requestKey,
+        progress->roomId,
+        static_cast<quint64>(current),
+        static_cast<quint64>(total)
+    );
+}
+
+void StorageWorker::sendRoomAttachment(
+    const QString &requestKey,
+    const QString &roomId,
+    const QString &fileUrl,
+    const QString &caption
+)
+{
+    auto fail = [&](const QString &message) {
+        emit matrixAttachmentSent(
+            requestKey, roomId, QString(), message
+        );
+    };
+
+    if (!m_matrixClient) {
+        fail(QStringLiteral("No active Matrix session"));
+        return;
+    }
+
+    if (requestKey.isEmpty() || roomId.isEmpty() || fileUrl.isEmpty()) {
+        fail(QStringLiteral("Attachment request is incomplete"));
+        return;
+    }
+
+    const QUrl sourceUrl(fileUrl);
+
+    if (!sourceUrl.isValid() || !sourceUrl.isLocalFile()) {
+        fail(QStringLiteral(
+            "Content Hub did not provide a local attachment file"
+        ));
+        return;
+    }
+
+    const QFileInfo fileInfo(sourceUrl.toLocalFile());
+
+    if (!fileInfo.exists() ||
+        !fileInfo.isFile() ||
+        !fileInfo.isReadable()) {
+        fail(QStringLiteral(
+            "Selected attachment is not a readable file"
+        ));
+        return;
+    }
+
+    constexpr qint64 maximumAttachmentSize =
+        256LL * 1024LL * 1024LL;
+
+    if (fileInfo.size() <= 0) {
+        fail(QStringLiteral("Selected attachment is empty"));
+        return;
+    }
+
+    if (fileInfo.size() > maximumAttachmentSize) {
+        fail(QStringLiteral(
+            "Attachment exceeds Astro's 256 MiB upload limit"
+        ));
+        return;
+    }
+
+    QMimeDatabase mimeDatabase;
+    const QMimeType detectedMime =
+        mimeDatabase.mimeTypeForFile(
+            fileInfo,
+            QMimeDatabase::MatchContent
+        );
+
+    const QString contentType = detectedMime.isValid()
+        ? detectedMime.name()
+        : QStringLiteral("application/octet-stream");
+
+    const QString localPath = fileInfo.absoluteFilePath();
+
+    const QByteArray roomBytes = roomId.toUtf8();
+    const QByteArray pathBytes = localPath.toUtf8();
+    const QByteArray mimeBytes = contentType.toUtf8();
+    const QByteArray captionBytes = caption.toUtf8();
+
+    AstroAttachmentProgressContext progressContext;
+    progressContext.worker = this;
+    progressContext.requestKey = requestKey;
+    progressContext.roomId = roomId;
+
+    char *error = nullptr;
+
+    char *eventId = astro_matrix_send_room_attachment(
+        m_matrixClient,
+        roomBytes.constData(),
+        pathBytes.constData(),
+        mimeBytes.constData(),
+        captionBytes.constData(),
+        astroMatrixAttachmentProgress,
+        &progressContext,
+        &error
+    );
+
+    if (!eventId) {
+        QString message =
+            QStringLiteral("Could not upload attachment");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+            astro_string_free(error);
+        }
+
+        emit matrixAttachmentSent(
+            requestKey, roomId, QString(), message
+        );
+        return;
+    }
+
+    const QString result = QString::fromUtf8(eventId);
+    astro_string_free(eventId);
+
+    if (error)
+        astro_string_free(error);
+
+    emit matrixAttachmentSent(
+        requestKey, roomId, result, QString()
+    );
+}

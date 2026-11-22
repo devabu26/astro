@@ -103,12 +103,14 @@ checksum = "5f093eed78becd229346bf859eec0aa4dd7ddde0757287b2b4107a1f09c80002"
 name = "astro-core"
 version = "0.1.0"
 dependencies = [
+ "eyeball",
  "eyeball-im",
  "futures-util",
  "matrix-sdk",
  "matrix-sdk-sqlite",
  "matrix-sdk-store-encryption",
  "matrix-sdk-ui",
+ "mime",
  "serde_json",
  "tokio",
  "tracing",

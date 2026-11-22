@@ -1,3 +1,4 @@
+use eyeball::SharedObservable;
 use eyeball_im::VectorDiff;
 use futures_util::{FutureExt, Stream, StreamExt};
 use matrix_sdk::encryption::verification::{
@@ -8,7 +9,9 @@ use matrix_sdk::ruma::api::client::push::{PusherIds, PusherInit, PusherKind};
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk::ruma::api::client::uiaa;
 use matrix_sdk::ruma::events::key::verification::VerificationMethod;
-use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+use matrix_sdk::ruma::events::room::message::{
+    RoomMessageEventContent, TextMessageEventContent,
+};
 use matrix_sdk::ruma::events::{
     key::verification::request::ToDeviceKeyVerificationRequestEvent,
     room::message::{MessageType, OriginalSyncRoomMessageEvent},
@@ -16,11 +19,12 @@ use matrix_sdk::ruma::events::{
 use matrix_sdk::ruma::push::HttpPusherData;
 use matrix_sdk::{
     config::SyncSettings, ruma::room::RoomType, store::RoomLoadSettings, Client, LoopCtrl,
-    Room, RoomMemberships, SqliteStoreConfig,
+    Room, RoomMemberships, SqliteStoreConfig, TransmissionProgress,
 };
 use matrix_sdk_ui::spaces::SpaceService;
 use matrix_sdk_ui::timeline::{Timeline, TimelineBuilder, TimelineEventItemId, TimelineItem};
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -1898,6 +1902,135 @@ impl MatrixClientManager {
 
             Ok(response.response.event_id.to_string())
         })
+    }
+
+
+    /// Upload and send an attachment to a Matrix room.
+    ///
+    /// The SDK selects the appropriate media event type and handles
+    /// encrypted media automatically for encrypted rooms.
+    pub fn send_room_attachment(
+        &self,
+        room_id: &str,
+        file_path: &str,
+        content_type: &str,
+        caption: &str,
+        progress_callback: Option<extern "C" fn(*mut c_void, usize, usize)>,
+        progress_context: *mut c_void,
+    ) -> Result<String, String> {
+        const MAX_ATTACHMENT_SIZE: u64 = 256 * 1024 * 1024;
+
+        if file_path.trim().is_empty() {
+            return Err("Attachment file path must not be empty".into());
+        }
+
+        if content_type.trim().is_empty() {
+            return Err("Attachment MIME type must not be empty".into());
+        }
+
+        let path = Path::new(file_path);
+
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "Could not determine attachment filename".to_string())?
+            .to_owned();
+
+        let metadata = fs::metadata(path)
+            .map_err(|error| format!("Could not inspect attachment: {error}"))?;
+
+        if !metadata.is_file() {
+            return Err("Attachment path is not a regular file".into());
+        }
+
+        if metadata.len() == 0 {
+            return Err("Attachment file is empty".into());
+        }
+
+        if metadata.len() > MAX_ATTACHMENT_SIZE {
+            return Err("Attachment exceeds the 256 MiB upload limit".into());
+        }
+
+        let content_type: mime::Mime = content_type
+            .parse()
+            .map_err(|error| format!("Invalid attachment MIME type: {error}"))?;
+
+        let data = fs::read(path)
+            .map_err(|error| format!("Could not read attachment: {error}"))?;
+
+        if data.is_empty() {
+            return Err("Attachment file is empty".into());
+        }
+
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?;
+
+        let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+            .map_err(|error| format!("Invalid Matrix room ID: {error}"))?;
+
+        let room = client
+            .get_room(&parsed_room_id)
+            .ok_or_else(|| format!("Matrix room not found: {room_id}"))?;
+
+        let caption = if caption.trim().is_empty() {
+            None
+        } else {
+            Some(TextMessageEventContent::plain(caption.to_owned()))
+        };
+
+        let config = matrix_sdk::attachment::AttachmentConfig::new()
+            .caption(caption);
+
+        let progress = SharedObservable::new(
+            TransmissionProgress::default()
+        );
+
+        let mut subscriber = progress.subscribe();
+        let send_progress = progress.clone();
+
+        let send_future = async move {
+            room.send_attachment(
+                file_name,
+                &content_type,
+                data,
+                config,
+            )
+            .with_send_progress_observable(send_progress)
+            .await
+        };
+
+        let result = self.runtime.block_on(async {
+            tokio::pin!(send_future);
+
+            loop {
+                tokio::select! {
+                    result = &mut send_future => {
+                        break result;
+                    }
+
+                    update = subscriber.next() => {
+                        if let Some(update) = update {
+                            if let Some(callback) = progress_callback {
+                                callback(
+                                    progress_context,
+                                    update.current,
+                                    update.total,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        result
+            .map(|response| response.event_id.to_string())
+            .map_err(|error| {
+                format!("Could not upload and send attachment: {error}")
+            })
     }
 
     /// Toggle a Matrix reaction on an existing room timeline event.

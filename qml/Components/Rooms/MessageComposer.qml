@@ -5,18 +5,27 @@ import Lomiri.Components 1.3
 Rectangle {
     id: root
 
-    height: inputFrame.height + units.gu(3)
+    height: inputFrame.height + units.gu(3) +
+            (root.statusText !== "" ? units.gu(2.5) : 0)
     color: "#1b2935"
 
     signal sendRequested(string message)
+    signal attachRequested(string caption)
 
     property bool sending: false
     property bool pasteVisible: false
+    property bool attachmentBusy: false
+    property bool attachmentMenuVisible: false
+    property string statusText: ""
+
+    // Expose the plus button so RoomView can position its
+    // unclipped attachment-menu overlay relative to it.
+    property alias attachmentButtonItem: attachButton
 
     function submitMessage() {
         var message = root.currentMessage().trim()
 
-        if (message === "")
+        if (message === "" || root.sending || root.attachmentBusy)
             return
 
         root.sendRequested(message)
@@ -38,6 +47,24 @@ Rectangle {
     return text.slice(0, cursor)
             + messageInput.preeditText
             + text.slice(cursor)
+    }
+
+    function insertEmoji(emoji) {
+        if (!emoji || root.sending || root.attachmentBusy)
+            return
+
+        var start = messageInput.selectionStart
+        var end = messageInput.selectionEnd
+
+        if (start !== end) {
+            messageInput.remove(start, end)
+        } else {
+            start = messageInput.cursorPosition
+        }
+
+        messageInput.insert(start, emoji)
+        messageInput.cursorPosition = start + emoji.length
+        messageInput.forceActiveFocus()
     }
 
     function clearInput() {
@@ -90,41 +117,69 @@ Rectangle {
         radius: units.gu(2)
         color: "#263744"
 
+        Rectangle {
+            id: attachButton
+
+            anchors {
+                right: clipboardButton.left
+                rightMargin: units.gu(0.25)
+                verticalCenter: parent.verticalCenter
+            }
+
+            width: units.gu(4)
+            height: units.gu(4)
+            radius: units.gu(1)
+            color: attachMouse.pressed ? "#40596b" : "transparent"
+
+            Text {
+                anchors.centerIn: parent
+                text: "+"
+                color: "#b8cbd8"
+                font.pixelSize: units.gu(3)
+            }
+
+            MouseArea {
+                id: attachMouse
+                anchors.fill: parent
+                enabled: !root.sending && !root.attachmentBusy
+
+                onClicked: {
+                    root.pasteVisible = false
+                    root.attachmentMenuVisible =
+                        !root.attachmentMenuVisible
+                }
+            }
+        }
+
         TextEdit {
             id: messageInput
 
             anchors {
                 left: parent.left
-                right: clipboardButton.left
+                right: attachButton.left
                 top: parent.top
                 bottom: parent.bottom
-
-                leftMargin: units.gu(1.5)
-                rightMargin: units.gu(1)
+                leftMargin: units.gu(1)
+                rightMargin: units.gu(0.5)
                 topMargin: units.gu(1)
                 bottomMargin: units.gu(1)
             }
 
             color: "white"
             selectionColor: "#477fa0"
-
             font.pixelSize: units.gu(1.8)
-
             wrapMode: TextEdit.Wrap
             textFormat: TextEdit.PlainText
-            readOnly: root.sending
-
+            readOnly: root.sending || root.attachmentBusy
             verticalAlignment: TextEdit.AlignVCenter
-
             selectByMouse: true
             clip: true
-
 
             Keys.onReturnPressed: {
                 if (event.modifiers & Qt.ShiftModifier) {
                     messageInput.insert(
                         messageInput.cursorPosition,
-                        "\n"
+                        "\\n"
                     )
                 } else {
                     root.submitMessage()
@@ -134,19 +189,15 @@ Rectangle {
             }
 
             Text {
-                anchors {
-                    left: parent.left
-                    top: parent.top
-                    topMargin: units.gu(0.5)
-                }
-
-                text: "Write a message…"
-
+                anchors.fill: parent
+                anchors.leftMargin: units.gu(0.5)
+                text: "Also write a message…"
                 color: "#91a4b2"
                 font.pixelSize: units.gu(1.8)
+                verticalAlignment: Text.AlignVCenter
 
                 visible: messageInput.text.length === 0
-         && messageInput.preeditText.length === 0
+                         && messageInput.preeditText.length === 0
 
                 enabled: false
             }
@@ -178,12 +229,31 @@ Rectangle {
                 anchors.fill: parent
 
                 onClicked: {
+                    root.attachmentMenuVisible = false
                     root.pasteVisible = !root.pasteVisible
                 }
             }
         }
     }
 
+    Text {
+        id: attachmentStatusLabel
+
+        anchors {
+            left: inputFrame.left
+            right: inputFrame.right
+            bottom: inputFrame.top
+            bottomMargin: units.gu(0.2)
+        }
+
+        height: units.gu(2.2)
+        text: root.statusText
+        color: "#b8cbd8"
+        font.pixelSize: units.gu(1.4)
+        elide: Text.ElideRight
+        verticalAlignment: Text.AlignVCenter
+        visible: root.statusText !== ""
+    }
 
     // Floating text-editing toolbar.
     Rectangle {
@@ -200,7 +270,7 @@ Rectangle {
         radius: units.gu(1.5)
         color: "#354b5b"
         border.color: "#587184"
-        visible: root.pasteVisible && !root.sending
+        visible: root.pasteVisible && !root.sending && !root.attachmentBusy
         z: 10
 
         Row {
@@ -274,10 +344,12 @@ Rectangle {
 
         radius: units.gu(3)
 
-       color: root.currentMessage().trim().length > 0 && !root.sending
+       color: root.currentMessage().trim().length > 0 &&
+              !root.sending && !root.attachmentBusy
        ? "#245b78" : "#293c4c"
 
-opacity: root.currentMessage().trim().length > 0 && !root.sending
+opacity: root.currentMessage().trim().length > 0 &&
+         !root.sending && !root.attachmentBusy
          ? 1 : 0.55
 
         Text {
@@ -293,11 +365,12 @@ opacity: root.currentMessage().trim().length > 0 && !root.sending
             anchors.fill: parent
 
             enabled: root.currentMessage().trim().length > 0
-         && !root.sending
+         && !root.sending && !root.attachmentBusy
 
             onClicked: {
                 root.submitMessage()
             }
         }
     }
+
 }

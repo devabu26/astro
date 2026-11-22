@@ -9,6 +9,12 @@ extern "C" {
 typedef struct AstroStorageManager AstroStorageManager;
 typedef struct AstroMatrixClient AstroMatrixClient;
 
+typedef void (*AstroAttachmentProgressCallback)(
+    void *context,
+    uintptr_t current,
+    uintptr_t total
+);
+
 const char *astro_get_status(void);
 
 AstroStorageManager *astro_storage_open(
@@ -65,6 +71,17 @@ char *astro_matrix_send_room_message(
     AstroMatrixClient *handle,
     const char *room_id,
     const char *message,
+    char **error_out
+);
+
+char *astro_matrix_send_room_attachment(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    const char *file_path,
+    const char *content_type,
+    const char *caption,
+    AstroAttachmentProgressCallback progress_callback,
+    void *progress_context,
     char **error_out
 );
 

@@ -1,11 +1,132 @@
 import QtQuick 2.7
 import QtMultimedia 5.8
 import Lomiri.Components 1.3
+import Lomiri.Content 1.1
 import "Components"
 import "Components/Rooms"
 
 Item {
     id: root
+
+    property bool composerEmojiPickerVisible: false
+
+
+    // ---------------------------------------------------------
+    // Matrix attachment upload state
+    // ---------------------------------------------------------
+
+    property bool attachmentPickerOpen: false
+    property var activeAttachmentTransfer: null
+    property string attachmentCaption: ""
+    property bool attachmentBatchActive: false
+    property string attachmentBatchRoomId: ""
+    property int attachmentRequestSerial: 0
+    property int attachmentPendingCount: 0
+    property int attachmentCompletedCount: 0
+    property int attachmentSuccessfulCount: 0
+    property string attachmentLastError: ""
+    property var attachmentRequests: ({})
+
+    function openAttachmentPicker(caption) {
+        if (!root.backend ||
+            root.roomId === "" ||
+            root.attachmentBatchActive ||
+            messageComposer.sending ||
+            messageComposer.attachmentBusy) {
+            return
+        }
+
+        root.attachmentCaption = caption
+        root.attachmentPickerOpen = true
+        messageComposer.dismissKeyboard()
+    }
+
+    function finishAttachmentTransfer() {
+        var transfer = root.activeAttachmentTransfer
+        root.activeAttachmentTransfer = null
+        root.attachmentPickerOpen = false
+
+        if (transfer &&
+            transfer.state !== ContentTransfer.Finalized) {
+            transfer.finalize()
+        }
+    }
+
+    function startAttachmentUploads(items) {
+        if (!root.backend || root.roomId === "") {
+            root.finishAttachmentTransfer()
+            return
+        }
+
+        var queued = []
+        var requests = {}
+
+        for (var i = 0; items && i < items.length; i++) {
+            var item = items[i]
+
+            if (!item || !item.url)
+                continue
+
+            var fileUrl = String(item.url)
+
+            if (fileUrl === "")
+                continue
+
+            var fileName = item.text
+                ? String(item.text)
+                : "Attachment " + (i + 1)
+
+            root.attachmentRequestSerial++
+
+            var requestKey =
+                "astro-upload-" +
+                Date.now().toString() + "-" +
+                root.attachmentRequestSerial.toString()
+
+            queued.push({
+                requestKey: requestKey,
+                fileUrl: fileUrl,
+                fileName: fileName
+            })
+
+            requests[requestKey] = {
+                roomId: root.roomId,
+                fileName: fileName
+            }
+        }
+
+        if (queued.length === 0) {
+            messageComposer.statusText = "No usable files were selected"
+            root.finishAttachmentTransfer()
+            return
+        }
+
+        root.attachmentRequests = requests
+        root.attachmentBatchRoomId = root.roomId
+        root.attachmentBatchActive = true
+        root.attachmentPendingCount = queued.length
+        root.attachmentCompletedCount = 0
+        root.attachmentSuccessfulCount = 0
+        root.attachmentLastError = ""
+
+        messageComposer.attachmentBusy = true
+        messageComposer.statusText =
+            queued.length === 1
+            ? "Uploading attachment…"
+            : "Uploading " + queued.length + " attachments…"
+
+        // Register every request before dispatching any work.
+        // This also handles immediate Backend validation errors.
+        for (var j = 0; j < queued.length; j++) {
+            root.backend.sendRoomAttachment(
+                queued[j].requestKey,
+                root.roomId,
+                queued[j].fileUrl,
+                j === 0 ? root.attachmentCaption : ""
+            )
+        }
+    }
+
 
     // RoomView owns the single video player and video output.
     property string activeVideoKey: ""
@@ -869,6 +990,7 @@ Item {
       messageModel.clear()
         messageComposer.clearInput()
         messageComposer.sending = false
+        messageComposer.statusText = ""
 
         // Reset the old room's scroll position.
         messageList.contentY = 0
@@ -1448,6 +1570,98 @@ Item {
             messageComposer.clearInput()
 
         }
+
+
+        onMatrixAttachmentProgress: {
+            var details = root.attachmentRequests[requestKey]
+
+            if (!details ||
+                details.roomId !== root.roomId ||
+                total <= 0) {
+                return
+            }
+
+            var percent = Math.min(
+                100,
+                Math.floor(current * 100 / total)
+            )
+
+            messageComposer.statusText =
+                "Uploading " + details.fileName +
+                " (" + percent + "%)"
+        }
+
+        onMatrixAttachmentSent: {
+            var details = root.attachmentRequests[requestKey]
+
+            if (!details)
+                return
+
+            var requests = Object.assign(
+                {},
+                root.attachmentRequests
+            )
+
+            delete requests[requestKey]
+            root.attachmentRequests = requests
+
+            root.attachmentCompletedCount++
+
+            if (error === "") {
+                root.attachmentSuccessfulCount++
+
+                console.log(
+                    "ASTRO: Attachment sent:",
+                    details.fileName,
+                    eventId
+                )
+            } else {
+                root.attachmentLastError =
+                    details.fileName + ": " + error
+
+                console.warn(
+                    "ASTRO: Attachment upload failed:",
+                    root.attachmentLastError
+                )
+            }
+
+            if (details.roomId === root.roomId &&
+                root.attachmentCompletedCount <
+                    root.attachmentPendingCount) {
+                messageComposer.statusText =
+                    "Uploaded " +
+                    root.attachmentCompletedCount +
+                    " of " +
+                    root.attachmentPendingCount +
+                    " attachments…"
+            }
+
+            if (root.attachmentCompletedCount >=
+                root.attachmentPendingCount) {
+
+                var batchRoomId = root.attachmentBatchRoomId
+
+                root.attachmentBatchActive = false
+                messageComposer.attachmentBusy = false
+
+                if (batchRoomId === root.roomId) {
+                    if (root.attachmentSuccessfulCount ===
+                        root.attachmentPendingCount) {
+                        messageComposer.clearInput()
+                        messageComposer.statusText = ""
+                    } else {
+                        messageComposer.statusText =
+                            root.attachmentSuccessfulCount +
+                            " of " +
+                            root.attachmentPendingCount +
+                            " attachments sent. " +
+                            root.attachmentLastError
+                    }
+                }
+
+                root.finishAttachmentTransfer()
+            }
+        }
     }
 
     Connections {
@@ -1732,6 +1946,22 @@ Item {
                         onContentYChanged: {
                             root.updateBottomState()
                             root.maybeLoadOlderMessages()
+                        }
+
+                        onHeightChanged: {
+                            var shouldStayAtBottom = root.isAtBottom
+
+                            Qt.callLater(function() {
+                                if (shouldStayAtBottom) {
+                                    messageList.contentY = Math.max(
+                                        0,
+                                        messageList.contentHeight -
+                                            messageList.height
+                                    )
+                                }
+
+                                root.updateBottomState()
+                            })
                         }
 
                         onContentHeightChanged: {
@@ -2166,6 +2396,10 @@ Item {
                             message
                         )
                     }
+
+                    onAttachRequested: {
+                        root.openAttachmentPicker(caption)
+                    }
                 }
             }
         }
@@ -2175,6 +2409,184 @@ Item {
     // =====================================
     // =====================================
     // =====================================
+    // Attachment-menu outside-tap dismissal.
+    // This overlay is at RoomView level, outside the clipped
+    // conversation container.
+    MouseArea {
+        anchors.fill: parent
+        z: 900
+
+        visible: messageComposer.attachmentMenuVisible
+        enabled: visible
+
+        onClicked: {
+            messageComposer.attachmentMenuVisible = false
+        }
+    }
+
+    // Attachment submenu, rendered outside the clipped
+    // conversation hierarchy.
+    // Attachment submenu. File is functional; the other entries
+    // are placeholders for later implementation.
+    Rectangle {
+        id: attachmentMenu
+
+        x: Math.max(
+            units.gu(1),
+            Math.min(
+                root.width - width - units.gu(1),
+                messageComposer.attachmentButtonItem.mapToItem(
+                    root, 0, 0
+                ).x + messageComposer.attachmentButtonItem.width - width
+            )
+        )
+
+        width: units.gu(27)
+        height: units.gu(18)
+        radius: units.gu(1.5)
+        color: "#354b5b"
+        border.color: "#587184"
+
+        //complex but works...
+        // Keep the known-good position, adjusting for the open keyboard.
+        y: root.height
+   - height
+   - units.gu(2)
+   - messageComposer.height
+   - (Qt.inputMethod.visible
+      ? Math.min(
+            Qt.inputMethod.keyboardRectangle.height,
+            root.height - messageComposer.height - height
+        )
+      : 0)
+
+        visible: messageComposer.attachmentMenuVisible
+        z: 901
+
+        Column {
+            anchors.fill: parent
+            anchors.margins: units.gu(0.5)
+            spacing: 0
+
+            Rectangle {
+                width: parent.width
+                height: units.gu(5.5)
+                radius: units.gu(1)
+                color: fileOptionMouse.pressed
+                       ? "#526e82" : "transparent"
+
+                Row {
+                    anchors.fill: parent
+                    anchors.leftMargin: units.gu(1.5)
+                    spacing: units.gu(1.5)
+
+                    Text {
+                        width: units.gu(3)
+                        height: parent.height
+                        text: "📎"
+                        color: "white"
+                        font.pixelSize: units.gu(2)
+                        verticalAlignment: Text.AlignVCenter
+                    }
+
+                    Text {
+                        height: parent.height
+                        text: "File"
+                        color: "white"
+                        font.pixelSize: units.gu(1.8)
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
+                MouseArea {
+                    id: fileOptionMouse
+                    anchors.fill: parent
+                    enabled: !messageComposer.sending && !messageComposer.attachmentBusy
+
+                    onClicked: {
+                        messageComposer.attachmentMenuVisible = false
+                        messageComposer.attachRequested(
+                            messageComposer.currentMessage().trim()
+                        )
+                    }
+                }
+            }
+
+            Rectangle {
+                width: parent.width
+                height: units.gu(5.5)
+                radius: units.gu(1)
+                color: emojiOptionMouse.pressed
+                       ? "#526e82" : "transparent"
+
+                Row {
+                    anchors.fill: parent
+                    anchors.leftMargin: units.gu(1.5)
+                    spacing: units.gu(1.5)
+
+                    Text {
+                        width: units.gu(3)
+                        height: parent.height
+                        text: "☺"
+                        color: "white"
+                        font.pixelSize: units.gu(2.2)
+                        verticalAlignment: Text.AlignVCenter
+                    }
+
+                    Text {
+                        height: parent.height
+                        text: "Emoji"
+                        color: "white"
+                        font.pixelSize: units.gu(1.8)
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
+                MouseArea {
+                    id: emojiOptionMouse
+                    anchors.fill: parent
+                    enabled: !messageComposer.sending &&
+                             !messageComposer.attachmentBusy
+
+                    onClicked: {
+                        messageComposer.attachmentMenuVisible = false
+                        messageComposer.pasteVisible = false
+                        root.composerEmojiPickerVisible = true
+                    }
+                }
+            }
+
+            Rectangle {
+                width: parent.width
+                height: units.gu(5.5)
+                color: "transparent"
+                opacity: 0.45
+
+                Row {
+                    anchors.fill: parent
+                    anchors.leftMargin: units.gu(1.5)
+                    spacing: units.gu(1.5)
+
+                    Text {
+                        width: units.gu(3)
+                        height: parent.height
+                        text: "▧"
+                        color: "white"
+                        font.pixelSize: units.gu(2.2)
+                        verticalAlignment: Text.AlignVCenter
+                    }
+
+                    Text {
+                        height: parent.height
+                        text: "GIF / Sticker"
+                        color: "white"
+                        font.pixelSize: units.gu(1.8)
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+            }
+        }
+    }
     // Room media
     // =====================================
 
@@ -2550,5 +2962,112 @@ Item {
 
         onDismissed: root.reactionPickerVisible = false
     }
+
+    // Composer emoji picker overlay.
+    MouseArea {
+        anchors.fill: parent
+        z: 3100
+        visible: root.composerEmojiPickerVisible
+        enabled: visible
+        preventStealing: true
+
+        onClicked: root.composerEmojiPickerVisible = false
+    }
+
+    EmojiReactionPicker {
+        id: composerEmojiPicker
+
+        pickerTitle: "Insert emoji"
+        z: 3101
+        visible: root.composerEmojiPickerVisible
+
+        x: Math.max(
+            units.gu(1),
+            (root.width - width) / 2
+        )
+
+        y: Math.max(
+            units.gu(1),
+            root.height
+                - height
+                - units.gu(2)
+                - messageComposer.height
+                - (Qt.inputMethod.visible
+                ? Math.min(
+                        Qt.inputMethod.keyboardRectangle.height,
+                        root.height - messageComposer.height - height
+                    )
+                : 0)
+        )
+
+        onReactionSelected: {
+            root.composerEmojiPickerVisible = false
+            messageComposer.insertEmoji(reactionKey)
+        }
+
+        onDismissed: root.composerEmojiPickerVisible = false
+    }
+
+
+    // =====================================
+    // Content Hub attachment import
+    // =====================================
+
+    ContentPeerPicker {
+        id: attachmentPeerPicker
+
+        anchors.fill: parent
+        z: 10000
+        visible: root.attachmentPickerOpen
+
+        contentType: ContentType.All
+        handler: ContentHandler.Source
+        showTitle: true
+        headerText: "Choose files to attach"
+
+        onPeerSelected: {
+            peer.selectionType = ContentTransfer.Multiple
+            root.activeAttachmentTransfer = peer.request()
+            root.attachmentPickerOpen = false
+
+            if (!root.activeAttachmentTransfer) {
+                messageComposer.statusText =
+                    "Could not start file selection"
+            }
+        }
+
+        onCancelPressed: {
+            root.attachmentPickerOpen = false
+        }
+    }
+
+    Connections {
+        target: root.activeAttachmentTransfer
+
+        onStateChanged: {
+            var transfer = root.activeAttachmentTransfer
+
+            if (!transfer)
+                return
+
+            if (transfer.state === ContentTransfer.Charged) {
+                root.startAttachmentUploads(transfer.items)
+            }
+            else if (transfer.state === ContentTransfer.Aborted) {
+                if (!root.attachmentBatchActive) {
+                    messageComposer.statusText =
+                        "File selection cancelled"
+                    root.finishAttachmentTransfer()
+                }
+            }
+        }
+    }
+
+    ContentTransferHint {
+        anchors.fill: parent
+        z: 10001
+        activeTransfer: root.activeAttachmentTransfer
+    }
+
 
 }

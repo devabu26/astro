@@ -1,5 +1,6 @@
 import QtQuick 2.7
 import Lomiri.Components 1.3
+import "emoji-data.js" as EmojiData
 
 Rectangle {
     id: picker
@@ -7,6 +8,7 @@ Rectangle {
     signal reactionSelected(string reactionKey)
     signal dismissed()
 
+    property string pickerTitle: "React to message"
     property string searchText: ""
     property string selectedCategory: "all"
 
@@ -22,89 +24,20 @@ Rectangle {
     property var categories: [
         { key: "all", icon: "✨", label: "All" },
         { key: "faces", icon: "😀", label: "Faces" },
+        { key: "people", icon: "🧑", label: "People" },
         { key: "hands", icon: "👋", label: "Hands" },
         { key: "hearts", icon: "❤️", label: "Hearts" },
         { key: "animals", icon: "🐱", label: "Animals" },
+        { key: "nature", icon: "🌿", label: "Nature" },
         { key: "food", icon: "🍕", label: "Food" },
+        { key: "travel", icon: "🚀", label: "Travel" },
         { key: "activities", icon: "⚽", label: "Activities" },
-        { key: "symbols", icon: "💡", label: "Symbols" }
+        { key: "objects", icon: "💡", label: "Objects" },
+        { key: "symbols", icon: "🔣", label: "Symbols" },
+        { key: "flags", icon: "🏳️", label: "Flags" }
     ]
 
-    property var emojiList: [
-        { emoji: "😀", name: "grinning", category: "faces" },
-        { emoji: "😃", name: "smiley", category: "faces" },
-        { emoji: "😄", name: "smile", category: "faces" },
-        { emoji: "😁", name: "grin", category: "faces" },
-        { emoji: "😆", name: "laughing", category: "faces" },
-        { emoji: "😂", name: "joy", category: "faces" },
-        { emoji: "🤣", name: "rofl", category: "faces" },
-        { emoji: "😊", name: "blush", category: "faces" },
-        { emoji: "😍", name: "heart eyes", category: "faces" },
-        { emoji: "🥰", name: "love", category: "faces" },
-        { emoji: "😘", name: "kiss", category: "faces" },
-        { emoji: "😎", name: "cool", category: "faces" },
-        { emoji: "🤔", name: "thinking", category: "faces" },
-        { emoji: "🤨", name: "raised eyebrow", category: "faces" },
-        { emoji: "😢", name: "cry", category: "faces" },
-        { emoji: "😭", name: "sob", category: "faces" },
-        { emoji: "😡", name: "angry", category: "faces" },
-        { emoji: "🤯", name: "mind blown", category: "faces" },
-        { emoji: "🥳", name: "party", category: "faces" },
-        { emoji: "🤩", name: "star struck", category: "faces" },
-
-        { emoji: "👍", name: "thumbs up", category: "hands" },
-        { emoji: "👎", name: "thumbs down", category: "hands" },
-        { emoji: "👏", name: "clap", category: "hands" },
-        { emoji: "🙌", name: "raised hands", category: "hands" },
-        { emoji: "🙏", name: "pray", category: "hands" },
-        { emoji: "🤝", name: "handshake", category: "hands" },
-        { emoji: "👋", name: "wave", category: "hands" },
-        { emoji: "💪", name: "strong", category: "hands" },
-        { emoji: "🤞", name: "fingers crossed", category: "hands" },
-        { emoji: "✌️", name: "peace", category: "hands" },
-
-        { emoji: "❤️", name: "red heart", category: "hearts" },
-        { emoji: "🧡", name: "orange heart", category: "hearts" },
-        { emoji: "💛", name: "yellow heart", category: "hearts" },
-        { emoji: "💚", name: "green heart", category: "hearts" },
-        { emoji: "💙", name: "blue heart", category: "hearts" },
-        { emoji: "💜", name: "purple heart", category: "hearts" },
-        { emoji: "🖤", name: "black heart", category: "hearts" },
-        { emoji: "💔", name: "broken heart", category: "hearts" },
-        { emoji: "💕", name: "two hearts", category: "hearts" },
-        { emoji: "💖", name: "sparkling heart", category: "hearts" },
-
-        { emoji: "🐱", name: "cat", category: "animals" },
-        { emoji: "🐶", name: "dog", category: "animals" },
-        { emoji: "🦊", name: "fox", category: "animals" },
-        { emoji: "🐸", name: "frog", category: "animals" },
-        { emoji: "🐼", name: "panda", category: "animals" },
-        { emoji: "🦄", name: "unicorn", category: "animals" },
-
-        { emoji: "🍕", name: "pizza", category: "food" },
-        { emoji: "🍔", name: "burger", category: "food" },
-        { emoji: "🍟", name: "fries", category: "food" },
-        { emoji: "🍩", name: "donut", category: "food" },
-        { emoji: "☕", name: "coffee", category: "food" },
-        { emoji: "🍺", name: "beer", category: "food" },
-        { emoji: "🍰", name: "cake", category: "food" },
-
-        { emoji: "⚽", name: "football", category: "activities" },
-        { emoji: "🏀", name: "basketball", category: "activities" },
-        { emoji: "🎮", name: "gaming", category: "activities" },
-        { emoji: "🎉", name: "celebration", category: "activities" },
-        { emoji: "🎵", name: "music", category: "activities" },
-        { emoji: "🏆", name: "trophy", category: "activities" },
-
-        { emoji: "🔥", name: "fire", category: "symbols" },
-        { emoji: "✨", name: "sparkles", category: "symbols" },
-        { emoji: "⭐", name: "star", category: "symbols" },
-        { emoji: "💯", name: "hundred", category: "symbols" },
-        { emoji: "❗", name: "exclamation", category: "symbols" },
-        { emoji: "❓", name: "question", category: "symbols" },
-        { emoji: "✅", name: "check", category: "symbols" },
-        { emoji: "🚀", name: "rocket", category: "symbols" }
-    ]
+    property var emojiList: EmojiData.emojiList
 
     function filteredEmojis() {
         var result = []
@@ -140,7 +73,7 @@ Rectangle {
             Text {
                 width: parent.width - units.gu(5)
                 anchors.verticalCenter: parent.verticalCenter
-                text: "React to message"
+                text: picker.pickerTitle
                 color: "#ffffff"
                 font.bold: true
                 font.pixelSize: units.gu(1.8)
@@ -228,41 +161,37 @@ Rectangle {
             }
         }
 
-        Flickable {
+        GridView {
             id: emojiScroll
+
             width: parent.width
             height: parent.height - units.gu(14)
-            contentWidth: width
-            contentHeight: emojiFlow.height
+
+            cellWidth: width / 7
+            cellHeight: units.gu(4.5)
+
             clip: true
+            model: picker.filteredEmojis()
 
-            Flow {
-                id: emojiFlow
-                width: emojiScroll.width
-                spacing: units.gu(0.3)
+            delegate: Rectangle {
+                width: emojiScroll.cellWidth
+                height: emojiScroll.cellHeight
 
-                Repeater {
-                    model: picker.filteredEmojis()
+                radius: units.gu(0.8)
+                color: emojiMouse.pressed
+                       ? "#526e82" : "transparent"
 
-                    delegate: Rectangle {
-                        width: (emojiFlow.width - units.gu(1.2)) / 7
-                        height: units.gu(4.5)
-                        radius: units.gu(0.8)
-                        color: emojiMouse.pressed ? "#526e82" : "transparent"
+                Text {
+                    anchors.centerIn: parent
+                    text: modelData.emoji
+                    font.pixelSize: units.gu(2.7)
+                }
 
-                        Text {
-                            anchors.centerIn: parent
-                            text: modelData.emoji
-                            font.pixelSize: units.gu(2.7)
-                        }
+                MouseArea {
+                    id: emojiMouse
+                    anchors.fill: parent
 
-                        MouseArea {
-                            id: emojiMouse
-                            anchors.fill: parent
-
-                            onClicked: picker.reactionSelected(modelData.emoji)
-                        }
-                    }
+                    onClicked: picker.reactionSelected(modelData.emoji)
                 }
             }
         }

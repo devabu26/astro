@@ -350,6 +350,39 @@ void Backend::sendRoomMessage(
 
 
 
+
+void Backend::sendRoomAttachment(
+    const QString &requestKey,
+    const QString &roomId,
+    const QString &fileUrl,
+    const QString &caption
+)
+{
+    if (!m_storageReady) {
+        emit matrixAttachmentSent(
+            requestKey, roomId, QString(),
+            QStringLiteral("Encrypted storage is not open")
+        );
+        return;
+    }
+
+    if (requestKey.isEmpty() || roomId.isEmpty() || fileUrl.isEmpty()) {
+        emit matrixAttachmentSent(
+            requestKey, roomId, QString(),
+            QStringLiteral("Attachment request is incomplete")
+        );
+        return;
+    }
+
+    emit requestSendRoomAttachment(
+        requestKey,
+        roomId,
+        fileUrl,
+        caption
+    );
+}
+
+
 void Backend::toggleRoomReaction(
     const QString &roomId,
     const QString &eventId,

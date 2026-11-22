@@ -83,6 +83,13 @@ public slots:
     void markRoomAsRead(const QString &roomId);
     void sendRoomMessage(const QString &roomId, const QString &message);
 
+    void sendRoomAttachment(
+        const QString &requestKey,
+        const QString &roomId,
+        const QString &fileUrl,
+        const QString &caption
+    );
+
     void toggleRoomReaction(
         const QString &roomId,
         const QString &eventId,
@@ -223,6 +230,20 @@ signals:
         const QString &roomId,
         const QString &eventId,
         const QString &error
+    );
+
+    void matrixAttachmentSent(
+        const QString &requestKey,
+        const QString &roomId,
+        const QString &eventId,
+        const QString &error
+    );
+
+    void matrixAttachmentProgress(
+        const QString &requestKey,
+        const QString &roomId,
+        quint64 current,
+        quint64 total
     );
 
     void matrixReactionToggled(

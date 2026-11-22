@@ -9,6 +9,8 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 matrix-sdk = "=0.19.1"
+mime = "=0.3.18"
+eyeball = "=0.8.8"
 matrix-sdk-ui = "=0.19.1"
 matrix-sdk-sqlite = { version = "=0.19.1", features = ["bundled"] }
 matrix-sdk-store-encryption = "=0.19.1"

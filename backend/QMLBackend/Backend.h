@@ -110,6 +110,13 @@ public:
     Q_INVOKABLE void requestOlderRoomTimeline(const QString &roomId);
     Q_INVOKABLE void markRoomAsRead(const QString &roomId);
     Q_INVOKABLE void sendRoomMessage(const QString &roomId, const QString &message);
+
+    Q_INVOKABLE void sendRoomAttachment(
+        const QString &requestKey,
+        const QString &roomId,
+        const QString &fileUrl,
+        const QString &caption
+    );
     Q_INVOKABLE void toggleRoomReaction(
         const QString &roomId,
         const QString &eventId,
@@ -181,6 +188,20 @@ signals:
         const QString &roomId,
         const QString &eventId,
         const QString &error
+    );
+
+    void matrixAttachmentSent(
+        const QString &requestKey,
+        const QString &roomId,
+        const QString &eventId,
+        const QString &error
+    );
+
+    void matrixAttachmentProgress(
+        const QString &requestKey,
+        const QString &roomId,
+        quint64 current,
+        quint64 total
     );
 
     void matrixReactionToggled(
@@ -312,6 +333,13 @@ signals:
     void requestPaginateRoomTimeline(const QString &roomId);
     void requestMarkRoomAsRead(const QString &roomId);
     void requestSendRoomMessage(const QString &roomId, const QString &message);
+
+    void requestSendRoomAttachment(
+        const QString &requestKey,
+        const QString &roomId,
+        const QString &fileUrl,
+        const QString &caption
+    );
     void requestToggleRoomReaction(
         const QString &roomId,
         const QString &eventId,

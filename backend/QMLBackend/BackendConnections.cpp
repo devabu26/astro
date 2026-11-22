@@ -257,6 +257,14 @@ Backend::Backend(QObject *parent)
 
     connect(
         this,
+        &Backend::requestSendRoomAttachment,
+        m_storageWorker,
+        &StorageWorker::sendRoomAttachment,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
         &Backend::requestToggleRoomReaction,
         m_storageWorker,
         &StorageWorker::toggleRoomReaction,
@@ -350,6 +358,31 @@ Backend::Backend(QObject *parent)
         {
             emit matrixMessageSent(roomId, eventId, error);
         }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixAttachmentSent,
+        this,
+        [this](
+            const QString &requestKey,
+            const QString &roomId,
+            const QString &eventId,
+            const QString &error
+        )
+        {
+            emit matrixAttachmentSent(
+                requestKey, roomId, eventId, error
+            );
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixAttachmentProgress,
+        this,
+        &Backend::matrixAttachmentProgress,
+        Qt::QueuedConnection
     );
 
     connect(

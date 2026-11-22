@@ -178,6 +178,122 @@ Item {
         root.mediaSwipeLastDx = 0
     }
 
+    function isEmojiBaseCodePoint(cp) {
+        return (cp >= 0x1F000 && cp <= 0x1FAFF) ||
+               (cp >= 0x2600 && cp <= 0x27BF) ||
+               (cp >= 0x2300 && cp <= 0x23FF) ||
+               (cp >= 0x2190 && cp <= 0x21FF) ||
+               cp === 0x00A9 || cp === 0x00AE ||
+               cp === 0x203C || cp === 0x2049 ||
+               cp === 0x2122 || cp === 0x2139 ||
+               cp === 0x24C2 || cp === 0x3030 ||
+               cp === 0x303D || cp === 0x3297 ||
+               cp === 0x3299 || cp === 0x2B50 ||
+               cp === 0x2B55;
+    }
+
+    function emojiMessageFontSize() {
+        var normalSize = units.gu(1.8);
+
+        if (root.isEncrypted || root.isSticker)
+            return normalSize;
+
+        var value = String(root.body || "");
+        var count = 0;
+        var regionalCount = 0;
+        var joined = false;
+
+        if (value.length === 0)
+            return normalSize;
+
+        for (var i = 0; i < value.length; i++) {
+            var cp = value.charCodeAt(i);
+
+            if (cp >= 0xD800 && cp <= 0xDBFF &&
+                    i + 1 < value.length) {
+                var low = value.charCodeAt(i + 1);
+                if (low >= 0xDC00 && low <= 0xDFFF) {
+                    cp = 0x10000 +
+                         ((cp - 0xD800) << 10) +
+                         (low - 0xDC00);
+                    i++;
+                }
+            }
+
+            // Allow whitespace between emoji.
+            if (cp === 0x20 || cp === 0x09 ||
+                    cp === 0x0A || cp === 0x0D ||
+                    cp === 0x00A0) {
+                regionalCount = 0;
+                joined = false;
+                continue;
+            }
+
+            // Keycap emoji: 1️⃣, #️⃣, etc.
+            if (cp === 0x23 || cp === 0x2A ||
+                    (cp >= 0x30 && cp <= 0x39)) {
+                var next = i + 1;
+
+                if (value.charCodeAt(next) === 0xFE0F)
+                    next++;
+
+                if (value.charCodeAt(next) === 0x20E3) {
+                    count++;
+                    i = next;
+                    continue;
+                }
+
+                return normalSize;
+            }
+
+            // Emoji presentation selectors, skin tones and tag characters.
+            if (cp === 0xFE0F || cp === 0xFE0E ||
+                    (cp >= 0x1F3FB && cp <= 0x1F3FF) ||
+                    (cp >= 0xE0020 && cp <= 0xE007F))
+                continue;
+
+            // Zero-width joiner connects a multi-code-point emoji.
+            if (cp === 0x200D) {
+                joined = true;
+                continue;
+            }
+
+            // Regional indicator pairs form flags.
+            if (cp >= 0x1F1E6 && cp <= 0x1F1FF) {
+                if (regionalCount % 2 === 0)
+                    count++;
+
+                regionalCount++;
+                joined = false;
+                continue;
+            }
+
+            regionalCount = 0;
+
+            if (isEmojiBaseCodePoint(cp)) {
+                if (!joined)
+                    count++;
+
+                joined = false;
+                continue;
+            }
+
+            // Any ordinary character means normal text sizing.
+            return normalSize;
+        }
+
+        if (count === 0)
+            return normalSize;
+
+        if (count <= 3)
+            return units.gu(4);
+
+        if (count <= 6)
+            return units.gu(3);
+
+        return units.gu(Math.max(2.1, 3 - (count - 6) * 0.12));
+    }
+
     function parsedReactions() {
         try {
             var value = JSON.parse(root.reactionsJson || "[]")
@@ -482,7 +598,7 @@ Item {
                         selectionColor: "#477fa0"
 
                         font.italic: root.isEncrypted
-                        font.pixelSize: units.gu(1.8)
+                        font.pixelSize: root.emojiMessageFontSize()
 
                         wrapMode: TextEdit.Wrap
                         textFormat: TextEdit.PlainText
