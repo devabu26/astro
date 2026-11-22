@@ -410,6 +410,115 @@ pub unsafe extern "C" fn astro_matrix_toggle_room_reaction(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn astro_matrix_send_room_reply(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    event_id: *const c_char,
+    message: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        let event_id = read_input(event_id, "Event ID")?;
+        let message = read_input(message, "Message")?;
+        (&*handle).send_room_reply(room_id, event_id, message)
+    }));
+
+    match result {
+        Ok(Ok(())) => 1,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while sending Matrix reply");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_edit_room_message(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    event_id: *const c_char,
+    message: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        let event_id = read_input(event_id, "Event ID")?;
+        let message = read_input(message, "Message")?;
+        (&*handle).edit_room_message(room_id, event_id, message)
+    }));
+
+    match result {
+        Ok(Ok(())) => 1,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while editing Matrix message");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_redact_room_event(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    event_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        let event_id = read_input(event_id, "Event ID")?;
+        (&*handle).redact_room_event(room_id, event_id)
+    }));
+
+    match result {
+        Ok(Ok(())) => 1,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while redacting Matrix event");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn astro_matrix_accept_verification_request(
     handle: *mut MatrixClientManager,
     user_id: *const c_char,

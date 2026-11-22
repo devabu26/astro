@@ -6,17 +6,21 @@ Rectangle {
     id: root
 
     height: inputFrame.height + units.gu(3) +
-            (root.statusText !== "" ? units.gu(2.5) : 0)
+            (root.statusText !== "" ? units.gu(2.5) : 0) +
+            (root.contextLabel !== "" ? units.gu(2.5) : 0)
     color: "#1b2935"
 
     signal sendRequested(string message)
     signal attachRequested(string caption)
+    signal contextCancelRequested()
 
     property bool sending: false
     property bool pasteVisible: false
     property bool attachmentBusy: false
     property bool attachmentMenuVisible: false
     property string statusText: ""
+    property string contextMode: ""
+    property string contextLabel: ""
 
     // Expose the plus button so RoomView can position its
     // unclipped attachment-menu overlay relative to it.
@@ -33,6 +37,14 @@ Rectangle {
 
     function dismissKeyboard() {
         messageInput.focus = false
+    }
+
+    function setInputText(value) {
+        Qt.inputMethod.reset()
+        messageInput.text = String(value || "")
+        messageInput.cursorPosition = messageInput.text.length
+        messageInput.deselect()
+        messageInput.forceActiveFocus()
     }
 
     function pasteFromClipboard() {
@@ -237,12 +249,62 @@ Rectangle {
     }
 
     Text {
+        id: contextLabelText
+
+        anchors {
+            left: inputFrame.left
+            right: contextCancelButton.left
+            bottom: inputFrame.top
+            bottomMargin: units.gu(0.2)
+        }
+
+        height: units.gu(2.2)
+        text: root.contextLabel
+        color: "white"
+        font.pixelSize: units.gu(1.5)
+        font.bold: root.contextMode === "edit"
+        elide: Text.ElideRight
+        verticalAlignment: Text.AlignVCenter
+        visible: root.contextLabel !== ""
+    }
+
+    Rectangle {
+        id: contextCancelButton
+
+        anchors {
+            right: inputFrame.right
+            bottom: inputFrame.top
+            bottomMargin: units.gu(0.2)
+        }
+
+        width: units.gu(2.5)
+        height: units.gu(2.2)
+        radius: units.gu(0.5)
+        color: contextCancelMouse.pressed ? "#526e82" : "transparent"
+        visible: root.contextLabel !== ""
+
+        Text {
+            anchors.centerIn: parent
+            text: "×"
+            color: "white"
+            font.pixelSize: units.gu(2)
+        }
+
+        MouseArea {
+            id: contextCancelMouse
+            anchors.fill: parent
+            onClicked: root.contextCancelRequested()
+        }
+    }
+
+    Text {
         id: attachmentStatusLabel
 
         anchors {
             left: inputFrame.left
             right: inputFrame.right
-            bottom: inputFrame.top
+            bottom: root.contextLabel !== ""
+                    ? contextLabelText.top : inputFrame.top
             bottomMargin: units.gu(0.2)
         }
 

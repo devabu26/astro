@@ -541,3 +541,147 @@ void StorageWorker::toggleRoomReaction(
         roomId, eventId, reactionKey, result == 1, QString()
     );
 }
+
+
+// =============================================================
+// Matrix reply, edit and redaction
+// =============================================================
+
+void StorageWorker::sendRoomReply(
+    const QString &roomId,
+    const QString &eventId,
+    const QString &message
+)
+{
+    const QString action = QStringLiteral("reply");
+
+    if (!m_matrixClient || roomId.isEmpty() ||
+        eventId.isEmpty() || message.trimmed().isEmpty()) {
+        emit matrixMessageActionFinished(
+            roomId, eventId, action,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID, event ID and message are required")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    const QByteArray eventIdBytes = eventId.toUtf8();
+    const QByteArray messageBytes = message.toUtf8();
+
+    char *error = nullptr;
+    const int32_t result = astro_matrix_send_room_reply(
+        m_matrixClient,
+        roomIdBytes.constData(),
+        eventIdBytes.constData(),
+        messageBytes.constData(),
+        &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+
+    if (result != 1 && errorMessage.isEmpty()) {
+        errorMessage = QStringLiteral("Could not send Matrix reply");
+    }
+
+    emit matrixMessageActionFinished(
+        roomId, eventId, action, errorMessage
+    );
+}
+
+
+void StorageWorker::editRoomMessage(
+    const QString &roomId,
+    const QString &eventId,
+    const QString &message
+)
+{
+    const QString action = QStringLiteral("edit");
+
+    if (!m_matrixClient || roomId.isEmpty() ||
+        eventId.isEmpty() || message.trimmed().isEmpty()) {
+        emit matrixMessageActionFinished(
+            roomId, eventId, action,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID, event ID and message are required")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    const QByteArray eventIdBytes = eventId.toUtf8();
+    const QByteArray messageBytes = message.toUtf8();
+
+    char *error = nullptr;
+    const int32_t result = astro_matrix_edit_room_message(
+        m_matrixClient,
+        roomIdBytes.constData(),
+        eventIdBytes.constData(),
+        messageBytes.constData(),
+        &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+
+    if (result != 1 && errorMessage.isEmpty()) {
+        errorMessage = QStringLiteral("Could not edit Matrix message");
+    }
+
+    emit matrixMessageActionFinished(
+        roomId, eventId, action, errorMessage
+    );
+}
+
+
+void StorageWorker::redactRoomEvent(
+    const QString &roomId,
+    const QString &eventId
+)
+{
+    const QString action = QStringLiteral("delete");
+
+    if (!m_matrixClient || roomId.isEmpty() || eventId.isEmpty()) {
+        emit matrixMessageActionFinished(
+            roomId, eventId, action,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID and event ID are required")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    const QByteArray eventIdBytes = eventId.toUtf8();
+
+    char *error = nullptr;
+    const int32_t result = astro_matrix_redact_room_event(
+        m_matrixClient,
+        roomIdBytes.constData(),
+        eventIdBytes.constData(),
+        &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+
+    if (result != 1 && errorMessage.isEmpty()) {
+        errorMessage = QStringLiteral("Could not delete Matrix message");
+    }
+
+    emit matrixMessageActionFinished(
+        roomId, eventId, action, errorMessage
+    );
+}

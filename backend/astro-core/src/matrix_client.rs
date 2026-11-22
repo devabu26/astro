@@ -10,8 +10,10 @@ use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk::ruma::api::client::uiaa;
 use matrix_sdk::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk::ruma::events::room::message::{
-    RoomMessageEventContent, TextMessageEventContent,
+    RoomMessageEventContent, RoomMessageEventContentWithoutRelation,
+    TextMessageEventContent,
 };
+use matrix_sdk::room::edit::EditedContent;
 use matrix_sdk::ruma::events::{
     key::verification::request::ToDeviceKeyVerificationRequestEvent,
     room::message::{MessageType, OriginalSyncRoomMessageEvent},
@@ -2064,6 +2066,92 @@ impl MatrixClientManager {
         })
     }
 
+
+    /// Send a plain-text reply to an existing room timeline event.
+    pub fn send_room_reply(
+        &self,
+        room_id: &str,
+        event_id: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        if message.trim().is_empty() {
+            return Err("Reply must not be empty".into());
+        }
+
+        let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id)
+            .map_err(|error| format!("Invalid Matrix event ID: {error}"))?;
+
+        let timeline = self
+            .timelines
+            .get(room_id)
+            .ok_or_else(|| format!("No active timeline for room: {room_id}"))?;
+
+        self.runtime.block_on(async {
+            let content =
+                RoomMessageEventContentWithoutRelation::text_plain(message.to_owned());
+
+            timeline
+                .send_reply(content, parsed_event_id)
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("Could not send Matrix reply: {error}"))
+        })
+    }
+
+    /// Edit an existing plain-text room message.
+    pub fn edit_room_message(
+        &self,
+        room_id: &str,
+        event_id: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        if message.trim().is_empty() {
+            return Err("Edited message must not be empty".into());
+        }
+
+        let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id)
+            .map_err(|error| format!("Invalid Matrix event ID: {error}"))?;
+
+        let timeline = self
+            .timelines
+            .get(room_id)
+            .ok_or_else(|| format!("No active timeline for room: {room_id}"))?;
+
+        let item_id = TimelineEventItemId::EventId(parsed_event_id);
+        let content =
+            RoomMessageEventContentWithoutRelation::text_plain(message.to_owned());
+
+        self.runtime.block_on(async {
+            timeline
+                .edit(&item_id, EditedContent::RoomMessage(content))
+                .await
+                .map_err(|error| format!("Could not edit Matrix message: {error}"))
+        })
+    }
+
+    /// Redact an existing room timeline event.
+    pub fn redact_room_event(
+        &self,
+        room_id: &str,
+        event_id: &str,
+    ) -> Result<(), String> {
+        let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id)
+            .map_err(|error| format!("Invalid Matrix event ID: {error}"))?;
+
+        let timeline = self
+            .timelines
+            .get(room_id)
+            .ok_or_else(|| format!("No active timeline for room: {room_id}"))?;
+
+        let item_id = TimelineEventItemId::EventId(parsed_event_id);
+
+        self.runtime.block_on(async {
+            timeline
+                .redact(&item_id, None)
+                .await
+                .map_err(|error| format!("Could not redact Matrix event: {error}"))
+        })
+    }
 
     /// Upload and send an attachment to a Matrix room.
     ///

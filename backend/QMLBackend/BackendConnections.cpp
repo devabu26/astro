@@ -279,6 +279,38 @@ Backend::Backend(QObject *parent)
         Qt::QueuedConnection
     );
 
+    connect(
+        this,
+        &Backend::requestSendRoomReply,
+        m_storageWorker,
+        &StorageWorker::sendRoomReply,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestEditRoomMessage,
+        m_storageWorker,
+        &StorageWorker::editRoomMessage,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestRedactRoomEvent,
+        m_storageWorker,
+        &StorageWorker::redactRoomEvent,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixMessageActionFinished,
+        this,
+        &Backend::matrixMessageActionFinished,
+        Qt::QueuedConnection
+    );
+
     // ---------------------------------------------------------
     // Matrix device verification request connections
     // ---------------------------------------------------------

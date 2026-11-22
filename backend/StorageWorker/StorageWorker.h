@@ -97,6 +97,21 @@ public slots:
         const QString &reactionKey
     );
 
+    void sendRoomReply(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &message
+    );
+    void editRoomMessage(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &message
+    );
+    void redactRoomEvent(
+        const QString &roomId,
+        const QString &eventId
+    );
+
 
     // ---------------------------------------------------------
     // Matrix end-to-end device verification
@@ -253,6 +268,13 @@ signals:
         const QString &eventId,
         const QString &reactionKey,
         bool added,
+        const QString &error
+    );
+
+    void matrixMessageActionFinished(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &action,
         const QString &error
     );
 

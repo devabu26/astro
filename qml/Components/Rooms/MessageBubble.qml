@@ -57,8 +57,10 @@ Item {
     property bool selectionToolbarVisible: false
     property string selectionId: ""
     property bool actionTrayVisible: false
+    property string msgtype: "m.text"
     property bool touchSwipeHandled: false
     property real swipeOffset: 0
+    property real actionTrayRevealDistance: units.gu(23)
     property real swipeStartOffset: 0
     property real swipeProgress: 0
     property bool swipeClosingGesture: false
@@ -109,7 +111,7 @@ Item {
         root.touchSwipeHandled = true
         root.mediaSwipeLastDx = dx
 
-        var limit = units.gu(18)
+        var limit = root.actionTrayRevealDistance
         var closingDistance = units.gu(0.8)
         var movingOpposite =
             root.actionTrayVisible &&
@@ -139,7 +141,7 @@ Item {
             if (root.actionTrayVisible) {
                 root.swipeOffset =
                     root.swipeStartOffset < 0
-                    ? -units.gu(15) : units.gu(15)
+                    ? -root.actionTrayRevealDistance : root.actionTrayRevealDistance
                 root.swipeProgress = 1.0
             } else {
                 root.swipeOffset = 0
@@ -150,7 +152,7 @@ Item {
 
             if (shouldOpen) {
                 var direction = root.mediaSwipeLastDx < 0 ? -1 : 1
-                root.swipeOffset = direction * units.gu(15)
+                root.swipeOffset = direction * root.actionTrayRevealDistance
                 root.swipeProgress = 1.0
             } else {
                 root.swipeOffset = 0
@@ -166,7 +168,7 @@ Item {
             if (root.actionTrayVisible) {
                 root.swipeOffset =
                     root.swipeStartOffset < 0
-                    ? -units.gu(15) : units.gu(15)
+                    ? -root.actionTrayRevealDistance : root.actionTrayRevealDistance
                 root.swipeProgress = 1.0
             } else {
                 root.swipeOffset = 0
@@ -488,11 +490,11 @@ Item {
 
                 MessageImage {
                     width: root.isSticker
-                        ? Math.min(parent.width, units.gu(18))
+                        ? Math.min(parent.width, root.actionTrayRevealDistance)
                         : parent.width
 
                     imageHeightLimit: root.isSticker
-                        ? units.gu(18)
+                        ? root.actionTrayRevealDistance
                         : units.gu(40)
 
                     source: root.imageUrl
@@ -650,7 +652,7 @@ Item {
                                 var dy = point.y - root.touchPressY
                                 if (Math.sqrt(dx * dx + dy * dy) > units.gu(2.0))
                                     root.touchMoved = true
-                                var limit = units.gu(18)
+                                var limit = root.actionTrayRevealDistance
                             var closingDistance = units.gu(1.0)
 
                             // Ignore vertical movement. Only a clearly
@@ -709,7 +711,7 @@ Item {
                                     root.touchSwipeHandled
                                 if (shouldOpen) {
                                     root.swipeOffset = root.swipeOffset < 0
-                                        ? -units.gu(15) : units.gu(15)
+                                        ? -root.actionTrayRevealDistance : root.actionTrayRevealDistance
                                     root.swipeProgress = 1.0
                                 } else {
                                     root.swipeOffset = 0
@@ -725,7 +727,7 @@ Item {
                                 if (root.actionTrayVisible) {
                                     root.swipeOffset =
                                         root.swipeStartOffset < 0
-                                        ? -units.gu(15) : units.gu(15)
+                                        ? -root.actionTrayRevealDistance : root.actionTrayRevealDistance
                                     root.swipeProgress = 1.0
                                 } else {
                                     root.swipeOffset = 0
@@ -758,7 +760,7 @@ Item {
                             if (root.actionTrayVisible) {
                                 root.swipeOffset =
                                     root.swipeStartOffset < 0
-                                    ? -units.gu(15) : units.gu(15)
+                                    ? -root.actionTrayRevealDistance : root.actionTrayRevealDistance
                                 root.swipeProgress = 1.0
                             } else {
                                 root.swipeOffset = 0
@@ -860,12 +862,26 @@ Item {
                 z: 10
 
                 Repeater {
-                    model: [
-                        { glyph: "☺", action: "react" },
-                        { glyph: "↩", action: "reply" },
-                        { glyph: "▢", action: "copy" },
-                        { glyph: "⋯", action: "more" }
-                    ]
+                    model: root.isOwn
+                           ? (root.msgtype === "m.text"
+                              ? [
+                                  { glyph: "☺", action: "react" },
+                                  { glyph: "↩", action: "reply" },
+                                  { glyph: "📋", action: "copy" },
+                                  { glyph: "✏", action: "edit" },
+                                  { glyph: "🗑", action: "delete" }
+                                ]
+                              : [
+                                  { glyph: "☺", action: "react" },
+                                  { glyph: "↩", action: "reply" },
+                                  { glyph: "📋", action: "copy" },
+                                  { glyph: "🗑", action: "delete" }
+                                ])
+                           : [
+                               { glyph: "☺", action: "react" },
+                               { glyph: "↩", action: "reply" },
+                               { glyph: "📋", action: "copy" }
+                             ]
 
                     delegate: Rectangle {
                         width: units.gu(4)
@@ -894,6 +910,10 @@ Item {
                                         anchor.x,
                                         anchor.y + messageActionTray.height
                                     )
+                                } else if (modelData.action === "copy") {
+                                    bodyText.selectAll()
+                                    bodyText.copy()
+                                    root.clearTextSelection()
                                 } else {
                                     root.messageActionRequested(
                                         root.selectionId,
@@ -906,6 +926,7 @@ Item {
                 }
             }
 
+            // =====================================
             Flow {
                 id: reactionFlow
                 x: units.gu(1)
@@ -991,8 +1012,8 @@ Item {
 
                     Repeater {
                         model: [
-                            { label: "Copy", action: "copy" },
                             { label: "Paste", action: "paste" },
+                            { label: "Copy", action: "copy" },
                             { label: "Select All", action: "selectAll" }
                         ]
 
@@ -1015,10 +1036,7 @@ Item {
                                 anchors.fill: parent
 
                                 onClicked: {
-                                    if (modelData.action === "copy") {
-                                        bodyText.copy()
-                                        root.clearTextSelection()
-                                    } else if (modelData.action === "paste") {
+                                    if (modelData.action === "paste") {
                                         if (bodyText.selectedText.length > 0) {
                                             bodyText.copy()
                                         } else {
@@ -1028,10 +1046,13 @@ Item {
 
                                         root.pasteRequested()
                                         root.clearTextSelection()
+                                    } else if (modelData.action === "copy") {
+                                        bodyText.copy()
+                                        root.clearTextSelection()
                                     } else if (modelData.action === "selectAll") {
                                         bodyText.selectAll()
-                                        root.selectionToolbarVisible =
-                                            bodyText.text.length > 0
+                                        root.selectionToolbarVisible = true
+                                        root.selectionRequested(root.selectionId)
                                     }
                                 }
                             }

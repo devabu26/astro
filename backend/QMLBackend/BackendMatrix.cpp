@@ -418,6 +418,67 @@ void Backend::toggleRoomReaction(
 }
 
 
+void Backend::sendRoomReply(
+    const QString &roomId,
+    const QString &eventId,
+    const QString &message
+)
+{
+    if (!m_storageReady || roomId.isEmpty() ||
+        eventId.isEmpty() || message.trimmed().isEmpty()) {
+        emit matrixMessageActionFinished(
+            roomId, eventId, QStringLiteral("reply"),
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID, event ID and message are required")
+        );
+        return;
+    }
+
+    emit requestSendRoomReply(roomId, eventId, message);
+}
+
+
+void Backend::editRoomMessage(
+    const QString &roomId,
+    const QString &eventId,
+    const QString &message
+)
+{
+    if (!m_storageReady || roomId.isEmpty() ||
+        eventId.isEmpty() || message.trimmed().isEmpty()) {
+        emit matrixMessageActionFinished(
+            roomId, eventId, QStringLiteral("edit"),
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID, event ID and message are required")
+        );
+        return;
+    }
+
+    emit requestEditRoomMessage(roomId, eventId, message);
+}
+
+
+void Backend::redactRoomEvent(
+    const QString &roomId,
+    const QString &eventId
+)
+{
+    if (!m_storageReady || roomId.isEmpty() || eventId.isEmpty()) {
+        emit matrixMessageActionFinished(
+            roomId, eventId, QStringLiteral("delete"),
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID and event ID are required")
+        );
+        return;
+    }
+
+    emit requestRedactRoomEvent(roomId, eventId);
+}
+
+
 void Backend::acceptVerificationRequest(
     const QString &userId,
     const QString &flowId

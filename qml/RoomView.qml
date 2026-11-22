@@ -10,6 +10,16 @@ Item {
 
     property bool composerEmojiPickerVisible: false
 
+    // Active reply/edit target.
+    property string composerContextEventId: ""
+
+    // Pending message deletion.
+    property string pendingDeleteRoomId: ""
+    property string pendingDeleteEventId: ""
+    property string pendingDeleteBody: ""
+    property bool deleteConfirmationVisible: false
+    property bool deleteRequestInFlight: false
+
 
     // ---------------------------------------------------------
     // Matrix attachment upload state
@@ -991,6 +1001,16 @@ Item {
         messageComposer.clearInput()
         messageComposer.sending = false
         messageComposer.statusText = ""
+        messageComposer.contextMode = ""
+        messageComposer.contextLabel = ""
+        root.composerContextEventId = ""
+
+
+        root.deleteConfirmationVisible = false
+        root.deleteRequestInFlight = false
+        root.pendingDeleteRoomId = ""
+        root.pendingDeleteEventId = ""
+        root.pendingDeleteBody = ""
 
         // Reset the old room's scroll position.
         messageList.contentY = 0
@@ -1569,6 +1589,71 @@ Item {
             // that the message was sent.
             messageComposer.clearInput()
 
+        }
+
+
+        onMatrixMessageActionFinished: {
+            if (action === "delete") {
+                if (roomId !== root.pendingDeleteRoomId ||
+                    eventId !== root.pendingDeleteEventId) {
+                    return
+                }
+
+                root.deleteRequestInFlight = false
+
+                if (error !== "") {
+                    console.log(
+                        "ASTRO: Message deletion failed:",
+                        error
+                    )
+                    messageComposer.statusText = error
+                    return
+                }
+
+                // Remove the deleted event from the currently displayed timeline.
+                for (
+                    var messageIndex = messageModel.count - 1;
+                    messageIndex >= 0;
+                    messageIndex--
+                ) {
+                    if (messageModel.get(messageIndex).eventId === eventId) {
+                        messageModel.remove(messageIndex)
+                        break
+                    }
+                }
+
+                root.deleteConfirmationVisible = false
+                root.pendingDeleteRoomId = ""
+                root.pendingDeleteEventId = ""
+                root.pendingDeleteBody = ""
+                messageComposer.statusText = ""
+                return
+            }
+
+            if (roomId !== root.roomId ||
+                eventId !== root.composerContextEventId) {
+                return
+            }
+
+            if (action !== "reply" && action !== "edit")
+                return
+
+            messageComposer.sending = false
+
+            if (error !== "") {
+                console.log(
+                    "ASTRO: Message " + action + " failed:",
+                    error
+                )
+                messageComposer.statusText = error
+                return
+            }
+
+            messageComposer.clearInput()
+            messageComposer.contextMode = ""
+            messageComposer.contextLabel = ""
+            root.composerContextEventId = ""
+            messageComposer.statusText = ""
         }
 
 
@@ -2171,6 +2256,47 @@ Item {
                                                 root.activeMessageBubble = visible ? messageBubbleItem : null
                                             }
 
+                                            onMessageActionRequested: {
+                                                if (!model.eventId)
+                                                    return
+
+                                                root.openMessageActionsId = ""
+                                                root.activeMessageBubble = null
+
+                                                if (action === "reply") {
+                                                    root.composerContextEventId = model.eventId
+                                                    messageComposer.contextMode = "reply"
+
+                                                    var replyName =
+                                                        model.senderDisplayName ||
+                                                        model.sender
+
+                                                    messageComposer.contextLabel =
+                                                        "replying to: " + replyName
+
+                                                    messageComposer.forceActiveFocus()
+                                                } else if (action === "edit") {
+                                                    if (!model.isOwn ||
+                                                        model.msgtype !== "m.text") {
+                                                        return
+                                                    }
+
+                                                    root.composerContextEventId = model.eventId
+                                                    messageComposer.contextMode = "edit"
+                                                    messageComposer.contextLabel = "(edit)"
+                                                    messageComposer.setInputText(model.body || "")
+                                                } else if (action === "delete") {
+                                                    if (!model.isOwn)
+                                                        return
+
+                                                    root.pendingDeleteRoomId = root.roomId
+                                                    root.pendingDeleteEventId = model.eventId
+                                                    root.pendingDeleteBody = model.body || ""
+                                                    root.deleteRequestInFlight = false
+                                                    root.deleteConfirmationVisible = true
+                                                }
+                                            }
+
                                             onReactionPickerRequested: {
                                                 var anchor = messageBubbleItem.mapToItem(
                                                     root,
@@ -2217,6 +2343,7 @@ Item {
 
                                             sender: model.sender
                                             senderDisplayName: model.senderDisplayName
+                                            msgtype: model.msgtype
                                             avatarUrl: model.senderAvatarUrl
                                             showAvatar: index === 0 ||
                                                 messageModel.get(index - 1).sender !== model.sender
@@ -2385,6 +2512,13 @@ Item {
 
                     width: parent.width
 
+                    onContextCancelRequested: {
+                        contextMode = ""
+                        contextLabel = ""
+                        root.composerContextEventId = ""
+                        clearInput()
+                    }
+
                     onSendRequested: {
                         if (root.roomId === "")
                             return
@@ -2394,15 +2528,29 @@ Item {
 
                         sending = true
 
-                        console.log(
-                            "ASTRO: Sending message to room",
-                            root.roomId
-                        )
+                        if (contextMode === "edit") {
+                            root.backend.editRoomMessage(
+                                root.roomId,
+                                root.composerContextEventId,
+                                message
+                            )
+                        } else if (contextMode === "reply") {
+                            root.backend.sendRoomReply(
+                                root.roomId,
+                                root.composerContextEventId,
+                                message
+                            )
+                        } else {
+                            console.log(
+                                "ASTRO: Sending message to room",
+                                root.roomId
+                            )
 
-                        root.backend.sendRoomMessage(
-                            root.roomId,
-                            message
-                        )
+                            root.backend.sendRoomMessage(
+                                root.roomId,
+                                message
+                            )
+                        }
                     }
 
                     onAttachRequested: {
@@ -3077,5 +3225,153 @@ Item {
         activeTransfer: root.activeAttachmentTransfer
     }
 
+
+
+    // =====================================
+    // Message deletion confirmation
+    // =====================================
+
+    Rectangle {
+        id: deleteConfirmationOverlay
+
+        anchors.fill: parent
+        color: "#99000000"
+        visible: root.deleteConfirmationVisible
+        z: 12000
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: {
+                // Keep taps on the backdrop from reaching the room.
+            }
+        }
+
+        Rectangle {
+            width: Math.min(
+                parent.width - units.gu(4),
+                units.gu(38)
+            )
+            height: Math.min(parent.height - units.gu(4), deleteDialogContent.implicitHeight + units.gu(4))
+            anchors.centerIn: parent
+
+            radius: units.gu(1.5)
+            color: "#263744"
+            border.color: "#7890a2"
+
+            Column {
+                id: deleteDialogContent
+                anchors.fill: parent
+                anchors.margins: units.gu(2)
+                spacing: units.gu(1.2)
+
+                Text {
+                    width: parent.width
+                    text: "Delete message?"
+                    color: "white"
+                    font.bold: true
+                    font.pixelSize: units.gu(2.2)
+                }
+
+                Text {
+                    width: parent.width
+                    height: units.gu(5.5)
+                    text: root.pendingDeleteBody
+                    color: "#d3dce3"
+                    font.pixelSize: units.gu(1.6)
+                    wrapMode: Text.Wrap
+                    elide: Text.ElideRight
+                    maximumLineCount: 4
+                    verticalAlignment: Text.AlignTop
+                }
+
+                Text {
+                    width: parent.width
+                    text: "This will remove the message for room participants."
+                    color: "#b8cbd8"
+                    font.pixelSize: units.gu(1.4)
+                    wrapMode: Text.Wrap
+                }
+
+                Item {
+                    width: parent.width
+                    height: units.gu(4.5)
+
+                    Row {
+                        width: parent.width
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: units.gu(1)
+
+                        Rectangle {
+                            width: (parent.width - units.gu(1)) / 2
+                            height: units.gu(4.5)
+                            radius: units.gu(0.8)
+                            color: cancelDeleteMouse.pressed
+                                   ? "#526e82" : "#354957"
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Cancel"
+                                color: "white"
+                                font.pixelSize: units.gu(1.6)
+                            }
+
+                            MouseArea {
+                                id: cancelDeleteMouse
+                                anchors.fill: parent
+                                enabled: !root.deleteRequestInFlight
+
+                                onClicked: {
+
+                                    root.deleteConfirmationVisible = false
+                                    root.pendingDeleteRoomId = ""
+                                    root.pendingDeleteEventId = ""
+                                    root.pendingDeleteBody = ""
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            width: (parent.width - units.gu(1)) / 2
+                            height: units.gu(4.5)
+                            radius: units.gu(0.8)
+                            color: confirmDeleteMouse.pressed
+                                   ? "#a34f55" : "#803d43"
+                            opacity: root.deleteRequestInFlight ? 0.5 : 1
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: root.deleteRequestInFlight
+                                      ? "Deleting…" : "Delete"
+                                color: "white"
+                                font.bold: true
+                                font.pixelSize: units.gu(1.6)
+                            }
+
+                            MouseArea {
+                                id: confirmDeleteMouse
+                                anchors.fill: parent
+                                enabled: !root.deleteRequestInFlight
+
+                                onClicked: {
+                                    if (!root.backend ||
+                                        root.pendingDeleteRoomId === "" ||
+                                        root.pendingDeleteEventId === "") {
+                                        return
+                                    }
+
+                                    root.deleteRequestInFlight = true
+                                    root.backend.redactRoomEvent(
+                                        root.pendingDeleteRoomId,
+                                        root.pendingDeleteEventId
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
 }

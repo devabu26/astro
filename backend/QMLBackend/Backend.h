@@ -124,6 +124,21 @@ public:
         const QString &reactionKey
     );
 
+    Q_INVOKABLE void sendRoomReply(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &message
+    );
+    Q_INVOKABLE void editRoomMessage(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &message
+    );
+    Q_INVOKABLE void redactRoomEvent(
+        const QString &roomId,
+        const QString &eventId
+    );
+
     // Matrix device verification
     Q_INVOKABLE void acceptVerificationRequest(const QString &userId, const QString &flowId);
     Q_INVOKABLE void cancelVerificationRequest(const QString &userId, const QString &flowId);
@@ -210,6 +225,13 @@ signals:
         const QString &eventId,
         const QString &reactionKey,
         bool added,
+        const QString &error
+    );
+
+    void matrixMessageActionFinished(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &action,
         const QString &error
     );
 
@@ -346,6 +368,21 @@ signals:
         const QString &roomId,
         const QString &eventId,
         const QString &reactionKey
+    );
+
+    void requestSendRoomReply(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &message
+    );
+    void requestEditRoomMessage(
+        const QString &roomId,
+        const QString &eventId,
+        const QString &message
+    );
+    void requestRedactRoomEvent(
+        const QString &roomId,
+        const QString &eventId
     );
 
     void requestAcceptVerificationRequest(

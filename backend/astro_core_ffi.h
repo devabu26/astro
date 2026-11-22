@@ -94,6 +94,30 @@ int32_t astro_matrix_toggle_room_reaction(
     char **error_out
 );
 
+/* Matrix message actions: 1 success, -1 error. */
+int32_t astro_matrix_send_room_reply(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    const char *event_id,
+    const char *message,
+    char **error_out
+);
+
+int32_t astro_matrix_edit_room_message(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    const char *event_id,
+    const char *message,
+    char **error_out
+);
+
+int32_t astro_matrix_redact_room_event(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    const char *event_id,
+    char **error_out
+);
+
 /* Matrix device verification actions: 1 success, -1 error. */
 int32_t astro_matrix_accept_verification_request(
     AstroMatrixClient *handle,
