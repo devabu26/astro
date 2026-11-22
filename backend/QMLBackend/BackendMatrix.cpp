@@ -148,6 +148,15 @@ bool Backend::refreshMatrixRooms()
     return true;
 }
 
+void Backend::resumeMatrixSync()
+{
+    if (!m_storageReady || m_matrixResumeInProgress)
+        return;
+
+    m_matrixResumeInProgress = true;
+    emit requestResumeMatrixSync();
+}
+
 // =============================================================
 // Matrix media and room avatar requests
 // =============================================================

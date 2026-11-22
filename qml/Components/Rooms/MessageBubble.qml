@@ -53,6 +53,7 @@ Item {
 
     property bool isOwn: false
     property bool isEncrypted: false
+    property bool collapsed: false
     property bool selectionToolbarVisible: false
     property string selectionId: ""
     property bool actionTrayVisible: false
@@ -365,9 +366,10 @@ Item {
     }
 
     width: parent ? parent.width : 0
-    height: messageBubble.height + (reactionFlow.visible
+    visible: !root.collapsed
+    height: root.collapsed ? 0 : (messageBubble.height + (reactionFlow.visible
              ? reactionFlow.height - units.gu(1.5) + units.gu(1)
-             : units.gu(1))
+             : units.gu(1)))
 
     Row {
         anchors {

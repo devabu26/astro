@@ -23,10 +23,28 @@ MainView {
 
     property bool existingStorage: astroBackend.hasExistingStorage()
     property bool matrixAuthenticated: false
+    property bool applicationWasBackgrounded: false
     property bool matrixRoomsReady: false
     property bool showingSettings: false
     property string pendingNotificationRoomId: ""
     property string pendingNotificationEventId: ""
+
+    Connections {
+        target: Qt.application
+
+        onStateChanged: {
+            if (Qt.application.state === Qt.ApplicationActive) {
+                if (root.matrixAuthenticated
+                    && root.applicationWasBackgrounded) {
+                    astroBackend.resumeMatrixSync()
+                }
+
+                root.applicationWasBackgrounded = false
+            } else if (root.matrixAuthenticated) {
+                root.applicationWasBackgrounded = true
+            }
+        }
+    }
 
     Settings {
         id: notificationPreferences
@@ -251,6 +269,7 @@ MainView {
         // -----------------------------------------------------
 
         onMatrixLogoutSucceeded: {
+            root.applicationWasBackgrounded = false
             root.matrixAuthenticated = false
             root.matrixRoomsReady = false
             root.showingSettings = false
@@ -268,6 +287,7 @@ MainView {
                 "ASTRO: All local data deleted"
             )
 
+            root.applicationWasBackgrounded = false
             root.matrixAuthenticated = false
             root.matrixRoomsReady = false
             root.showingSettings = false

@@ -76,6 +76,7 @@ public slots:
 
     void fetchMatrixRooms();
     void syncMatrixRooms();
+    void resumeMatrixSync();
 
     void fetchRoomTimeline(const QString &roomId);
     void refreshRoomTimeline(const QString &roomId);
@@ -213,6 +214,7 @@ signals:
      */
     void matrixRoomsUpdated(const QString &json, bool finished);
     void matrixRoomsFailed(const QString &error);
+    void matrixSyncResumeFinished(const QString &error);
 
     void matrixTimelineUpdated(
         const QString &roomId,

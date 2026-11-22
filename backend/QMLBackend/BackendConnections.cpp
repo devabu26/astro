@@ -193,6 +193,14 @@ Backend::Backend(QObject *parent)
        Qt::QueuedConnection
    );
 
+   connect(
+       this,
+       &Backend::requestResumeMatrixSync,
+       m_storageWorker,
+       &StorageWorker::resumeMatrixSync,
+       Qt::QueuedConnection
+   );
+
    // Matrix room timeline request connection.
    connect(
         m_storageWorker,
@@ -654,6 +662,22 @@ Backend::Backend(QObject *parent)
            emit storageStatusChanged(
                QStringLiteral("Matrix rooms retrieved")
            );
+       },
+       Qt::QueuedConnection
+   );
+
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixSyncResumeFinished,
+       this,
+       [this](const QString &error) {
+           m_matrixResumeInProgress = false;
+
+           if (!error.isEmpty()) {
+               emit storageStatusChanged(
+                   QStringLiteral("Matrix sync resume failed: ") + error
+               );
+           }
        },
        Qt::QueuedConnection
    );

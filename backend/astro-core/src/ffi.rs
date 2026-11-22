@@ -1020,6 +1020,41 @@ pub unsafe extern "C" fn astro_matrix_poll_room_timeline_updates_json(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn astro_matrix_resume_sync(
+    handle: *mut MatrixClientManager,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return 0;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manager = unsafe { &mut *handle };
+        manager.resume_sync()
+    }));
+
+    match result {
+        Ok(Ok(())) => 1,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            0
+        }
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while resuming Matrix sync",
+            );
+            0
+        }
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn astro_matrix_logout(
     handle: *mut MatrixClientManager,
     error_out: *mut *mut c_char,

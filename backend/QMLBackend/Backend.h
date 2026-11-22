@@ -65,6 +65,7 @@ public:
     // ---------------------------------------------------------
 
     Q_INVOKABLE bool refreshMatrixRooms();
+    Q_INVOKABLE void resumeMatrixSync();
 
     // ---------------------------------------------------------
     // Matrix media and room avatars
@@ -328,6 +329,7 @@ signals:
     void requestRevokeMatrixDevice(const QString &deviceId, const QString &password);
     void requestFetchMatrixRooms();
     void requestSyncMatrixRooms();
+    void requestResumeMatrixSync();
     void requestFetchRoomTimeline(const QString &roomId);
     void requestRefreshRoomTimelineWorker(const QString &roomId);
     void requestPaginateRoomTimeline(const QString &roomId);
@@ -406,6 +408,7 @@ private:
 
     bool m_storageReady = false;
     bool m_storageOperationInProgress = false;
+    bool m_matrixResumeInProgress = false;
 
     // ---------------------------------------------------------
     // Worker thread

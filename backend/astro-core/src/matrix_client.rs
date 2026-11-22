@@ -22,7 +22,10 @@ use matrix_sdk::{
     Room, RoomMemberships, SqliteStoreConfig, TransmissionProgress,
 };
 use matrix_sdk_ui::spaces::SpaceService;
-use matrix_sdk_ui::timeline::{Timeline, TimelineBuilder, TimelineEventItemId, TimelineItem};
+use matrix_sdk_ui::timeline::{
+    MembershipChange, Timeline, TimelineBuilder, TimelineEventItemId,
+    TimelineItem, TimelineItemContent,
+};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs;
@@ -50,6 +53,83 @@ fn timeline_item_to_json(
     let event = item.as_event()?;
     let content = event.content();
     let is_encrypted = content.is_unable_to_decrypt();
+    let (sender_display_name, sender_avatar) = match event.sender_profile() {
+        matrix_sdk_ui::timeline::TimelineDetails::Ready(profile) => (
+            profile.display_name.clone(),
+            profile.avatar_url.as_ref().map(ToString::to_string),
+        ),
+        _ => (None, None),
+    };
+
+    let sender_name = sender_display_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| event.sender().to_string());
+
+    // Convert selected non-message timeline items into readable room events.
+    // These remain distinct from ordinary Matrix message events.
+    let room_event_body = if is_encrypted {
+        None
+    } else {
+        match content {
+            TimelineItemContent::MembershipChange(change) => {
+                let member_name = change
+                    .display_name()
+                    .unwrap_or_else(|| change.user_id().to_string());
+
+                let action = match change.change() {
+                    Some(MembershipChange::Joined) => Some("joined the room"),
+                    Some(MembershipChange::Left) => Some("left the room"),
+                    Some(MembershipChange::Invited) => Some("was invited"),
+                    Some(MembershipChange::Kicked) => Some("was kicked"),
+                    Some(MembershipChange::Banned) => Some("was banned"),
+                    Some(MembershipChange::Unbanned) => Some("was unbanned"),
+                    Some(MembershipChange::KickedAndBanned) => {
+                        Some("was kicked and banned")
+                    }
+                    Some(MembershipChange::InvitationAccepted) => {
+                        Some("accepted an invitation")
+                    }
+                    Some(MembershipChange::InvitationRejected) => {
+                        Some("rejected an invitation")
+                    }
+                    Some(MembershipChange::InvitationRevoked) => {
+                        Some("had their invitation revoked")
+                    }
+                    Some(MembershipChange::Knocked) => {
+                        Some("requested to join the room")
+                    }
+                    Some(MembershipChange::KnockAccepted) => {
+                        Some("had their join request accepted")
+                    }
+                    Some(MembershipChange::KnockRetracted) => {
+                        Some("retracted their join request")
+                    }
+                    Some(MembershipChange::KnockDenied) => {
+                        Some("had their join request denied")
+                    }
+                    _ => None,
+                };
+
+                action.map(|action| format!("{member_name} {action}"))
+            }
+            TimelineItemContent::CallInvite => {
+                Some(format!("{sender_name} started a call"))
+            }
+            TimelineItemContent::RtcNotification { call_intent, .. } => {
+                use matrix_sdk::ruma::events::rtc::notification::CallIntent;
+
+                let description = match call_intent {
+                    Some(CallIntent::Audio) => "started a voice call",
+                    Some(CallIntent::Video) => "started a video call",
+                    _ => "started a call",
+                };
+                Some(format!("{sender_name} {description}"))
+            }
+            _ => None,
+        }
+    };
 
     let message = if is_encrypted {
         None
@@ -63,12 +143,29 @@ fn timeline_item_to_json(
         content.as_sticker()
     };
 
-    let body = message
+    // Ignore unsupported non-message events instead of displaying them
+    // as encrypted messages. Keep the placeholder for genuinely encrypted
+    // events that could not be decrypted.
+    if !is_encrypted
+        && room_event_body.is_none()
+        && message.is_none()
+        && sticker.is_none()
+    {
+        return None;
+    }
+
+    let fallback_body = message
         .map(|message| message.body())
         .or_else(|| sticker.map(|sticker| sticker.content().body.as_str()))
         .unwrap_or("Encrypted message");
 
-    let mut msgtype = "m.text";
+    let body = room_event_body.as_deref().unwrap_or(fallback_body);
+
+    let mut msgtype = if room_event_body.is_some() {
+        "m.room.event"
+    } else {
+        "m.text"
+    };
     let mut media_source = None;
     let mut media_mimetype = None;
     let mut media_thumbnail_source = None;
@@ -129,13 +226,6 @@ fn timeline_item_to_json(
         media_mimetype = sticker_content.info.mimetype.clone();
     }
 
-    let (sender_display_name, sender_avatar) = match event.sender_profile() {
-        matrix_sdk_ui::timeline::TimelineDetails::Ready(profile) => (
-            profile.display_name.clone(),
-            profile.avatar_url.as_ref().map(ToString::to_string),
-        ),
-        _ => (None, None),
-    };
 
     let reactions = content
         .reactions()
@@ -744,100 +834,8 @@ impl MatrixClientManager {
         })
     }
 
-    /// Perform an initial sync, return joined rooms and Space relationships,
-    /// and start continuous syncing if it is not already running.
-    pub fn rooms_json(&mut self) -> Result<String, String> {
-        let client = self
-            .client
-            .as_ref()
-            .ok_or_else(|| "No active Matrix session".to_string())?;
-
-        let rooms_json = self.runtime.block_on(async {
-            client
-                .sync_once(SyncSettings::default().timeout(Duration::from_secs(10)))
-                .await
-                .map_err(|e| format!("Matrix room sync failed: {e}"))?;
-
-            // Build the Matrix Space graph from the synchronised room state.
-            let space_service = SpaceService::new(client.clone()).await;
-            let _top_level_spaces = space_service.top_level_joined_spaces().await;
-
-            let joined_rooms = client.joined_rooms();
-            let mut room_entries = Vec::with_capacity(joined_rooms.len());
-
-            for room in joined_rooms {
-                let info = room.clone_info();
-                let room_id = room.room_id().to_string();
-
-                let is_space = info.room_type() == Some(&RoomType::Space);
-                let is_dm = !is_space && room.is_dm();
-
-                let kind = if is_space {
-                    "space"
-                } else if is_dm {
-                    "dm"
-                } else {
-                    "room"
-                };
-
-                let (name, avatar_url) = if is_dm {
-                    let members = room
-                        .members_no_sync(RoomMemberships::JOIN)
-                        .await
-                        .unwrap_or_default();
-
-                    let other_member = members
-                        .iter()
-                        .find(|member| Some(member.user_id()) != client.user_id());
-
-                    let name = other_member
-                        .and_then(|member| member.display_name().map(str::to_owned))
-                        .or_else(|| info.name().map(str::to_owned))
-                        .unwrap_or_else(|| room_id.clone());
-
-                    let avatar_url = other_member
-                        .and_then(|member| member.avatar_url().map(ToString::to_string))
-                        .or_else(|| info.avatar_url().map(ToString::to_string));
-
-                    (name, avatar_url)
-                } else {
-                    let name = info
-                        .name()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| room_id.clone());
-
-                    let avatar_url = info.avatar_url().map(ToString::to_string);
-
-                    (name, avatar_url)
-                };
-
-                let parent_ids = space_service
-                    .joined_parent_ids_of_child(room.room_id())
-                    .await;
-
-                let parents: Vec<String> = parent_ids.iter().map(ToString::to_string).collect();
-
-                room_entries.push(serde_json::json!({
-                    "room_id": room_id,
-                    "kind": kind,
-                    "name": name,
-                    "topic": info.topic(),
-                    "avatar_url": avatar_url,
-                    "member_count": info.joined_members_count(),
-                    "unread_count": room.unread_notification_counts().notification_count,
-                    "mention_count": room.unread_notification_counts().highlight_count,
-                    "parent_space_ids": parents
-                }));
-            }
-
-            Ok::<String, String>(
-                serde_json::json!({
-                    "rooms": room_entries
-                })
-                .to_string(),
-            )
-        })?;
-
+    /// Start the continuous Matrix sync task if it is not already running.
+    fn start_sync_task(&mut self) -> Result<(), String> {
         // Start continuous syncing once the initial room sync has succeeded.
         if self
             .sync_task
@@ -970,7 +968,169 @@ impl MatrixClientManager {
             });
         }
 
+        Ok(())
+    }
+
+    /// Perform an initial sync, return joined rooms and Space relationships,
+    /// and start continuous syncing if it is not already running.
+    pub fn rooms_json(&mut self) -> Result<String, String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?;
+
+        let rooms_json = self.runtime.block_on(async {
+            client
+                .event_cache()
+                .subscribe()
+                .map_err(|e| format!("Failed to subscribe Matrix event cache: {e}"))?;
+
+            client
+                .sync_once(SyncSettings::default().timeout(Duration::from_secs(10)))
+                .await
+                .map_err(|e| format!("Matrix room sync failed: {e}"))?;
+
+            // Build the Matrix Space graph from the synchronised room state.
+            let space_service = SpaceService::new(client.clone()).await;
+            let _top_level_spaces = space_service.top_level_joined_spaces().await;
+
+            let joined_rooms = client.joined_rooms();
+            let mut room_entries = Vec::with_capacity(joined_rooms.len());
+
+            for room in joined_rooms {
+                let info = room.clone_info();
+                let room_id = room.room_id().to_string();
+
+                let is_space = info.room_type() == Some(&RoomType::Space);
+                let is_dm = !is_space && room.is_dm();
+
+                let kind = if is_space {
+                    "space"
+                } else if is_dm {
+                    "dm"
+                } else {
+                    "room"
+                };
+
+                let (name, avatar_url) = if is_dm {
+                    let members = room
+                        .members_no_sync(RoomMemberships::JOIN)
+                        .await
+                        .unwrap_or_default();
+
+                    let other_member = members
+                        .iter()
+                        .find(|member| Some(member.user_id()) != client.user_id());
+
+                    let name = other_member
+                        .and_then(|member| member.display_name().map(str::to_owned))
+                        .or_else(|| info.name().map(str::to_owned))
+                        .unwrap_or_else(|| room_id.clone());
+
+                    let avatar_url = other_member
+                        .and_then(|member| member.avatar_url().map(ToString::to_string))
+                        .or_else(|| info.avatar_url().map(ToString::to_string));
+
+                    (name, avatar_url)
+                } else {
+                    let name = info
+                        .name()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| room_id.clone());
+
+                    let avatar_url = info.avatar_url().map(ToString::to_string);
+
+                    (name, avatar_url)
+                };
+
+                let parent_ids = space_service
+                    .joined_parent_ids_of_child(room.room_id())
+                    .await;
+
+                let parents: Vec<String> = parent_ids.iter().map(ToString::to_string).collect();
+
+                room_entries.push(serde_json::json!({
+                    "room_id": room_id,
+                    "kind": kind,
+                    "name": name,
+                    "topic": info.topic(),
+                    "avatar_url": avatar_url,
+                    "member_count": info.joined_members_count(),
+                    "unread_count": room.unread_notification_counts().notification_count,
+                    "mention_count": room.unread_notification_counts().highlight_count,
+                    "parent_space_ids": parents
+                }));
+            }
+
+            Ok::<String, String>(
+                serde_json::json!({
+                    "rooms": room_entries
+                })
+                .to_string(),
+            )
+        })?;
+
+        self.start_sync_task()?;
+
         Ok(rooms_json)
+    }
+
+    /// Resume Matrix syncing after the application returns to the foreground.
+    ///
+    /// Stop the previous sync task, perform a bounded catch-up sync, and
+    /// restart continuous syncing even if the catch-up request fails.
+    pub fn resume_sync(&mut self) -> Result<(), String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?
+            .clone();
+
+        if let Some(task) = self.sync_task.take() {
+            task.stop();
+        }
+
+        let catch_up_result = self.runtime.block_on(async {
+            client
+                .sync_once(SyncSettings::default().timeout(Duration::from_secs(10)))
+                .await
+                .map_err(|error| format!("Matrix foreground catch-up sync failed: {error}"))
+                .map(|_| ())
+        });
+
+        // Always try to restore continuous syncing after the catch-up attempt.
+        let start_result = self.start_sync_task();
+
+        match (catch_up_result, start_result) {
+            (Ok(()), Ok(())) => {}
+            (Err(catch_up_error), Ok(())) => return Err(catch_up_error),
+            (Ok(()), Err(start_error)) => return Err(start_error),
+            (Err(catch_up_error), Err(start_error)) => {
+                return Err(format!(
+                    "{catch_up_error}; additionally, {start_error}"
+                ));
+            }
+        }
+
+        // Rebuild the active room's timeline snapshot after successful catch-up.
+        let active_room = self
+            .active_timeline_room
+            .lock()
+            .map_err(|_| "Could not read active Matrix timeline room".to_string())?
+            .clone();
+
+        if let Some(room_id) = active_room {
+            let mut queue = self
+                .pending_timeline_recovery
+                .lock()
+                .map_err(|_| "Could not queue Matrix timeline recovery".to_string())?;
+
+            if !queue.contains(&room_id) {
+                queue.push(room_id);
+            }
+        }
+
+        Ok(())
     }
 
     /// Build and store a room timeline, then return its initial message snapshot.

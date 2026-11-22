@@ -128,6 +128,34 @@ void StorageWorker::syncMatrixRooms()
     emit matrixRoomsUpdated(result, true);
 }
 
+void StorageWorker::resumeMatrixSync()
+{
+    if (!m_matrixClient) {
+        emit matrixSyncResumeFinished(
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    char *error = nullptr;
+    const int32_t result = astro_matrix_resume_sync(
+        m_matrixClient,
+        &error
+    );
+
+    QString message;
+    if (error) {
+        message = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+
+    if (result == 0 && message.isEmpty()) {
+        message = QStringLiteral("Could not resume Matrix syncing");
+    }
+
+    emit matrixSyncResumeFinished(message);
+}
+
 // =============================================================
 // Room timeline retrieval
 // =============================================================

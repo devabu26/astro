@@ -2149,8 +2149,16 @@ Item {
                                             horizontalAlignment: Text.AlignHCenter
                                         }
 
+                                        RoomEventBubble {
+                                            width: messageList.width
+                                            visible: model.msgtype === "m.room.event"
+                                            body: model.body
+                                        }
+
                                         MessageBubble {
                                             id: messageBubbleItem
+
+                                            collapsed: model.msgtype === "m.room.event"
 
                                             width: messageList.width
                                             selectionId: messageDelegate.messageSelectionId
