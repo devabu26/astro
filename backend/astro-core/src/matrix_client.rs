@@ -25,6 +25,8 @@ use matrix_sdk::{
     config::SyncSettings, ruma::room::RoomType, store::RoomLoadSettings, Client, LoopCtrl,
     Room, RoomMemberships, SqliteStoreConfig, TransmissionProgress,
 };
+use livekit::prelude::{LocalAudioTrack, LocalTrack, PlatformAudio, Room as LiveKitRoom, RoomEvent, RoomOptions, RtcAudioSource, TrackPublishOptions, TrackSource};
+use tokio::task::JoinHandle;
 use matrix_sdk_ui::spaces::SpaceService;
 use matrix_sdk_ui::timeline::{
     MembershipChange, Timeline, TimelineBuilder, TimelineEventItemId,
