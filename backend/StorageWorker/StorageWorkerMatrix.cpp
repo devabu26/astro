@@ -329,6 +329,10 @@ void StorageWorker::paginateRoomTimeline(const QString &roomId)
 // Live Matrix timeline updates
 // =============================================================
 
+// =============================================================
+// Live Matrix timeline and MatrixRTC membership updates
+// =============================================================
+
 void StorageWorker::pollRoomTimelineUpdates()
 {
     if (!m_matrixClient) {
@@ -337,6 +341,46 @@ void StorageWorker::pollRoomTimelineUpdates()
         }
         return;
     }
+
+    // ---------------------------------------------------------
+    // MatrixRTC membership updates
+    // ---------------------------------------------------------
+
+    char *rtcError = nullptr;
+
+    char *rtcJson = astro_matrix_poll_rtc_memberships_json(
+        m_matrixClient,
+        &rtcError
+    );
+
+    if (!rtcJson) {
+        QString message =
+            QStringLiteral("Could not retrieve MatrixRTC membership updates");
+
+        if (rtcError) {
+            message = QString::fromUtf8(rtcError);
+            astro_string_free(rtcError);
+        }
+
+        qWarning() << "ASTRO: MatrixRTC membership polling failed:" << message;
+    } else {
+        const QString rtcResult = QString::fromUtf8(rtcJson);
+
+        astro_string_free(rtcJson);
+
+        if (rtcError) {
+            astro_string_free(rtcError);
+        }
+
+        // Avoid emitting an empty update on every timer tick.
+        if (rtcResult != QStringLiteral("{\"updates\":[]}")) {
+            emit matrixRtcMembershipsUpdated(rtcResult);
+        }
+    }
+
+    // ---------------------------------------------------------
+    // Live Matrix timeline updates
+    // ---------------------------------------------------------
 
     char *error = nullptr;
 
@@ -481,6 +525,104 @@ void StorageWorker::sendRoomMessage(
     }
 
     emit matrixMessageSent(roomId, result, QString());
+}
+
+
+void StorageWorker::joinRtcRoom(const QString &roomId)
+{
+    if (!m_matrixClient || roomId.isEmpty()) {
+        emit matrixRtcActionFinished(
+            roomId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+    const int32_t result = astro_matrix_join_rtc_room(
+        m_matrixClient, roomIdBytes.constData(), &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+    if (result < 0 && errorMessage.isEmpty())
+        errorMessage = QStringLiteral("Could not join call presence");
+
+    emit matrixRtcActionFinished(roomId, errorMessage);
+}
+
+void StorageWorker::leaveRtcRoom(const QString &roomId)
+{
+    if (!m_matrixClient || roomId.isEmpty()) {
+        emit matrixRtcActionFinished(
+            roomId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+    const int32_t result = astro_matrix_leave_rtc_room(
+        m_matrixClient, roomIdBytes.constData(), &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+    if (result < 0 && errorMessage.isEmpty())
+        errorMessage = QStringLiteral("Could not leave call presence");
+
+    emit matrixRtcActionFinished(roomId, errorMessage);
+}
+
+void StorageWorker::requestRtcLiveKitCredentials(const QString &roomId)
+{
+    if (!m_matrixClient || roomId.isEmpty()) {
+        emit matrixRtcCredentialsReady(
+            roomId,
+            QString(),
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+    char *credentials = astro_matrix_rtc_livekit_credentials_json(
+        m_matrixClient,
+        roomIdBytes.constData(),
+        &error
+    );
+
+    QString errorMessage;
+    QString credentialsJson;
+
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+
+    if (credentials) {
+        credentialsJson = QString::fromUtf8(credentials);
+        astro_string_free(credentials);
+    } else if (errorMessage.isEmpty()) {
+        errorMessage = QStringLiteral("Could not retrieve LiveKit credentials");
+    }
+
+    emit matrixRtcCredentialsReady(roomId, credentialsJson, errorMessage);
 }
 
 void StorageWorker::toggleRoomReaction(

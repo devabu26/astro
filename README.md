@@ -2,7 +2,8 @@
 
 Matrix Client For Ubuntu Touch
 
-https://github.com/devabu26/astro/tree/main
+https://github.com/devabu26/astro
+
 
 ## License
 

@@ -209,6 +209,29 @@ Backend::Backend(QObject *parent)
         &Backend::matrixLiveTimelineUpdated
    );
 
+   // Forward MatrixRTC membership updates directly to Backend.
+   // These must not pass through NotificationManager.
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixRtcMembershipsUpdated,
+       this,
+       &Backend::matrixRtcMembershipsUpdated
+   );
+
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixRtcActionFinished,
+       this,
+       &Backend::matrixRtcActionFinished
+   );
+
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixRtcCredentialsReady,
+       this,
+       &Backend::matrixRtcCredentialsReady
+   );
+
    connect(
        m_storageWorker,
        &StorageWorker::matrixLiveTimelineUpdated,
@@ -273,7 +296,31 @@ Backend::Backend(QObject *parent)
 
     connect(
         this,
-        &Backend::requestToggleRoomReaction,
+        &Backend::requestJoinRtcRoom,
+       m_storageWorker,
+       &StorageWorker::joinRtcRoom,
+       Qt::QueuedConnection
+   );
+
+   connect(
+       this,
+       &Backend::requestLeaveRtcRoom,
+       m_storageWorker,
+       &StorageWorker::leaveRtcRoom,
+       Qt::QueuedConnection
+   );
+
+   connect(
+       this,
+       &Backend::requestRtcLiveKitCredentialsWorker,
+       m_storageWorker,
+       &StorageWorker::requestRtcLiveKitCredentials,
+       Qt::QueuedConnection
+   );
+
+   connect(
+       this,
+       &Backend::requestToggleRoomReaction,
         m_storageWorker,
         &StorageWorker::toggleRoomReaction,
         Qt::QueuedConnection

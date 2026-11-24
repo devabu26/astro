@@ -1,9 +1,18 @@
-clickable_minimum_required: 8.8.0
+
+clickable_minimum_required: 8.9.0
 builder: cmake
 kill: qmlscene
+framework: ubuntu-touch-24.04-1.x
 
 image_setup:
   run:
+    - mkdir -p /etc/apt/keyrings
+    - curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /etc/apt/keyrings/llvm.gpg
+    - echo "deb [signed-by=/etc/apt/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" > /etc/apt/sources.list.d/llvm.list
+    - apt-get -o APT::Sandbox::User=root update
+    - apt-get -o APT::Sandbox::User=root install -y clang-23 lld-23
+    - printf '#!/bin/sh\nexec /usr/bin/clang++-23 --target=aarch64-linux-gnu --gcc-toolchain=/usr -fuse-ld=lld "$@"\n' > /usr/local/bin/astro-clang++-arm64
+    - chmod +x /usr/local/bin/astro-clang++-arm64
     - rustup toolchain install 1.96.0 --profile minimal --target aarch64-unknown-linux-gnu
     - rustup default 1.96.0
 

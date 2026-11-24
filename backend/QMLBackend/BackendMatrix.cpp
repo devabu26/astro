@@ -392,6 +392,52 @@ void Backend::sendRoomAttachment(
 }
 
 
+
+void Backend::joinRtcRoom(const QString &roomId)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+    emit requestJoinRtcRoom(roomId);
+}
+
+void Backend::leaveRtcRoom(const QString &roomId)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+    emit requestLeaveRtcRoom(roomId);
+}
+
+
+void Backend::requestRtcLiveKitCredentials(const QString &roomId)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcCredentialsReady(
+            roomId,
+            QString(),
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    emit requestRtcLiveKitCredentialsWorker(roomId);
+}
+
 void Backend::toggleRoomReaction(
     const QString &roomId,
     const QString &eventId,

@@ -214,6 +214,18 @@ char *astro_matrix_poll_room_timeline_updates_json(
     char **error_out
 );
 
+int32_t astro_matrix_join_rtc_room(AstroMatrixClient *handle, const char *room_id, char **error_out);
+int32_t astro_matrix_leave_rtc_room(AstroMatrixClient *handle, const char *room_id, char **error_out);
+char *astro_matrix_rtc_livekit_credentials_json(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    char **error_out
+);
+char *astro_matrix_poll_rtc_memberships_json(
+    AstroMatrixClient *handle,
+    char **error_out
+);
+
 char *astro_matrix_get_cached_rooms_json(
     AstroMatrixClient *handle,
     char **error_out

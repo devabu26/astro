@@ -361,6 +361,71 @@ pub unsafe extern "C" fn astro_matrix_send_room_attachment(
     }
 }
 
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_join_rtc_room(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        (&mut *handle).join_rtc_room(room_id)
+    }));
+
+    match result {
+        Ok(Ok(())) => 0,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while joining MatrixRTC presence");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_leave_rtc_room(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        (&mut *handle).leave_rtc_room(room_id)
+    }));
+
+    match result {
+        Ok(Ok(())) => 0,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while leaving MatrixRTC presence");
+            -1
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn astro_matrix_toggle_room_reaction(
     handle: *mut MatrixClientManager,
@@ -1122,6 +1187,89 @@ pub unsafe extern "C" fn astro_matrix_poll_room_timeline_updates_json(
             set_error(
                 error_out,
                 "Unexpected Rust panic while polling Matrix timeline updates",
+            );
+            ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_poll_rtc_memberships_json(
+    handle: *mut MatrixClientManager,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manager = unsafe { &mut *handle };
+        manager.poll_rtc_memberships_json()
+    }));
+
+    match result {
+        Ok(json) => match CString::new(json) {
+            Ok(value) => value.into_raw(),
+            Err(_) => {
+                set_error(
+                    error_out,
+                    "MatrixRTC membership data contained an invalid null character",
+                );
+                ptr::null_mut()
+            }
+        },
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while polling MatrixRTC memberships",
+            );
+            ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_rtc_livekit_credentials_json(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        let manager = &mut *handle;
+        manager.rtc_livekit_credentials_json(room_id)
+    }));
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(value) => value.into_raw(),
+            Err(_) => {
+                set_error(error_out, "LiveKit credentials contained an invalid null character");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(
+                error_out,
+                "Unexpected Rust panic while retrieving LiveKit credentials",
             );
             ptr::null_mut()
         }

@@ -8,18 +8,25 @@ name = "astro_core"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-matrix-sdk = "=0.19.1"
+matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d", features = ["unstable-msc4354"] }
 mime = "=0.3.18"
 eyeball = "=0.8.8"
-matrix-sdk-ui = "=0.19.1"
-matrix-sdk-sqlite = { version = "=0.19.1", features = ["bundled"] }
-matrix-sdk-store-encryption = "=0.19.1"
+matrix-sdk-ui = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d" }
+matrix-sdk-sqlite = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d", features = ["bundled"] }
+matrix-sdk-store-encryption = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d" }
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "sync", "macros"] }
 serde_json = "1"
 futures-util = "0.3"
+getrandom = "=0.2.17"
 eyeball-im = "0.9.1"
 tracing-subscriber = "=0.3.23"
 tracing = "=0.1.44"
 
+
 [dev-dependencies]
 tokio = { version = "=1.54.1", features = ["macros"] }
+
+[patch.crates-io]
+async-compat = { git = "https://github.com/element-hq/async-compat", rev = "5a27c8b290f1f1dcfc0c4ec22c464e38528aa591" }
+zxcvbn = { git = "https://github.com/shssoichiro/zxcvbn-rs", rev = "4e8e784b23541d118800df84feedf8160879d1af" }
+const_panic = { git = "https://github.com/jplatte/const_panic", rev = "e0b317a9a7bde2d48a7d15b6a60d70e4a41d3b5f" }
