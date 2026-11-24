@@ -26,6 +26,10 @@ Item {
     property string selectedPreview: "Your Matrix client starts here."
     property string selectedRoomAvatarUrl: ""
 
+    // MatrixRTC membership snapshots, indexed by room ID.
+    property var rtcMembershipsByRoom: ({})
+    property var rtcCallStatesByRoom: ({})
+
     // Notification navigation request passed to RoomView.
     property string pendingNotificationEventId: ""
     property int notificationRequestSerial: 0
@@ -354,6 +358,57 @@ function loadRooms(json, finished) {
                 )
             }
         }
+
+                onMatrixRtcMembershipsUpdated: {
+            try {
+                var result = JSON.parse(json)
+                var updates = result.updates || []
+
+                var updatedMemberships = ({})
+                var updatedCallStates = ({})
+
+                for (var roomId in root.rtcMembershipsByRoom) {
+                    updatedMemberships[roomId] =
+                        root.rtcMembershipsByRoom[roomId]
+                }
+
+                for (var roomId in root.rtcCallStatesByRoom) {
+                    updatedCallStates[roomId] =
+                        root.rtcCallStatesByRoom[roomId]
+                }
+
+                for (var i = 0; i < updates.length; i++) {
+                    var item = updates[i]
+
+                    if (!item.room_id)
+                        continue
+
+                    if (Array.isArray(item.memberships))
+                        updatedMemberships[item.room_id] = item.memberships
+
+                    updatedCallStates[item.room_id] = {
+                        slotAvailable: item.slot_available === true,
+                        joinedByMe: item.joined_by_me === true
+                    }
+                }
+
+                if (updates.length > 0) {
+                    root.rtcMembershipsByRoom = updatedMemberships
+                    root.rtcCallStatesByRoom = updatedCallStates
+
+                    console.log(
+                        "ASTRO RTC: Updated room call states:",
+                        updates.length
+                    )
+                }
+            } catch (error) {
+                console.warn(
+                    "ASTRO: Could not process MatrixRTC membership updates:",
+                    error
+                )
+            }
+        }
+
     }
 
     // =========================================================
@@ -869,6 +924,10 @@ function loadRooms(json, finished) {
                 roomId: root.selectedRoomId
                 roomName: root.selectedRoom
                 avatarUrl: root.selectedRoomAvatarUrl
+                rtcMemberships:
+                    root.rtcMembershipsByRoom[root.selectedRoomId] || []
+                rtcCallState:
+                    root.rtcCallStatesByRoom[root.selectedRoomId] || ({})
 
                 avatarFallbackColour: {
                        for (var i = 0; i < roomModel.count; i++) {

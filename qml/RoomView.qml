@@ -8,6 +8,14 @@ import "Components/Rooms"
 Item {
     id: root
 
+    // Current MatrixRTC memberships for this room.
+    property var rtcMemberships: []
+    property var rtcCallState: ({})
+
+    onRtcMembershipsChanged: root.requestRtcParticipantAvatars()
+
+
+
     property bool composerEmojiPickerVisible: false
 
     // Active reply/edit target.
@@ -184,6 +192,8 @@ Item {
     property var roomSharedVideoOutput: roomSharedVideoOutputItem
 
     Component.onCompleted: {
+        root.requestRtcParticipantAvatars()
+
         if (!root.replaceSharedVideoPlayer())
             console.error("[AstroVideo] Initial MediaPlayer creation failed")
     }
@@ -938,6 +948,24 @@ Item {
         root.backend.requestSenderAvatar(requestKey, uri)
     }
 
+    function requestRtcParticipantAvatars() {
+        if (!root.backend || !root.roomId)
+            return
+
+        var memberships = root.rtcMemberships || []
+
+        for (var i = 0; i < memberships.length; i++) {
+            var participant = memberships[i]
+            var sender = participant.sender || ""
+            var uri = participant.avatar_url || ""
+
+            if (sender !== "" && uri !== "" &&
+                root.cachedSenderAvatar(uri) === "") {
+                root.requestSenderAvatar(sender, uri)
+            }
+        }
+    }
+
     function storeSenderAvatar(requestKey, dataUrl) {
         var request = root.senderAvatarRequests[requestKey]
 
@@ -992,6 +1020,8 @@ Item {
     }
 
     onRoomIdChanged: {
+        root.requestRtcParticipantAvatars()
+
         root.roomMenuVisible = false
         root.timelineLoadError = ""
         root.selectedMessageEventId = ""
@@ -2027,6 +2057,17 @@ Item {
                     }
                 }
 
+                // MatrixRTC participant strip and expandable list.
+                RtcParticipants {
+                    id: rtcParticipants
+                    width: parent.width
+                    memberships: root.rtcMemberships
+                    avatarCache: root.senderAvatarCache
+                    backend: root.backend
+                    roomId: root.roomId
+                    callState: root.rtcCallState
+                }
+
                 // =====================================
                 // Message history
                 // =====================================
@@ -2036,6 +2077,7 @@ Item {
 
                     height: parent.height -
                             units.gu(8) -
+                            rtcParticipants.height -
                             messageComposer.height
 
                     Flickable {

@@ -111,6 +111,9 @@ public:
     Q_INVOKABLE void requestOlderRoomTimeline(const QString &roomId);
     Q_INVOKABLE void markRoomAsRead(const QString &roomId);
     Q_INVOKABLE void sendRoomMessage(const QString &roomId, const QString &message);
+    Q_INVOKABLE void joinRtcRoom(const QString &roomId);
+    Q_INVOKABLE void leaveRtcRoom(const QString &roomId);
+    Q_INVOKABLE void requestRtcLiveKitCredentials(const QString &roomId);
 
     Q_INVOKABLE void sendRoomAttachment(
         const QString &requestKey,
@@ -237,6 +240,15 @@ signals:
 
     // Incoming and updated room timeline events.
     void matrixLiveTimelineUpdated(const QString &json);
+    // MatrixRTC membership snapshots, separate from timeline notifications.
+    void matrixRtcMembershipsUpdated(const QString &json);
+    void matrixRtcActionFinished(const QString &roomId, const QString &error);
+    void matrixRtcCredentialsReady(
+        const QString &roomId,
+        const QString &credentialsJson,
+        const QString &error
+    );
+
     void notificationReceived(
         const QString &sender,
         const QString &body,
@@ -357,6 +369,9 @@ signals:
     void requestPaginateRoomTimeline(const QString &roomId);
     void requestMarkRoomAsRead(const QString &roomId);
     void requestSendRoomMessage(const QString &roomId, const QString &message);
+    void requestJoinRtcRoom(const QString &roomId);
+    void requestLeaveRtcRoom(const QString &roomId);
+    void requestRtcLiveKitCredentialsWorker(const QString &roomId);
 
     void requestSendRoomAttachment(
         const QString &requestKey,

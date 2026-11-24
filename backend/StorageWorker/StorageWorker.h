@@ -83,6 +83,9 @@ public slots:
     void paginateRoomTimeline(const QString &roomId);
     void markRoomAsRead(const QString &roomId);
     void sendRoomMessage(const QString &roomId, const QString &message);
+    void joinRtcRoom(const QString &roomId);
+    void leaveRtcRoom(const QString &roomId);
+    void requestRtcLiveKitCredentials(const QString &roomId);
 
     void sendRoomAttachment(
         const QString &requestKey,
@@ -281,6 +284,15 @@ signals:
     // Live subscription updates are forwarded to Backend, which
     // also passes relevant events to NotificationManager.
     void matrixLiveTimelineUpdated(const QString &json);
+
+    // MatrixRTC membership changes are forwarded separately from timeline events.
+    void matrixRtcMembershipsUpdated(const QString &json);
+    void matrixRtcActionFinished(const QString &roomId, const QString &error);
+    void matrixRtcCredentialsReady(
+        const QString &roomId,
+        const QString &credentialsJson,
+        const QString &error
+    );
 
     void matrixDeviceVerificationFinished(
         const QString &deviceId,
