@@ -36,15 +36,35 @@ MainView {
         target: Qt.application
 
         onStateChanged: {
+            console.info(
+                "ASTRO_BACKGROUND_CAMERA: application state changed",
+                Qt.application.state,
+                "callVisible:", root.showingCallPage,
+                "authenticated:", root.matrixAuthenticated
+            )
+
             if (Qt.application.state === Qt.ApplicationActive) {
                 if (root.matrixAuthenticated
                     && root.applicationWasBackgrounded) {
                     astroBackend.resumeMatrixSync()
                 }
 
+                astroBackend.refreshLifecycleExemption()
+                console.info(
+                    "ASTRO_BACKGROUND_CAMERA: lifecycle exemption",
+                    astroBackend.lifecycleExemptionEnabled,
+                    "error:", astroBackend.lifecycleExemptionError
+                )
                 root.applicationWasBackgrounded = false
-            } else if (root.matrixAuthenticated) {
-                root.applicationWasBackgrounded = true
+            } else {
+                astroBackend.refreshLifecycleExemption()
+                console.info(
+                    "ASTRO_BACKGROUND_CAMERA: lifecycle exemption",
+                    astroBackend.lifecycleExemptionEnabled,
+                    "error:", astroBackend.lifecycleExemptionError
+                )
+                if (root.matrixAuthenticated)
+                    root.applicationWasBackgrounded = true
             }
         }
     }
