@@ -2798,9 +2798,7 @@ impl MatrixClientManager {
                     }
                     RoomEvent::TrackSubscribed { participant, track, .. } => {
                         if let RemoteTrack::Video(video_track) = track {
-                            if video_track.source() != TrackSource::Camera {
-                                continue;
-                            }
+                            if video_track.source() == TrackSource::Camera {
                             let identity = participant.identity().to_string();
                             let track_sid = video_track.sid().to_string();
                             let key = format!("{room_id}\u{1f}{identity}\u{1f}{track_sid}");
@@ -2838,6 +2836,7 @@ impl MatrixClientManager {
                                 }
                             });
                             tasks_to_add.push((key, task.abort_handle()));
+                            }
                         }
 
                         Some(serde_json::json!({
