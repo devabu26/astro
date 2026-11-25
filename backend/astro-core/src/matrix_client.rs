@@ -67,6 +67,7 @@ struct RtcRemoteVideoFrame {
     key: String,
     room_id: String,
     identity: String,
+    source: String,
     width: u32,
     height: u32,
     data: Vec<u8>,
@@ -488,6 +489,8 @@ struct LiveKitAudioSession {
     muted: bool,
     video_source: Option<NativeVideoSource>,
     video_track: Option<LocalVideoTrack>,
+    screen_share_source: Option<NativeVideoSource>,
+    screen_share_track: Option<LocalVideoTrack>,
 }
 
 fn create_new_store(database_path: &Path) -> Result<(String, PathBuf), String> {
@@ -2498,8 +2501,10 @@ impl MatrixClientManager {
                 microphone,
                 muted: false,
                 video_source: None,
-    video_track: None,
-})
+                video_track: None,
+                screen_share_source: None,
+                screen_share_track: None,
+            })
         })?;
 
         self.rtc_livekit_audio_sessions.insert(room_id, audio_session);
@@ -2573,6 +2578,71 @@ impl MatrixClientManager {
 
         Ok(())
     }
+
+    pub fn start_rtc_screenshare(
+        &mut self,
+        room_id: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        if width < 2 || height < 2 || width % 2 != 0 || height % 2 != 0 {
+            return Err("Screen-share dimensions must be positive even numbers".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get_mut(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+
+        if session.screen_share_track.is_some() {
+            return Err("Screen sharing is already active in this room".into());
+        }
+
+        let (source, track) = {
+            let _runtime_guard = runtime.enter();
+
+            let source = NativeVideoSource::new(
+                VideoResolution { width, height },
+                true,
+            );
+
+            let track = LocalVideoTrack::create_screen_share_track(
+                "screen_share",
+                RtcVideoSource::Native(source.clone()),
+            );
+
+            (source, track)
+        };
+
+        let options = TrackPublishOptions {
+            source: TrackSource::Screenshare,
+            ..Default::default()
+        };
+
+        runtime.block_on(async {
+            session
+                .room
+                .local_participant()
+                .publish_track(LocalTrack::Video(track.clone()), options)
+                .await
+                .map_err(|error| {
+                    format!("Could not publish LiveKit screen-share track: {error}")
+                })
+        })?;
+
+        session.screen_share_source = Some(source);
+        session.screen_share_track = Some(track);
+
+        Ok(())
+    }
+
 
     // ASTRO_RTC_VIDEO_STAGE2
     /// Submit one tightly packed I420 frame to the active camera source.
@@ -2659,6 +2729,87 @@ impl MatrixClientManager {
         Ok(())
     }
 
+    pub fn push_rtc_screenshare_frame(
+        &mut self,
+        room_id: &str,
+        width: u32,
+        height: u32,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+
+        if width < 2 || height < 2
+            || width > 1920 || height > 1080
+            || width % 2 != 0 || height % 2 != 0
+        {
+            return Err("Video frame dimensions must be even and no larger than 1920x1080".into());
+        }
+
+        let y_size = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or_else(|| "Video frame dimensions overflow".to_string())?;
+        let chroma_size = y_size / 4;
+        let expected_size = y_size
+            .checked_add(chroma_size.checked_mul(2)
+                .ok_or_else(|| "Video frame size overflow".to_string())?)
+            .ok_or_else(|| "Video frame size overflow".to_string())?;
+
+        if bytes.len() != expected_size {
+            return Err(format!(
+                "Invalid I420 frame size: expected {expected_size} bytes, received {}",
+                bytes.len()
+            ));
+        }
+
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+
+        let source = session
+            .screen_share_source
+            .as_ref()
+            .ok_or_else(|| "Screen-share video is not active in this room".to_string())?;
+
+        let mut buffer = I420Buffer::new(width, height);
+        let (plane_y, plane_u, plane_v) = buffer.data_mut();
+
+        if plane_y.len() < y_size
+            || plane_u.len() < chroma_size
+            || plane_v.len() < chroma_size
+        {
+            return Err("LiveKit allocated an unexpectedly small I420 buffer".into());
+        }
+
+        plane_y[..y_size].copy_from_slice(&bytes[..y_size]);
+        plane_u[..chroma_size].copy_from_slice(
+            &bytes[y_size..y_size + chroma_size]
+        );
+        plane_v[..chroma_size].copy_from_slice(
+            &bytes[y_size + chroma_size..expected_size]
+        );
+
+        let frame = VideoFrame::new(VideoRotation::VideoRotation0, buffer);
+
+        let captured = {
+            let _runtime_guard = runtime.enter();
+            source.capture_frame(&frame)
+        };
+
+        if !captured {
+            return Err("LiveKit rejected the screen-share video frame".into());
+        }
+
+        Ok(())
+    }
+
+
     /// Unpublish the camera track without stopping the microphone.
     pub fn stop_rtc_video(&mut self, room_id: &str) -> Result<(), String> {
         let room_id = room_id.trim();
@@ -2695,6 +2846,44 @@ impl MatrixClientManager {
 
         Ok(())
     }
+
+    /// Unpublish the screen share track without stopping the microphone.
+    pub fn stop_rtc_screenshare(&mut self, room_id: &str) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get_mut(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+
+        let Some(track) = session.screen_share_track.as_ref() else {
+            return Ok(());
+        };
+
+        let track_sid = LocalTrack::Video(track.clone()).sid();
+
+        runtime.block_on(async {
+            session
+                .room
+                .local_participant()
+                .unpublish_track(&track_sid)
+                .await
+                .map_err(|error| {
+                    format!("Could not unpublish LiveKit screen share track: {error}")
+                })
+        })?;
+
+        session.screen_share_track = None;
+        session.screen_share_source = None;
+
+        Ok(())
+    }
+
 
     /// Disconnect the LiveKit audio session for a room.
     pub fn stop_rtc_audio(&mut self, room_id: &str) -> Result<(), String> {
@@ -2829,19 +3018,26 @@ impl MatrixClientManager {
                     }
                     RoomEvent::TrackSubscribed { participant, track, .. } => {
                         if let RemoteTrack::Video(video_track) = track {
-                            if video_track.source() == TrackSource::Camera {
+                            let track_source = match video_track.source() {
+                                TrackSource::Camera => Some("camera"),
+                                TrackSource::Screenshare => Some("screenshare"),
+                                _ => None,
+                            };
+                            if let Some(track_source) = track_source {
                                 let identity = participant.identity().to_string();
                                 let track_sid = video_track.sid().to_string();
                                 tracing::info!(
                                     room_id = %room_id,
                                     participant = %identity,
                                     track_sid = %track_sid,
-                                    "LiveKit camera track subscribed"
+                                    source = track_source,
+                                    "LiveKit remote video track subscribed"
                                 );
                                 let key = format!("{room_id}\u{1f}{identity}\u{1f}{track_sid}");
                                 let task_key = key.clone();
                                 let task_room_id = room_id.clone();
                                 let task_identity = identity.clone();
+                                let task_source = track_source.to_string();
                                 let mut stream = NativeVideoStream::new(video_track.rtc_track());
                                 let task_frame_queue = Arc::clone(&frame_queue);
                                 let task = runtime.spawn(async move {
@@ -2859,7 +3055,7 @@ impl MatrixClientManager {
                                                         participant = %task_identity,
                                                         width,
                                                         height,
-                                                        "Could not pack decoded LiveKit camera frame as I420"
+                                                        "Could not pack decoded LiveKit remote video frame as I420"
                                                     );
                                                     logged_pack_failure = true;
                                                 }
@@ -2882,6 +3078,7 @@ impl MatrixClientManager {
                                             key: task_key.clone(),
                                             room_id: task_room_id.clone(),
                                             identity: task_identity.clone(),
+                                            source: task_source.clone(),
                                             width,
                                             height,
                                             data,
@@ -2913,11 +3110,16 @@ impl MatrixClientManager {
                         }))
                     }
                     RoomEvent::TrackUnsubscribed { participant, track, .. } => {
-                        let is_camera = matches!(
-                            &track,
-                            RemoteTrack::Video(video_track)
-                                if video_track.source() == TrackSource::Camera
-                        );
+                        let track_source = match &track {
+                            RemoteTrack::Video(video_track) => match video_track.source() {
+                                TrackSource::Camera => Some("camera"),
+                                TrackSource::Screenshare => Some("screenshare"),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        let is_camera = track_source == Some("camera");
+                        let is_screenshare = track_source == Some("screenshare");
 
                         if let RemoteTrack::Video(video_track) = track {
                             let key = format!(
@@ -2931,6 +3133,7 @@ impl MatrixClientManager {
                             "room_id": room_id,
                             "type": "track_unsubscribed",
                             "is_camera": is_camera,
+                            "is_screenshare": is_screenshare,
                             "identity": participant.identity().to_string(),
                             "name": participant.name()
                         }))
@@ -3007,7 +3210,7 @@ impl MatrixClientManager {
         &mut self,
     ) -> Option<(String, String, u32, u32, Vec<u8>)> {
         let frame = self.rtc_remote_video_frames.lock().ok()?.pop_front()?;
-        Some((frame.room_id, frame.identity, frame.width, frame.height, frame.data))
+        Some((frame.room_id, frame.identity, frame.source, frame.width, frame.height, frame.data))
     }
 
     /// Withdraw Astro's own compatibility-mode MatrixRTC membership.

@@ -494,6 +494,39 @@ pub unsafe extern "C" fn astro_matrix_start_rtc_video(
     }
 }
 
+pub unsafe extern "C" fn astro_matrix_start_rtc_screenshare(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    width: u32,
+    height: u32,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        (&mut *handle).start_rtc_screenshare(room_id, width, height)
+    }));
+
+    match result {
+        Ok(Ok(())) => 0,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while starting LiveKit screen share");
+            -1
+        }
+    }
+}
+
 // ASTRO_RTC_VIDEO_STAGE2
 #[no_mangle]
 pub unsafe extern "C" fn astro_matrix_push_rtc_video_frame(
@@ -570,6 +603,80 @@ pub unsafe extern "C" fn astro_matrix_push_rtc_video_frame(
     }
 }
 
+pub unsafe extern "C" fn astro_matrix_push_rtc_screenshare_frame(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    width: u32,
+    height: u32,
+    frame_data: *const u8,
+    frame_data_len: u64,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    if frame_data.is_null() {
+        set_error(error_out, "Video frame data must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+
+        if width < 2 || height < 2
+            || width > 1920 || height > 1080
+            || width % 2 != 0 || height % 2 != 0
+        {
+            return Err("Invalid video frame dimensions".to_string());
+        }
+
+        let y_size = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or_else(|| "Video frame dimensions overflow".to_string())?;
+        let expected_size = y_size
+            .checked_add(y_size / 2)
+            .ok_or_else(|| "Video frame size overflow".to_string())?;
+
+        let supplied_size = usize::try_from(frame_data_len)
+            .map_err(|_| "Video frame is too large".to_string())?;
+
+        if supplied_size != expected_size {
+            return Err(format!(
+                "Invalid I420 frame size: expected {expected_size} bytes, received {supplied_size}"
+            ));
+        }
+
+        // The caller must keep frame_data valid for the duration of this call.
+        // push_rtc_screenshare_frame copies the data into a LiveKit-owned buffer.
+        let bytes = std::slice::from_raw_parts(frame_data, supplied_size);
+
+        (&mut *handle).push_rtc_screenshare_frame(
+            room_id,
+            width,
+            height,
+            bytes,
+        )
+    }));
+
+    match result {
+        Ok(Ok(())) => 0,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while submitting LiveKit screen-share frame");
+            -1
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn astro_matrix_stop_rtc_video(
     handle: *mut MatrixClientManager,
@@ -597,6 +704,37 @@ pub unsafe extern "C" fn astro_matrix_stop_rtc_video(
         }
         Err(_) => {
             set_error(error_out, "Unexpected Rust panic while stopping LiveKit video");
+            -1
+        }
+    }
+}
+
+pub unsafe extern "C" fn astro_matrix_stop_rtc_screenshare(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        (&mut *handle).stop_rtc_screenshare(room_id)
+    }));
+
+    match result {
+        Ok(Ok(())) => 0,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while stopping LiveKit screen share");
             -1
         }
     }

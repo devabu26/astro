@@ -244,6 +244,27 @@ int32_t astro_matrix_stop_rtc_video(
     const char *room_id,
     char **error_out
 );
+int32_t astro_matrix_start_rtc_screenshare(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    uint32_t width,
+    uint32_t height,
+    char **error_out
+);
+int32_t astro_matrix_push_rtc_screenshare_frame(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    uint32_t width,
+    uint32_t height,
+    const uint8_t *frame_data,
+    uint64_t frame_data_len,
+    char **error_out
+);
+int32_t astro_matrix_stop_rtc_screenshare(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    char **error_out
+);
 int32_t astro_matrix_stop_rtc_audio(
     AstroMatrixClient *handle,
     const char *room_id,
@@ -263,6 +284,7 @@ char *astro_matrix_poll_rtc_audio_events_json(
 typedef struct AstroRtcVideoFrame {
     char *room_id;
     char *identity;
+    char *source;
     uint32_t width;
     uint32_t height;
     uint8_t *data;
