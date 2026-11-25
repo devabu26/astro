@@ -1661,10 +1661,14 @@ void StorageWorker::startRtcScreenShare(
     connect(
         process, &QProcess::readyReadStandardError,
         this,
-        [process]() {
+        [this, process]() {
             const QByteArray errorOutput = process->readAllStandardError();
-            if (!errorOutput.isEmpty())
-                qWarning() << "mirscreencast:" << QString::fromLocal8Bit(errorOutput).trimmed();
+            if (!errorOutput.isEmpty()) {
+                qWarning() << "mirscreencast:"
+                           << QString::fromLocal8Bit(errorOutput).trimmed();
+                if (m_rtcScreenShareStartPending)
+                    m_rtcScreenShareErrorOutput += errorOutput;
+            }
         }
     );
 
@@ -1721,12 +1725,30 @@ void StorageWorker::startRtcScreenShare(
                     &frameError
                 );
 
+            QString frameFailure;
             if (frameError) {
+                frameFailure = QString::fromUtf8(frameError);
                 qWarning() << "RTC screen-share frame submission failed:"
-                           << QString::fromUtf8(frameError);
+                           << frameFailure;
                 astro_string_free(frameError);
             } else if (pushResult < 0) {
-                qWarning() << "RTC screen-share frame submission failed";
+                frameFailure = QStringLiteral("LiveKit did not accept the first screen-share frame");
+                qWarning() << frameFailure;
+            }
+
+            if (m_rtcScreenShareStartPending) {
+                if (frameFailure.isEmpty()) {
+                    m_rtcScreenShareStartPending = false;
+                    m_rtcScreenShareErrorOutput.clear();
+                    emit matrixRtcScreenShareActionFinished(
+                        m_rtcScreenShareRoomId, QString()
+                    );
+                } else {
+                    m_rtcScreenShareStartPending = false;
+                    emit matrixRtcScreenShareActionFinished(
+                        m_rtcScreenShareRoomId, frameFailure
+                    );
+                }
             }
         }
     );
@@ -1740,6 +1762,8 @@ void StorageWorker::startRtcScreenShare(
                 return;
 
             const QString failedRoom = m_rtcScreenShareRoomId;
+            const bool failedBeforeFirstFrame = m_rtcScreenShareStartPending;
+            m_rtcScreenShareStartPending = false;
             m_rtcScreenShareProcess = nullptr;
             m_rtcScreenShareRoomId.clear();
             m_rtcScreenShareBuffer.clear();
@@ -1758,11 +1782,13 @@ void StorageWorker::startRtcScreenShare(
                     astro_string_free(stopError);
             }
 
-            emit matrixRtcScreenShareActionFinished(
-                failedRoom,
-                QStringLiteral("mirscreencast stopped unexpectedly (exit %1)")
-                    .arg(exitCode)
-            );
+            QString failure = QStringLiteral("mirscreencast stopped unexpectedly (exit %1)")
+                                   .arg(exitCode);
+            if (failedBeforeFirstFrame) {
+                failure = QStringLiteral("mirscreencast exited before delivering a screen frame (exit %1)")
+                              .arg(exitCode);
+            }
+            emit matrixRtcScreenShareActionFinished(failedRoom, failure);
         }
     );
 
@@ -1793,9 +1819,42 @@ void StorageWorker::startRtcScreenShare(
         return;
     }
 
-    qInfo() << "RTC screen-share capture started:"
-            << width << "x" << height << "at up to 30 FPS (every second display refresh)";
-    emit matrixRtcScreenShareActionFinished(roomId, QString());
+    m_rtcScreenShareStartPending = true;
+    m_rtcScreenShareErrorOutput.clear();
+
+    qInfo() << "RTC screen-share process started; waiting for first frame:"
+            << width << "x" << height;
+
+    QTimer::singleShot(5000, this, [this, process, roomId]() {
+        if (process != m_rtcScreenShareProcess ||
+            !m_rtcScreenShareStartPending) {
+            return;
+        }
+
+        const QString stderrText =
+            QString::fromLocal8Bit(m_rtcScreenShareErrorOutput).trimmed();
+        m_rtcScreenShareStartPending = false;
+        stopRtcScreenShareCapture();
+
+        if (m_matrixClient) {
+            const QByteArray roomBytes = roomId.toUtf8();
+            char *stopError = nullptr;
+            astro_matrix_stop_rtc_screenshare(
+                m_matrixClient, roomBytes.constData(), &stopError
+            );
+            if (stopError)
+                astro_string_free(stopError);
+        }
+
+        QString failure = QStringLiteral(
+            "Screen capture started but produced no frames within 5 seconds. "
+            "Mir screen-capture access may be blocked."
+        );
+        if (!stderrText.isEmpty())
+            failure += QStringLiteral("\n") + stderrText;
+
+        emit matrixRtcScreenShareActionFinished(roomId, failure);
+    });
 }
 
 void StorageWorker::stopRtcScreenShare(const QString &roomId)
