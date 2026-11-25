@@ -494,32 +494,42 @@ Item {
 
             // Participant tiles
             Grid {
-                anchors {
-                    left: parent.left
-                    right: parent.right
-                    bottom: parent.bottom
-                    margins: units.gu(2)
-                }
+                anchors.fill: parent
+                anchors.margins: root.participants.length === 1
+                                ? 0 : units.gu(2)
 
-                columns: width >= units.gu(65) ? 3 : 2
+                columns: root.participants.length === 1
+                        ? 1 : (width >= units.gu(65) ? 3 : 2)
+
                 spacing: units.gu(1)
 
                 Repeater {
                     model: root.participants
 
                     delegate: Rectangle {
-                        width: (parent.width -
+                        width: root.participants.length === 1
+                            ? parent.width
+                            : (parent.width -
                                 (parent.columns - 1) * units.gu(1)) /
-                               parent.columns
-                        height: remoteVideo.hasFrame
+                                parent.columns
+
+                        height: root.participants.length === 1
+                                ? parent.height
+                                : (remoteVideo.hasFrame
                                 ? width * 9 / 16
-                                : units.gu(10)
-                        radius: units.gu(1)
+                                : units.gu(10))
+
+                        radius: root.participants.length === 1
+                                ? 0 : units.gu(1)
+
                         clip: true
                         color: modelData.speaking === true
-                               ? "#294c43" : "#263b4a"
-                        border.width: modelData.speaking === true
-                                      ? units.gu(0.2) : 0
+                            ? "#294c43" : "#263b4a"
+
+                        border.width: root.participants.length === 1
+                                    ? 0
+                                    : (modelData.speaking === true
+                                        ? units.gu(0.2) : 0)
                         border.color: "#65d69b"
 
                         RtcVideoItem {
@@ -543,66 +553,60 @@ Item {
                         Text {
                             anchors.left: parent.left
                             anchors.bottom: parent.bottom
-                            anchors.margins: units.gu(1)
+                            anchors.margins: units.gu(2)
                             visible: remoteVideo.hasFrame
                             text: modelData.name ||
-                                  modelData.identity ||
-                                  "Participant"
+                                modelData.identity ||
+                                "Participant"
                             color: "white"
-                            font.pixelSize: units.gu(1.4)
+                            font.pixelSize: units.gu(1.8)
                             style: Text.Outline
                             styleColor: "#80000000"
                             z: 2
                         }
 
                         Row {
-                            anchors.fill: parent
-                            anchors.margins: units.gu(1)
+                            anchors.centerIn: parent
                             spacing: units.gu(1)
                             visible: !remoteVideo.hasFrame
 
                             Rectangle {
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: units.gu(6)
-                                height: units.gu(6)
+                                width: units.gu(8)
+                                height: units.gu(8)
                                 radius: width / 2
                                 color: "#426b8a"
 
                                 Text {
                                     anchors.centerIn: parent
                                     text: root.participantInitial(
-                                              modelData.name ||
-                                              modelData.identity
-                                          )
+                                            modelData.name ||
+                                            modelData.identity
+                                        )
                                     color: "white"
-                                    font.pixelSize: units.gu(2.5)
+                                    font.pixelSize: units.gu(3)
                                     font.bold: true
                                 }
                             }
 
                             Column {
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: parent.width - units.gu(8)
                                 spacing: units.gu(0.5)
 
                                 Text {
-                                    width: parent.width
                                     text: modelData.name ||
-                                          modelData.identity ||
-                                          "Participant"
+                                        modelData.identity ||
+                                        "Participant"
                                     color: "white"
-                                    font.pixelSize: units.gu(1.5)
-                                    elide: Text.ElideRight
+                                    font.pixelSize: units.gu(2)
                                 }
 
                                 Text {
-                                    width: parent.width
                                     text: modelData.speaking === true
-                                          ? "Speaking"
-                                          : "Connected"
+                                        ? "Speaking" : "Connected"
                                     color: modelData.speaking === true
-                                           ? "#8de0ad" : "#a9bac6"
-                                    font.pixelSize: units.gu(1.2)
+                                        ? "#8de0ad" : "#a9bac6"
+                                    font.pixelSize: units.gu(1.4)
                                 }
                             }
                         }

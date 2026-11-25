@@ -875,13 +875,20 @@ public:
     QList<QVideoFrame::PixelFormat> supportedPixelFormats(
         QAbstractVideoBuffer::HandleType type =
             QAbstractVideoBuffer::NoHandle
-    ) const override
+    ) 
+    
+    const override
     {
+        qInfo() << "RTC supportedPixelFormats requested handle:"
+        << static_cast<int>(type);
+        
         if (type == QAbstractVideoBuffer::GLTextureHandle)
-            return { QVideoFrame::Format_RGB32 };
+            return {};
 
         if (type != QAbstractVideoBuffer::NoHandle)
             return {};
+
+        qInfo() << "RTC supportedPixelFormats returning CPU formats";
 
         // Camera backends on Ubuntu Touch commonly negotiate YUV420P,
         // YV12 or NV12 rather than the RGB formats used by desktop cameras.
@@ -923,11 +930,15 @@ public:
         const int height = frame.height();
         const QVideoFrame::PixelFormat format = frame.pixelFormat();
 
-        if (m_loggedFirstPresent.testAndSetOrdered(0, 1)) {
-            qInfo() << "RTC camera first present() frame:"
+        const int frameNumber = m_loggedFrameCount.fetchAndAddRelaxed(1) + 1;
+
+        if (frameNumber <= 10) {
+            qInfo() << "RTC camera frame:"
+                    << frameNumber
                     << width << "x" << height
                     << "format:" << format
                     << "handle:" << frame.handleType()
+                    << "texture:" << frame.handle()
                     << "planes:" << frame.planeCount();
         }
 
@@ -1224,7 +1235,7 @@ private:
     StorageWorker *m_worker = nullptr;
     QString m_roomId;
     QSharedPointer<QAtomicInt> m_pending;
-    QAtomicInt m_loggedFirstPresent{0};
+    QAtomicInt m_loggedFrameCount{0};
     QAtomicInt m_loggedInvalidFrame{0};
     QAtomicInt m_loggedInvalidDimensions{0};
     QAtomicInt m_loggedMapFailure{0};
