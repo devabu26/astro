@@ -25,7 +25,7 @@ public:
     QString identity() const { return m_identity; }
 
     void setBackend(Backend *backend);
-    void setRoomId(const QString &roomId) { m_roomId = roomId; }
+    void setRoomId(const QString &roomId);
     void setIdentity(const QString &identity) { m_identity = identity; }
 
     Q_INVOKABLE void setI420Frame(
