@@ -1147,7 +1147,7 @@ void StorageWorker::switchRtcCamera(const QString &roomId)
         return;
     }
 
-    const QString currentDevice = QCameraInfo(m_rtcCamera).deviceName();
+    const QString currentDevice = QCameraInfo(*m_rtcCamera).deviceName();
     const QCamera::Position currentPosition =
         QCameraInfo(m_rtcCamera).position();
 
