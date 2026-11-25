@@ -825,9 +825,9 @@ public:
                             ? cStride2 : cStride1;
 
                     for (int row = 0; row < height / 2; ++row) {
-                        memcpy(uOut + row * (width / 2),
+                        std::memcpy(uOut + row * (width / 2),
                                uIn + row * uStride, width / 2);
-                        memcpy(vOut + row * (width / 2),
+                        std::memcpy(vOut + row * (width / 2),
                                vIn + row * vStride, width / 2);
                     }
                     converted = true;
@@ -845,7 +845,7 @@ public:
                     yStride >= width &&
                     uvStride >= width) {
                     for (int row = 0; row < height; ++row)
-                        memcpy(yOut + row * width, yIn + row * yStride, width);
+                        std::memcpy(yOut + row * width, yIn + row * yStride, width);
 
                     for (int row = 0; row < height / 2; ++row) {
                         const uchar *src = uvIn + row * uvStride;
