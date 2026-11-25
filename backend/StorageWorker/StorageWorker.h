@@ -5,7 +5,6 @@
 #include <QString>
 #include <QByteArray>
 #include <QTimer>
-#include <QProcess>
 #include <QMutex>
 #include <QCamera>
 #include <cstdint>
@@ -17,6 +16,10 @@ class QOpenGLContext;
 class QOffscreenSurface;
 
 #include "../astro_core_ffi.h"
+
+#include <mir_toolkit/mir_client_library.h>
+#include <mir_toolkit/mir_screencast.h>
+#include <mir_toolkit/mir_buffer.h>
 
 /*
  * Background worker responsible for encrypted storage, Matrix operations,
@@ -436,6 +439,7 @@ signals:
 private:
     void stopRtcCamera();
     void stopRtcScreenShareCapture();
+    void captureRtcScreenShareFrame();
 
     /*
      * Common signature for Rust verification actions.
@@ -474,11 +478,13 @@ private:
     QCamera *m_rtcCamera = nullptr;
     RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
     QString m_rtcVideoRoomId;
-    QProcess *m_rtcScreenShareProcess = nullptr;
     QString m_rtcScreenShareRoomId;
-    QByteArray m_rtcScreenShareBuffer;
-    QByteArray m_rtcScreenShareErrorOutput;
-    bool m_stoppingRtcScreenShare = false;
+    MirConnection *m_rtcScreenShareConnection = nullptr;
+    MirScreencast *m_rtcScreenCast = nullptr;
+    MirBuffer *m_rtcScreenShareBuffer = nullptr;
+    QTimer *m_rtcScreenShareTimer = nullptr;
+    int m_rtcScreenShareWidth = 0;
+    int m_rtcScreenShareHeight = 0;
     bool m_rtcScreenShareStartPending = false;
 
     // Retained push notification configuration.

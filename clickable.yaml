@@ -1,6 +1,8 @@
 
 clickable_minimum_required: 8.9.0
 builder: cmake
+dependencies_target:
+  - libmir1client-dev
 kill: qmlscene
 framework: ubuntu-touch-24.04-1.x
 
