@@ -2646,7 +2646,7 @@ impl MatrixClientManager {
         })?;
 
         session.screen_share_source = Some(source);
-        session.screen_share_track = Some(track);
+        session.screen_share_track = Some(track.clone());
 
         if include_device_audio {
             let (audio_source, audio_track) = {
