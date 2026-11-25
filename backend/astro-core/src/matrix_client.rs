@@ -2509,6 +2509,8 @@ impl MatrixClientManager {
                 video_track: None,
                 screen_share_source: None,
                 screen_share_track: None,
+                screen_share_audio_source: None,
+                screen_share_audio_track: None,
             })
         })?;
 
