@@ -60,4 +60,5 @@ private:
     QMetaObject::Connection m_frameConnection;
     mutable QMutex m_imageMutex;
     QImage m_image;
+    bool m_loggedFirstRemoteFrame = false;
 };
