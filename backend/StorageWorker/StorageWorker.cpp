@@ -39,6 +39,7 @@ StorageWorker::StorageWorker(QObject *parent)
 
 StorageWorker::~StorageWorker()
 {
+    stopRtcScreenShareCapture();
     if (m_timelinePollTimer) {
         m_timelinePollTimer->stop();
     }

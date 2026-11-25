@@ -491,6 +491,47 @@ void Backend::startRtcVideo(
     emit requestStartRtcVideo(roomId, width, height);
 }
 
+void Backend::startRtcScreenShare(
+    const QString &roomId,
+    int width,
+    int height
+)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    if (width < 2 || height < 2) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId, QStringLiteral("Invalid screen-share dimensions")
+        );
+        return;
+    }
+
+    emit requestStartRtcScreenShare(roomId, width, height);
+}
+
+void Backend::stopRtcScreenShare(const QString &roomId)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    emit requestStopRtcScreenShare(roomId);
+}
+
 void Backend::switchRtcCamera(const QString &roomId)
 {
     if (!m_storageReady || roomId.isEmpty()) {

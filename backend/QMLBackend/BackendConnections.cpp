@@ -289,6 +289,13 @@ Backend::Backend(QObject *parent)
         &Backend::matrixRtcVideoActionFinished
     );
 
+   connect(
+        m_storageWorker,
+        &StorageWorker::matrixRtcScreenShareActionFinished,
+        this,
+        &Backend::matrixRtcScreenShareActionFinished
+    );
+
     connect(
         m_storageWorker,
         &StorageWorker::matrixRtcRemoteVideoFrame,
@@ -396,6 +403,22 @@ Backend::Backend(QObject *parent)
         &Backend::requestStopRtcVideo,
         m_storageWorker,
         &StorageWorker::stopRtcVideo,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestStartRtcScreenShare,
+        m_storageWorker,
+        &StorageWorker::startRtcScreenShare,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestStopRtcScreenShare,
+        m_storageWorker,
+        &StorageWorker::stopRtcScreenShare,
         Qt::QueuedConnection
     );
 

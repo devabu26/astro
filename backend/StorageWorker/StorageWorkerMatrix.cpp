@@ -25,6 +25,92 @@
 
 #include <QDebug>
 
+namespace {
+
+QByteArray rgbaFrameToI420(
+    const QByteArray &rgba,
+    int width,
+    int height
+)
+{
+    if (width < 2 || height < 2 ||
+        (width & 1) || (height & 1) ||
+        rgba.size() != width * height * 4) {
+        return QByteArray();
+    }
+
+    const QImage image(
+        reinterpret_cast<const uchar *>(rgba.constData()),
+        width,
+        height,
+        width * 4,
+        QImage::Format_RGBA8888
+    );
+    if (image.isNull())
+        return QByteArray();
+
+    const int ySize = width * height;
+    const int chromaSize = ySize / 4;
+    QByteArray output(ySize + chromaSize * 2, Qt::Uninitialized);
+    uchar *yOut = reinterpret_cast<uchar *>(output.data());
+    uchar *uOut = yOut + ySize;
+    uchar *vOut = uOut + chromaSize;
+
+    auto clamp = [](int value) -> uchar {
+        return static_cast<uchar>(qBound(0, value, 255));
+    };
+
+    for (int row = 0; row < height; row += 2) {
+        const uchar *row0 = image.constScanLine(row);
+        const uchar *row1 = image.constScanLine(row + 1);
+
+        for (int col = 0; col < width; col += 2) {
+            const uchar *pixels[4] = {
+                row0 + col * 4,
+                row0 + (col + 1) * 4,
+                row1 + col * 4,
+                row1 + (col + 1) * 4
+            };
+
+            int rSum = 0;
+            int gSum = 0;
+            int bSum = 0;
+
+            for (int p = 0; p < 4; ++p) {
+                const int r = pixels[p][0];
+                const int g = pixels[p][1];
+                const int b = pixels[p][2];
+                rSum += r;
+                gSum += g;
+                bSum += b;
+
+                const int index =
+                    (row + p / 2) * width + col + p % 2;
+                yOut[index] = clamp(
+                    ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16
+                );
+            }
+
+            const int r = (rSum + 2) / 4;
+            const int g = (gSum + 2) / 4;
+            const int b = (bSum + 2) / 4;
+            const int chromaIndex =
+                (row / 2) * (width / 2) + col / 2;
+
+            uOut[chromaIndex] = clamp(
+                ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128
+            );
+            vOut[chromaIndex] = clamp(
+                ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128
+            );
+        }
+    }
+
+    return output;
+}
+
+}
+
 // =============================================================
 // Matrix room and Space retrieval
 // =============================================================
@@ -1490,6 +1576,255 @@ void StorageWorker::pushRtcVideoFrame(
     }
 }
 
+void StorageWorker::startRtcScreenShare(
+    const QString &roomId,
+    int width,
+    int height
+)
+{
+    if (!m_matrixClient || roomId.isEmpty()) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    if (m_rtcScreenShareProcess) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId, QStringLiteral("Screen sharing is already running")
+        );
+        return;
+    }
+
+    if (width < 2 || height < 2 || (width & 1) || (height & 1) ||
+        width > 1920 || height > 1080) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId, QStringLiteral("Invalid screen-share dimensions")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+    const int32_t result = astro_matrix_start_rtc_screenshare(
+        m_matrixClient,
+        roomIdBytes.constData(),
+        static_cast<uint32_t>(width),
+        static_cast<uint32_t>(height),
+        &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+    if (result < 0) {
+        if (errorMessage.isEmpty())
+            errorMessage = QStringLiteral("Could not publish LiveKit screen-share track");
+        emit matrixRtcScreenShareActionFinished(roomId, errorMessage);
+        return;
+    }
+
+    m_rtcScreenShareRoomId = roomId;
+    m_rtcScreenShareBuffer.clear();
+
+    QProcess *process = new QProcess(this);
+    m_rtcScreenShareProcess = process;
+    const int frameSize = width * height * 4;
+    const int i420Size = width * height * 3 / 2;
+
+    connect(
+        process, &QProcess::readyReadStandardOutput,
+        this,
+        [this, process, width, height, frameSize, i420Size]() {
+            if (process != m_rtcScreenShareProcess)
+                return;
+
+            m_rtcScreenShareBuffer.append(process->readAllStandardOutput());
+
+            // Keep at most four complete frames of backlog. The stream is raw
+            // RGBA, so frame boundaries are fixed by the requested dimensions.
+            if (m_rtcScreenShareBuffer.size() > frameSize * 4) {
+                const int completeFrames =
+                    m_rtcScreenShareBuffer.size() / frameSize;
+                if (completeFrames > 4) {
+                    m_rtcScreenShareBuffer.remove(
+                        0, (completeFrames - 4) * frameSize
+                    );
+                }
+            }
+
+            if (m_rtcScreenShareBuffer.size() < frameSize)
+                return;
+
+            const int completeFrames =
+                m_rtcScreenShareBuffer.size() / frameSize;
+            if (completeFrames > 1) {
+                m_rtcScreenShareBuffer.remove(
+                    0, (completeFrames - 1) * frameSize
+                );
+            }
+
+            const QByteArray rgba =
+                m_rtcScreenShareBuffer.left(frameSize);
+            m_rtcScreenShareBuffer.remove(0, frameSize);
+
+            const QByteArray i420 = rgbaFrameToI420(rgba, width, height);
+            if (i420.size() != i420Size)
+                return;
+
+            const QByteArray roomBytes = m_rtcScreenShareRoomId.toUtf8();
+            char *frameError = nullptr;
+            const int32_t pushResult =
+                astro_matrix_push_rtc_screenshare_frame(
+                    m_matrixClient,
+                    roomBytes.constData(),
+                    static_cast<uint32_t>(width),
+                    static_cast<uint32_t>(height),
+                    reinterpret_cast<const uint8_t *>(i420.constData()),
+                    static_cast<uint64_t>(i420.size()),
+                    &frameError
+                );
+
+            if (frameError) {
+                qWarning() << "RTC screen-share frame submission failed:"
+                           << QString::fromUtf8(frameError);
+                astro_string_free(frameError);
+            } else if (pushResult < 0) {
+                qWarning() << "RTC screen-share frame submission failed";
+            }
+        }
+    );
+
+    connect(
+        process,
+        QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+        this,
+        [this, process](int exitCode, QProcess::ExitStatus) {
+            if (process != m_rtcScreenShareProcess)
+                return;
+
+            const QString failedRoom = m_rtcScreenShareRoomId;
+            m_rtcScreenShareProcess = nullptr;
+            m_rtcScreenShareRoomId.clear();
+            m_rtcScreenShareBuffer.clear();
+            process->deleteLater();
+
+            if (m_stoppingRtcScreenShare)
+                return;
+
+            if (m_matrixClient && !failedRoom.isEmpty()) {
+                const QByteArray roomBytes = failedRoom.toUtf8();
+                char *stopError = nullptr;
+                astro_matrix_stop_rtc_screenshare(
+                    m_matrixClient, roomBytes.constData(), &stopError
+                );
+                if (stopError)
+                    astro_string_free(stopError);
+            }
+
+            emit matrixRtcScreenShareActionFinished(
+                failedRoom,
+                QStringLiteral("mirscreencast stopped unexpectedly (exit %1)")
+                    .arg(exitCode)
+            );
+        }
+    );
+
+    process->start(
+        QStringLiteral("mirscreencast"),
+        QStringList{
+            QStringLiteral("-m"), QStringLiteral("/run/mir_socket"),
+            QStringLiteral("--stdout"),
+            QStringLiteral("--cap-interval"), QStringLiteral("5"),
+            QStringLiteral("-s"),
+            QString::number(width), QString::number(height)
+        }
+    );
+
+    if (!process->waitForStarted(3000)) {
+        errorMessage = QStringLiteral("Could not start mirscreencast: %1")
+                           .arg(process->errorString());
+        stopRtcScreenShareCapture();
+
+        char *stopError = nullptr;
+        astro_matrix_stop_rtc_screenshare(
+            m_matrixClient, roomIdBytes.constData(), &stopError
+        );
+        if (stopError)
+            astro_string_free(stopError);
+
+        emit matrixRtcScreenShareActionFinished(roomId, errorMessage);
+        return;
+    }
+
+    qInfo() << "RTC screen-share capture started:"
+            << width << "x" << height << "at approximately 12 FPS";
+    emit matrixRtcScreenShareActionFinished(roomId, QString());
+}
+
+void StorageWorker::stopRtcScreenShare(const QString &roomId)
+{
+    stopRtcScreenShareCapture();
+
+    if (!m_matrixClient || roomId.isEmpty()) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+    const int32_t result = astro_matrix_stop_rtc_screenshare(
+        m_matrixClient, roomIdBytes.constData(), &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+    if (result < 0 && errorMessage.isEmpty())
+        errorMessage = QStringLiteral("Could not stop LiveKit screen sharing");
+
+    emit matrixRtcScreenShareActionFinished(roomId, errorMessage);
+}
+
+void StorageWorker::stopRtcScreenShareCapture()
+{
+    if (!m_rtcScreenShareProcess) {
+        m_rtcScreenShareBuffer.clear();
+        m_rtcScreenShareRoomId.clear();
+        return;
+    }
+
+    m_stoppingRtcScreenShare = true;
+    QProcess *process = m_rtcScreenShareProcess;
+    m_rtcScreenShareProcess = nullptr;
+    disconnect(process, nullptr, this, nullptr);
+
+    if (process->state() != QProcess::NotRunning) {
+        process->terminate();
+        if (!process->waitForFinished(1000)) {
+            process->kill();
+            process->waitForFinished(1000);
+        }
+    }
+    delete process;
+
+    m_rtcScreenShareBuffer.clear();
+    m_rtcScreenShareRoomId.clear();
+    m_stoppingRtcScreenShare = false;
+}
+
 void StorageWorker::stopRtcVideo(const QString &roomId)
 {
     stopRtcCamera();
@@ -1527,6 +1862,7 @@ void StorageWorker::stopRtcVideo(const QString &roomId)
 
 void StorageWorker::stopRtcAudio(const QString &roomId)
 {
+    stopRtcScreenShareCapture();
     stopRtcCamera();
     if (!m_matrixClient || roomId.isEmpty()) {
         emit matrixRtcAudioActionFinished(
