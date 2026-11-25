@@ -86,7 +86,7 @@ Item {
             }
 
             pendingOperation = "startVideo"
-            backend.startRtcVideo(roomId, 640, 480)
+            backend.startRtcVideo(roomId, 480, 640)
         }
     }
 
@@ -213,7 +213,7 @@ Item {
 
     Timer {
         id: cameraFrameGrabTimer
-        interval: 100
+        interval: 33
         repeat: true
         running: root.videoStarted
 
@@ -232,7 +232,7 @@ Item {
                         root.roomId,
                         result.image
                     )
-            }, Qt.size(640, 360))
+            }, Qt.size(480, 640))
 
             if (!accepted)
                 root.cameraFrameGrabPending = false
@@ -421,10 +421,11 @@ Item {
         anchors.rightMargin: units.gu(2)
         anchors.topMargin: units.gu(10)
         width: units.gu(20)
-        height: width * 9 / 16
+        height: width * 4 / 3
         visible: root.videoStarted
         source: localCamera
         fillMode: VideoOutput.PreserveAspectCrop
+        orientation: 90
 
     }
 
