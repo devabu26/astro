@@ -21,6 +21,7 @@ Item {
     property bool pendingMuted: false
     property bool videoStarted: false
     property bool screenShareStarted: false
+    property string screenShareRoomId: ""
     property bool cameraFrameGrabPending: false
 
     signal backRequested()
@@ -101,6 +102,7 @@ Item {
             pendingOperation = "stopScreenShare"
             backend.stopRtcScreenShare(roomId)
         } else {
+            screenShareRoomId = roomId
             pendingOperation = "startScreenShare"
             backend.startRtcScreenShare(roomId, 480, 854)
         }
@@ -277,6 +279,11 @@ Item {
             localCamera.stop()
     }
 
+    Component.onDestruction: {
+        if (backend && screenShareRoomId.length > 0)
+            backend.stopRtcScreenShare(screenShareRoomId)
+    }
+
     onAudioStateChanged: {
         if (audioState.active === true) {
             audioStarted = true
@@ -287,6 +294,7 @@ Item {
             membershipJoined = false
             videoStarted = false
             screenShareStarted = false
+            screenShareRoomId = ""
             muted = false
             for (var i = 0; i < participants.length; ++i) {
                 remoteVideoCleared(participants[i].identity, "camera")
@@ -296,6 +304,10 @@ Item {
     }
 
     onRoomIdChanged: {
+        if (backend && screenShareRoomId.length > 0)
+            backend.stopRtcScreenShare(screenShareRoomId)
+        screenShareRoomId = ""
+
         for (var i = 0; i < participants.length; ++i) {
             remoteVideoCleared(participants[i].identity, "camera")
             remoteVideoCleared(participants[i].identity, "screenshare")
@@ -348,6 +360,7 @@ Item {
                 root.audioStarted = false
                 root.videoStarted = false
                 root.screenShareStarted = false
+                root.screenShareRoomId = ""
                 root.muted = false
                 root.actionError = ""
                 root.backRequested()
@@ -425,7 +438,16 @@ Item {
 
             if (error && error.length > 0) {
                 root.actionError = error
-                root.screenShareStarted = false
+                if (operation === "startScreenShare") {
+                    root.screenShareStarted = false
+                    root.screenShareRoomId = ""
+                } else if (operation === "stopScreenShare" ||
+                           operation === "stopScreenShareForHangup") {
+                    root.screenShareStarted = true
+                } else {
+                    root.screenShareStarted = false
+                    root.screenShareRoomId = ""
+                }
                 return
             }
 
@@ -435,8 +457,10 @@ Item {
                 root.screenShareStarted = true
             } else if (operation === "stopScreenShare") {
                 root.screenShareStarted = false
+                root.screenShareRoomId = ""
             } else if (operation === "stopScreenShareForHangup") {
                 root.screenShareStarted = false
+                root.screenShareRoomId = ""
                 if (root.videoStarted) {
                     localCamera.stop()
                     root.pendingOperation = "stopVideoForHangup"
