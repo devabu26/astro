@@ -2002,9 +2002,12 @@ bool StorageWorker::startRtcScreenShareAudioCapture(
     m_rtcScreenShareAudioBuffer.clear();
     m_rtcScreenShareAudioDevice = m_rtcScreenShareAudioInput->start();
 
+    // start() can successfully open the monitor while it is idle because
+    // no playback samples are available yet. IdleState is not an open failure;
+    // readyRead will fire when playback data becomes available.
     if (!m_rtcScreenShareAudioDevice ||
         m_rtcScreenShareAudioInput->error() != QAudio::NoError ||
-        m_rtcScreenShareAudioInput->state() != QAudio::ActiveState) {
+        m_rtcScreenShareAudioInput->state() == QAudio::StoppedState) {
         qWarning() << "ASTRO_SCREEN_SHARE_AUDIO: QAudioInput failed to open"
                    << "device:" << monitor.deviceName()
                    << "error:" << static_cast<int>(m_rtcScreenShareAudioInput->error())
