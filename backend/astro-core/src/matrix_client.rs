@@ -3208,7 +3208,7 @@ impl MatrixClientManager {
 
     pub fn take_rtc_video_frame(
         &mut self,
-    ) -> Option<(String, String, u32, u32, Vec<u8>)> {
+    ) -> Option<(String, String, String, u32, u32, Vec<u8>)> {
         let frame = self.rtc_remote_video_frames.lock().ok()?.pop_front()?;
         Some((frame.room_id, frame.identity, frame.source, frame.width, frame.height, frame.data))
     }
