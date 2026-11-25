@@ -2717,13 +2717,24 @@ impl MatrixClientManager {
 
         let frame = VideoFrame::new(VideoRotation::VideoRotation0, buffer);
 
+        let source_resolution = source.video_resolution();
+        if source_resolution.width != width || source_resolution.height != height {
+            return Err(format!(
+                "Camera frame size {}x{} does not match LiveKit source size {}x{}",
+                width, height, source_resolution.width, source_resolution.height
+            ));
+        }
+
         let captured = {
             let _runtime_guard = runtime.enter();
             source.capture_frame(&frame)
         };
 
         if !captured {
-            return Err("LiveKit rejected the camera video frame".into());
+            return Err(format!(
+                "LiveKit rejected camera frame {}x{} (source {}x{})",
+                width, height, source_resolution.width, source_resolution.height
+            ));
         }
 
         Ok(())
