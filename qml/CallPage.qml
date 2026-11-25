@@ -285,7 +285,10 @@ Item {
         id: cameraFrameGrabTimer
         interval: 33
         repeat: true
-        running: root.videoStarted && root.applicationActive
+        running: root.videoStarted &&
+                 root.applicationActive &&
+                 !root.waitingForForegroundCamera &&
+                 !root.nativeBackgroundCameraRunning
 
         onTriggered: {
             if (!root.applicationActive ||
