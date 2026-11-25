@@ -5,6 +5,7 @@
 #include <QString>
 #include <QByteArray>
 #include <QTimer>
+#include <QMutex>
 #include <QCamera>
 #include <cstdint>
 
@@ -461,6 +462,7 @@ private:
     AstroMatrixClient *m_matrixClient = nullptr;
     QOpenGLContext *m_rtcCameraOpenGLContext = nullptr;
     QOffscreenSurface *m_rtcCameraOffscreenSurface = nullptr;
+    QMutex m_rtcCameraFrameMutex;
     QCamera *m_rtcCamera = nullptr;
     RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
 
