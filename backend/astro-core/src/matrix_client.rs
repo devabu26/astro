@@ -2821,12 +2821,10 @@ impl MatrixClientManager {
             source.capture_frame(&frame)
         };
 
-        if !captured {
-            return Err(format!(
-                "LiveKit rejected screen-share frame {}x{} (source {}x{})",
-                width, height, source_resolution.width, source_resolution.height
-            ));
-        }
+        // LiveKit returns false when its video adapter intentionally drops
+        // a frame for resolution or frame-rate adaptation. This is normal
+        // during capture and must not terminate the entire screen-share loop.
+        let _frame_forwarded = captured;
 
         Ok(())
     }
