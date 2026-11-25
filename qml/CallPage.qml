@@ -107,6 +107,9 @@ Item {
             }
         }
 
+        if (currentIndex < 0)
+            currentIndex = 0
+
         var nextIndex = (currentIndex + 1) % cameras.length
         localCamera.stop()
         localCamera.deviceId = cameras[nextIndex].deviceId
@@ -369,7 +372,10 @@ Item {
 
     Camera {
         id: localCamera
-        deviceId: QtMultimedia.defaultCamera.deviceId
+        deviceId: QtMultimedia.defaultCamera.deviceId.length > 0
+                 ? QtMultimedia.defaultCamera.deviceId
+                 : (QtMultimedia.availableCameras.length > 0
+                    ? QtMultimedia.availableCameras[0].deviceId : "")
         captureMode: Camera.CaptureVideo
 
         onError: {
