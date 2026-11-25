@@ -1428,6 +1428,17 @@ void StorageWorker::processRtcCameraImage(
     if (image.isNull() || roomId.isEmpty())
         return;
 
+    static QAtomicInt loggedCameraImage{0};
+    if (loggedCameraImage.testAndSetOrdered(0, 1)) {
+        const QColor sample = image.pixelColor(image.width() / 2, image.height() / 2);
+        qInfo() << "RTC camera QML image:"
+                << "format:" << image.format()
+                << "size:" << image.size()
+                << "centre RGBA:"
+                << sample.red() << sample.green()
+                << sample.blue() << sample.alpha();
+    }
+
     QMutexLocker locker(&m_rtcCameraFrameMutex);
     if (!m_rtcVideoSurface || roomId != m_rtcVideoRoomId)
         return;
