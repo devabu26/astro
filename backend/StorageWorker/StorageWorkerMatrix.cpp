@@ -23,6 +23,7 @@
 #include <QThread>
 #include <QSharedPointer>
 #include <limits>
+#include <unistd.h>
 
 #include <QDebug>
 
@@ -1687,12 +1688,17 @@ void StorageWorker::startRtcScreenShare(
         emit matrixRtcScreenShareActionFinished(roomId, message);
     };
 
-    // Use Mir directly: confined apps cannot exec /usr/bin/mirscreencast.
+    // Lomiri exposes the app-facing Mir socket under the user's runtime
+    // directory. The system socket at /run/mir_socket is not accessible to
+    // confined applications.
+    const QByteArray mirSocketPath = QStringLiteral("/run/user/%1/mir_socket")
+        .arg(static_cast<qulonglong>(getuid())).toLocal8Bit();
     QThread *currentThread = QThread::currentThread();
     qInfo() << "ASTRO_SCREEN_SHARE: connecting to Mir"
+            << "socket:" << mirSocketPath
             << "threadName:" << currentThread->objectName()
             << "threadId:" << quintptr(QThread::currentThreadId());
-    m_rtcScreenShareConnection = mir_connect_sync("/run/mir_socket", "Astro");
+    m_rtcScreenShareConnection = mir_connect_sync(mirSocketPath.constData(), "Astro");
     const bool mirConnectionValid =
         m_rtcScreenShareConnection &&
         mir_connection_is_valid(m_rtcScreenShareConnection);
