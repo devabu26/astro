@@ -500,6 +500,7 @@ pub unsafe extern "C" fn astro_matrix_start_rtc_screenshare(
     room_id: *const c_char,
     width: u32,
     height: u32,
+    include_device_audio: i32,
     error_out: *mut *mut c_char,
 ) -> i32 {
     if !error_out.is_null() {
@@ -512,7 +513,7 @@ pub unsafe extern "C" fn astro_matrix_start_rtc_screenshare(
 
     let result = catch_unwind(AssertUnwindSafe(|| {
         let room_id = read_input(room_id, "Room ID")?;
-        (&mut *handle).start_rtc_screenshare(room_id, width, height)
+        (&mut *handle).start_rtc_screenshare(room_id, width, height, include_device_audio != 0)
     }));
 
     match result {
@@ -712,6 +713,52 @@ pub unsafe extern "C" fn astro_matrix_stop_rtc_video(
 }
 
 #[no_mangle]
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_push_rtc_screenshare_audio_frame(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    pcm_data: *const i16,
+    pcm_samples: u64,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+    if pcm_data.is_null() {
+        set_error(error_out, "Screen-share audio data must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        let sample_count = usize::try_from(pcm_samples)
+            .map_err(|_| "Screen-share audio frame is too large".to_string())?;
+        if sample_count != 960 {
+            return Err(format!(
+                "Invalid screen-share audio frame: expected 960 samples, received {sample_count}"
+            ));
+        }
+        let samples = std::slice::from_raw_parts(pcm_data, sample_count);
+        (&mut *handle).push_rtc_screenshare_audio_frame(room_id, samples)
+    }));
+
+    match result {
+        Ok(Ok(())) => 0,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while submitting screen-share audio");
+            -1
+        }
+    }
+}
+
 pub unsafe extern "C" fn astro_matrix_stop_rtc_screenshare(
     handle: *mut MatrixClientManager,
     room_id: *const c_char,
