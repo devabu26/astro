@@ -1286,6 +1286,44 @@ pub unsafe extern "C" fn astro_matrix_mismatch_verification(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn astro_matrix_get_account_profile_json(
+    handle: *mut MatrixClientManager,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manager = unsafe { &*handle };
+        manager.account_profile_json()
+    }));
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(value) => value.into_raw(),
+            Err(_) => {
+                set_error(error_out, "Account profile contained an invalid null character");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while retrieving Matrix account profile");
+            ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn astro_matrix_get_devices_json(
     handle: *mut MatrixClientManager,
     error_out: *mut *mut c_char,
