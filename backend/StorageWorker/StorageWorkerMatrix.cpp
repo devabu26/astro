@@ -500,6 +500,15 @@ void StorageWorker::pollRtcRemoteVideoFrames()
                 static_cast<int>(frame->len)
             );
 
+            if (!m_loggedFirstRemoteRtcFrame) {
+                qInfo() << "RTC remote frame reached StorageWorker:"
+                        << roomId << identity
+                        << static_cast<int>(frame->width) << "x"
+                        << static_cast<int>(frame->height)
+                        << "bytes:" << i420.size();
+                m_loggedFirstRemoteRtcFrame = true;
+            }
+
             emit matrixRtcRemoteVideoFrame(
                 roomId,
                 identity,
@@ -756,29 +765,55 @@ public:
 
     bool start(const QVideoSurfaceFormat &format) override
     {
+        const bool started = QAbstractVideoSurface::start(format);
         qInfo() << "RTC camera negotiated format:"
                 << format.pixelFormat()
-                << format.frameSize();
-        return QAbstractVideoSurface::start(format);
+                << format.frameSize()
+                << "surface started:" << started
+                << "surface error:" << errorString();
+        return started;
     }
 
     bool present(const QVideoFrame &frame) override
     {
-        if (!frame.isValid())
+        if (!frame.isValid()) {
+            if (m_loggedInvalidFrame.testAndSetOrdered(0, 1))
+                qWarning() << "RTC camera received an invalid QVideoFrame";
             return false;
+        }
 
         const int width = frame.width();
         const int height = frame.height();
         const QVideoFrame::PixelFormat format = frame.pixelFormat();
 
+        if (m_loggedFirstPresent.testAndSetOrdered(0, 1)) {
+            qInfo() << "RTC camera first present() frame:"
+                    << width << "x" << height
+                    << "format:" << format
+                    << "handle:" << frame.handleType()
+                    << "planes:" << frame.planeCount();
+        }
+
         if (width < 2 || height < 2 ||
             width > 1920 || height > 1080 ||
-            (width & 1) || (height & 1))
+            (width & 1) || (height & 1)) {
+            if (m_loggedInvalidDimensions.testAndSetOrdered(0, 1))
+                qWarning() << "RTC camera rejected frame dimensions:"
+                           << width << "x" << height
+                           << "format:" << format;
             return false;
+        }
 
         QVideoFrame mapped(frame);
-        if (!mapped.map(QAbstractVideoBuffer::ReadOnly))
+        if (!mapped.map(QAbstractVideoBuffer::ReadOnly)) {
+            if (m_loggedMapFailure.testAndSetOrdered(0, 1))
+                qWarning() << "RTC camera could not map first frame:"
+                           << width << "x" << height
+                           << "format:" << format
+                           << "handle:" << frame.handleType()
+                           << "planes:" << frame.planeCount();
             return false;
+        }
 
         if (!m_pending->testAndSetOrdered(0, 1)) {
             mapped.unmap();
@@ -793,6 +828,9 @@ public:
         uchar *vOut = uOut + chromaSize;
         bool converted = false;
         const int sourcePlaneCount = mapped.planeCount();
+        QImage::Format fallbackImageFormat = QImage::Format_Invalid;
+        int fallbackStride = 0;
+        bool fallbackHasBits = false;
 
         if (format == QVideoFrame::Format_YUV420P ||
             format == QVideoFrame::Format_YV12) {
@@ -909,9 +947,12 @@ public:
         } else {
             const QImage::Format imageFormat =
                 QVideoFrame::imageFormatFromPixelFormat(format);
+            fallbackImageFormat = imageFormat;
+            fallbackStride = mapped.bytesPerLine(0);
+            fallbackHasBits = mapped.bits(0) != nullptr;
             if (imageFormat != QImage::Format_Invalid &&
-                mapped.bits(0) &&
-                mapped.bytesPerLine(0) > 0) {
+                fallbackHasBits &&
+                fallbackStride > 0) {
                 const QImage source(
                     mapped.bits(0),
                     width,
@@ -982,7 +1023,10 @@ public:
             if (m_loggedUnsupportedFormat.testAndSetOrdered(0, 1)) {
                 qWarning() << "RTC camera frame format is not convertible:"
                            << format
-                           << "planes:" << sourcePlaneCount;
+                           << "planes:" << sourcePlaneCount
+                           << "image format:" << fallbackImageFormat
+                           << "stride:" << fallbackStride
+                           << "has bits:" << fallbackHasBits;
             }
             m_pending->storeRelease(0);
             return false;
@@ -1007,8 +1051,11 @@ public:
             Qt::QueuedConnection
         );
 
-        if (!queued)
+        if (!queued) {
+            if (m_loggedQueueFailure.testAndSetOrdered(0, 1))
+                qWarning() << "RTC camera could not queue converted frame";
             m_pending->storeRelease(0);
+        }
 
         return true;
     }
@@ -1017,8 +1064,13 @@ private:
     StorageWorker *m_worker = nullptr;
     QString m_roomId;
     QSharedPointer<QAtomicInt> m_pending;
+    QAtomicInt m_loggedFirstPresent{0};
+    QAtomicInt m_loggedInvalidFrame{0};
+    QAtomicInt m_loggedInvalidDimensions{0};
+    QAtomicInt m_loggedMapFailure{0};
     QAtomicInt m_loggedFirstFrame{0};
     QAtomicInt m_loggedUnsupportedFormat{0};
+    QAtomicInt m_loggedQueueFailure{0};
 };
 
 void StorageWorker::startRtcVideo(
