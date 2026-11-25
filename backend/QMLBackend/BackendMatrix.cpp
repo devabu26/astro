@@ -494,7 +494,8 @@ void Backend::startRtcVideo(
 void Backend::startRtcScreenShare(
     const QString &roomId,
     int width,
-    int height
+    int height,
+    bool includeDeviceAudio
 )
 {
     qInfo() << "ASTRO_SCREEN_SHARE: backend request received"
@@ -518,7 +519,7 @@ void Backend::startRtcScreenShare(
         return;
     }
 
-    emit requestStartRtcScreenShare(roomId, width, height);
+    emit requestStartRtcScreenShare(roomId, width, height, includeDeviceAudio);
 }
 
 void Backend::stopRtcScreenShare(const QString &roomId)
