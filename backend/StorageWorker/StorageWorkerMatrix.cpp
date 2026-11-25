@@ -2094,8 +2094,10 @@ void StorageWorker::stopRtcScreenShareCapture()
 
 void StorageWorker::stopRtcAudio(const QString &roomId)
 {
-    if (m_rtcScreenShareTimer &&
-        m_rtcScreenShareRoomId == roomId) {
+    if ((m_rtcScreenShareTimer &&
+         m_rtcScreenShareRoomId == roomId) ||
+        (m_rtcScreenShareAudioInput &&
+         m_rtcScreenShareAudioRoomId == roomId)) {
         stopRtcScreenShareCapture();
     }
     stopRtcCamera();
