@@ -425,9 +425,7 @@ Item {
 
             if (error && error.length > 0) {
                 root.actionError = error
-                if (operation === "startScreenShare" ||
-                        operation === "stopScreenShareForHangup")
-                    root.screenShareStarted = false
+                root.screenShareStarted = false
                 return
             }
 
@@ -721,7 +719,8 @@ Item {
                                            ? parent.right : undefined
                             anchors.top: remoteScreenVideo.hasFrame
                                          ? parent.top : undefined
-                            anchors.margins: units.gu(1)
+                            anchors.margins: remoteScreenVideo.hasFrame
+                                               ? units.gu(1) : 0
                             width: remoteScreenVideo.hasFrame
                                    ? units.gu(18) : parent.width
                             height: remoteScreenVideo.hasFrame

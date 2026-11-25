@@ -1638,6 +1638,16 @@ void StorageWorker::startRtcScreenShare(
     const int i420Size = width * height * 3 / 2;
 
     connect(
+        process, &QProcess::readyReadStandardError,
+        this,
+        [process]() {
+            const QByteArray errorOutput = process->readAllStandardError();
+            if (!errorOutput.isEmpty())
+                qWarning() << "mirscreencast:" << QString::fromLocal8Bit(errorOutput).trimmed();
+        }
+    );
+
+    connect(
         process, &QProcess::readyReadStandardOutput,
         this,
         [this, process, width, height, frameSize, i420Size]() {

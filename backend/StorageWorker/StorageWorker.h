@@ -328,6 +328,7 @@ signals:
     void matrixRtcAudioEventsUpdated(const QString &json);
     void matrixRtcAudioActionFinished(const QString &roomId, const QString &error);
     void matrixRtcVideoActionFinished(const QString &roomId, const QString &error);
+    void matrixRtcScreenShareActionFinished(const QString &roomId, const QString &error);
     void matrixRtcRemoteVideoFrame(
         const QString &roomId,
         const QString &identity,

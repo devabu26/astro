@@ -196,6 +196,7 @@ void StorageWorker::openStorage(const QString &passphrase)
 
 void StorageWorker::closeStorage()
 {
+    stopRtcScreenShareCapture();
     stopRtcCamera();
     if (m_timelinePollTimer) {
         m_timelinePollTimer->stop();
@@ -456,6 +457,9 @@ void StorageWorker::logoutMatrix()
     if (error) {
         astro_string_free(error);
     }
+
+    // Stop screen capture before releasing the LiveKit client.
+    stopRtcScreenShareCapture();
 
     // Stop polling before releasing the logged-out client.
     if (m_timelinePollTimer) {
