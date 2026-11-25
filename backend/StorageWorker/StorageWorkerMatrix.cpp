@@ -906,7 +906,7 @@ public:
                 }
                 converted = true;
             }
-
+        } else {
             const QImage::Format imageFormat =
                 QVideoFrame::imageFormatFromPixelFormat(format);
             if (imageFormat != QImage::Format_Invalid &&
