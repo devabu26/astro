@@ -261,6 +261,13 @@ signals:
         const QString &roomId,
         const QString &error
     );
+    void matrixRtcRemoteVideoFrame(
+        const QString &roomId,
+        const QString &identity,
+        int width,
+        int height,
+        const QByteArray &i420
+    );
 
     void notificationReceived(
         const QString &sender,
