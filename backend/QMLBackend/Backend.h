@@ -151,7 +151,7 @@ public:
     // Called directly by the Qt Quick video-filter render thread.
     void processRtcCameraFrame(const QString &roomId, const QVideoFrame &frame);
     Q_INVOKABLE void processRtcCameraImage(const QString &roomId, const QImage &image);
-    Q_INVOKABLE bool setRtcCameraProbe(QObject *mediaObject);
+    Q_INVOKABLE bool setRtcCameraProbe(QObject *qmlCamera);
 
     Q_INVOKABLE void sendRoomAttachment(
         const QString &requestKey,
