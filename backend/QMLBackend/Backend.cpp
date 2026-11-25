@@ -18,7 +18,11 @@
 #include <QMetaObject>
 #include <functional>
 #include <QStringList>
+
+// Qt's `signals` keyword macro conflicts with a GDBus struct member.
+#undef signals
 #include <gio/gio.h>
+#define signals Q_SIGNALS
 
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
