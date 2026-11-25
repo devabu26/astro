@@ -690,8 +690,7 @@ Item {
                         height: units.gu(7)
                         radius: units.gu(1)
                         color: "#263b4a"
-                        visible: root.videoStarted
-                        opacity: root.callActive ? 1 : 0.4
+                        opacity: root.videoStarted ? 1 : 0.35
 
                         Column {
                             anchors.centerIn: parent
@@ -726,7 +725,7 @@ Item {
                         height: units.gu(7)
                         radius: units.gu(1)
                         color: "#315d48"
-                        visible: !root.callActive
+                        opacity: root.callActive ? 0.35 : 1
 
                         Column {
                             anchors.centerIn: parent
@@ -749,7 +748,8 @@ Item {
 
                         MouseArea {
                             anchors.fill: parent
-                            enabled: root.pendingOperation.length === 0
+                            enabled: !root.callActive &&
+                                     root.pendingOperation.length === 0
                             onClicked: root.startCall()
                         }
                     }
