@@ -2005,6 +2005,11 @@ bool StorageWorker::startRtcScreenShareAudioCapture(
     if (!m_rtcScreenShareAudioDevice ||
         m_rtcScreenShareAudioInput->error() != QAudio::NoError ||
         m_rtcScreenShareAudioInput->state() != QAudio::ActiveState) {
+        qWarning() << "ASTRO_SCREEN_SHARE_AUDIO: QAudioInput failed to open"
+                   << "device:" << monitor.deviceName()
+                   << "error:" << static_cast<int>(m_rtcScreenShareAudioInput->error())
+                   << "state:" << static_cast<int>(m_rtcScreenShareAudioInput->state())
+                   << "deviceReturned:" << (m_rtcScreenShareAudioDevice != nullptr);
         if (error) {
             *error = QStringLiteral("PulseAudio playback monitor could not be opened: %1")
                 .arg(monitor.deviceName());
