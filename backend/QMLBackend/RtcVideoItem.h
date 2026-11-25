@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Backend.h"
+
 #include <QByteArray>
 #include <QImage>
 #include <QMutex>
@@ -7,7 +9,6 @@
 #include <QQuickPaintedItem>
 #include <QString>
 
-class Backend;
 class QPainter;
 
 class RtcVideoItem : public QQuickPaintedItem
