@@ -12,6 +12,7 @@
 #include <QAtomicInt>
 #include <QMetaObject>
 #include <QSharedPointer>
+#include <limits>
 
 #include <QDebug>
 
@@ -420,6 +421,51 @@ void StorageWorker::pollRoomTimelineUpdates()
         if (rtcAudioResult != QStringLiteral("{\"events\":[]}")) {
             emit matrixRtcAudioEventsUpdated(rtcAudioResult);
         }
+    }
+
+    // ---------------------------------------------------------
+    // LiveKit remote video frames
+    // ---------------------------------------------------------
+
+    for (int frameIndex = 0; frameIndex < 12; ++frameIndex) {
+        char *frameError = nullptr;
+        AstroRtcVideoFrame *frame = astro_matrix_take_rtc_video_frame(
+            m_matrixClient,
+            &frameError
+        );
+
+        if (!frame) {
+            if (frameError) {
+                qWarning() << "ASTRO: Remote video frame polling failed:"
+                           << QString::fromUtf8(frameError);
+                astro_string_free(frameError);
+            }
+            break;
+        }
+
+        if (frameError) {
+            astro_string_free(frameError);
+        }
+
+        if (frame->room_id && frame->identity && frame->data &&
+            frame->len <= static_cast<uintptr_t>(std::numeric_limits<int>::max())) {
+            const QString roomId = QString::fromUtf8(frame->room_id);
+            const QString identity = QString::fromUtf8(frame->identity);
+            const QByteArray i420(
+                reinterpret_cast<const char *>(frame->data),
+                static_cast<int>(frame->len)
+            );
+
+            emit matrixRtcRemoteVideoFrame(
+                roomId,
+                identity,
+                static_cast<int>(frame->width),
+                static_cast<int>(frame->height),
+                i420
+            );
+        }
+
+        astro_matrix_rtc_video_frame_free(frame);
     }
 
     // ---------------------------------------------------------
