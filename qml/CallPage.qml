@@ -20,6 +20,7 @@ Item {
     property bool muted: false
     property bool pendingMuted: false
     property bool videoStarted: false
+    property bool cameraFrameGrabPending: false
 
     signal backRequested()
     signal remoteVideoCleared(string identity)
@@ -210,6 +211,34 @@ Item {
                 : "P"
     }
 
+    Timer {
+        id: cameraFrameGrabTimer
+        interval: 100
+        repeat: true
+        running: root.videoStarted
+
+        onTriggered: {
+            if (root.cameraFrameGrabPending ||
+                    !localCameraPreview.visible ||
+                    !root.backend ||
+                    !root.roomId)
+                return
+
+            root.cameraFrameGrabPending = true
+            var accepted = localCameraPreview.grabToImage(function(result) {
+                root.cameraFrameGrabPending = false
+                if (result && root.videoStarted && root.backend)
+                    root.backend.processRtcCameraImage(
+                        root.roomId,
+                        result.image
+                    )
+            }, Qt.size(640, 360))
+
+            if (!accepted)
+                root.cameraFrameGrabPending = false
+        }
+    }
+
     onVideoStartedChanged: {
         if (videoStarted)
             localCamera.start()
@@ -397,12 +426,6 @@ Item {
         source: localCamera
         fillMode: VideoOutput.PreserveAspectCrop
 
-        filters: [
-            RtcCameraVideoFilter {
-                backend: root.backend
-                roomId: root.roomId
-            }
-        ]
     }
 
     Rectangle {
