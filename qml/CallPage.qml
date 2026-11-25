@@ -298,8 +298,7 @@ Item {
             root.cameraFrameGrabPending = true
             var accepted = localCameraPreview.grabToImage(function(result) {
                 root.cameraFrameGrabPending = false
-                if (result && !result.image.isNull
-                        && root.videoStarted && root.backend) {
+                if (result && root.videoStarted && root.backend) {
                     root.cameraFrameGrabSuccesses++
                     root.backend.processRtcCameraImage(
                         root.roomId,
