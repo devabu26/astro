@@ -16,6 +16,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <cstring>
+#include <algorithm>
+#include <cmath>
 
 #include <QByteArray>
 #include <QAtomicInt>
@@ -1654,32 +1656,9 @@ void StorageWorker::startRtcScreenShare(
             QStringLiteral("Screen sharing is already running"));
         return;
     }
-    if (width < 2 || height < 2 || (width & 1) || (height & 1) ||
-        width > 1920 || height > 1080) {
-        emit matrixRtcScreenShareActionFinished(roomId,
-            QStringLiteral("Invalid screen-share dimensions"));
-        return;
-    }
-
+    // width/height are retained as a caller hint for API compatibility.
+    // The actual capture and LiveKit dimensions are selected from Mir below.
     const QByteArray roomIdBytes = roomId.toUtf8();
-    char *error = nullptr;
-    qInfo() << "ASTRO_SCREEN_SHARE: publishing LiveKit screen-share track";
-    const int32_t publishResult = astro_matrix_start_rtc_screenshare(
-        m_matrixClient, roomIdBytes.constData(),
-        static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-        includeDeviceAudio ? 1 : 0, &error);
-    QString errorMessage;
-    if (error) {
-        errorMessage = QString::fromUtf8(error);
-        astro_string_free(error);
-    }
-    if (publishResult < 0) {
-        if (errorMessage.isEmpty())
-            errorMessage = QStringLiteral("Could not publish LiveKit screen-share track");
-        emit matrixRtcScreenShareActionFinished(roomId, errorMessage);
-        return;
-    }
-
     auto failStart = [this, &roomIdBytes, &roomId](const QString &message) {
         stopRtcScreenShareCapture();
         if (m_matrixClient) {
@@ -1750,6 +1729,51 @@ void StorageWorker::startRtcScreenShare(
         static_cast<unsigned int>(mir_output_mode_get_height(mode))
     };
     mir_display_config_release(displayConfig);
+
+    const int displayWidth = static_cast<int>(captureRegion.width);
+    const int displayHeight = static_cast<int>(captureRegion.height);
+    if (displayWidth < 2 || displayHeight < 2 ||
+        (displayWidth & 1) || (displayHeight & 1)) {
+        failStart(QStringLiteral("Mir reported unsupported display dimensions"));
+        return;
+    }
+
+    // Keep screen sharing sharp while bounding the workload on mobile devices:
+    // at most 1920 pixels on the long edge and roughly 2.1 megapixels.
+    const double displayPixels =
+        static_cast<double>(displayWidth) * displayHeight;
+    const double scale = std::min(
+        1.0,
+        std::min(
+            1920.0 / std::max(displayWidth, displayHeight),
+            std::sqrt(2073600.0 / displayPixels)
+        )
+    );
+    width = std::max(2, static_cast<int>(displayWidth * scale) & ~1);
+    height = std::max(2, static_cast<int>(displayHeight * scale) & ~1);
+
+    qInfo() << "ASTRO_SCREEN_SHARE: selected capture resolution"
+            << width << "x" << height
+            << "from display" << displayWidth << "x" << displayHeight
+            << "caller hint" << "480x854";
+
+    qInfo() << "ASTRO_SCREEN_SHARE: publishing LiveKit screen-share track";
+    char *publishError = nullptr;
+    const int32_t publishResult = astro_matrix_start_rtc_screenshare(
+        m_matrixClient, roomIdBytes.constData(),
+        static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+        includeDeviceAudio ? 1 : 0, &publishError);
+    QString publishErrorMessage;
+    if (publishError) {
+        publishErrorMessage = QString::fromUtf8(publishError);
+        astro_string_free(publishError);
+    }
+    if (publishResult < 0) {
+        if (publishErrorMessage.isEmpty())
+            publishErrorMessage = QStringLiteral("Could not publish LiveKit screen-share track");
+        failStart(publishErrorMessage);
+        return;
+    }
 
     const MirPixelFormat pixelFormat = mir_pixel_format_abgr_8888;
     MirScreencastSpec *spec = mir_create_screencast_spec(m_rtcScreenShareConnection);
