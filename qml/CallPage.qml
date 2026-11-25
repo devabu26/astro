@@ -1,5 +1,6 @@
 
 import QtQuick 2.7
+import QtMultimedia 5.12
 import Lomiri.Components 1.3
 import Astro.Backend 1.0
 
@@ -73,6 +74,7 @@ Item {
         actionError = ""
 
         if (videoStarted) {
+            localCamera.stop()
             pendingOperation = "stopVideo"
             backend.stopRtcVideo(roomId)
         } else {
@@ -82,13 +84,28 @@ Item {
     }
 
     function switchCamera() {
-        if (!backend || !roomId || !videoStarted ||
-                pendingOperation.length > 0)
+        if (!videoStarted || pendingOperation.length > 0)
             return
 
+        var cameras = QtMultimedia.availableCameras
+        if (!cameras || cameras.length < 2) {
+            actionError = "Only one camera is available"
+            return
+        }
+
+        var currentIndex = -1
+        for (var i = 0; i < cameras.length; ++i) {
+            if (cameras[i].deviceId === localCamera.deviceId) {
+                currentIndex = i
+                break
+            }
+        }
+
+        var nextIndex = (currentIndex + 1) % cameras.length
+        localCamera.stop()
+        localCamera.deviceId = cameras[nextIndex].deviceId
+        localCamera.start()
         actionError = ""
-        pendingOperation = "switchCamera"
-        backend.switchRtcCamera(roomId)
     }
 
     function hangUp() {
@@ -99,6 +116,7 @@ Item {
         actionError = ""
 
         if (videoStarted) {
+            localCamera.stop()
             pendingOperation = "stopVideoForHangup"
             backend.stopRtcVideo(roomId)
             return
@@ -179,6 +197,13 @@ Item {
         return name.length > 0
                 ? name.charAt(0).toUpperCase()
                 : "P"
+    }
+
+    onVideoStartedChanged: {
+        if (videoStarted)
+            localCamera.start()
+        else
+            localCamera.stop()
     }
 
     onAudioStateChanged: {
@@ -332,6 +357,37 @@ Item {
                 console.warn("Could not process LiveKit video cleanup:", error)
             }
         }
+    }
+
+    Camera {
+        id: localCamera
+        captureMode: Camera.CaptureVideo
+
+        onError: {
+            root.actionError = errorString
+            console.warn("ASTRO RTC camera error:", errorString)
+        }
+    }
+
+    VideoOutput {
+        id: localCameraPreview
+        z: 50
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.rightMargin: units.gu(2)
+        anchors.topMargin: units.gu(10)
+        width: units.gu(20)
+        height: width * 9 / 16
+        visible: root.videoStarted
+        source: localCamera
+        fillMode: VideoOutput.PreserveAspectCrop
+
+        filters: [
+            RtcCameraVideoFilter {
+                backend: root.backend
+                roomId: root.roomId
+            }
+        ]
     }
 
     Rectangle {
