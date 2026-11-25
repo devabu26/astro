@@ -1414,6 +1414,38 @@ void StorageWorker::startRtcVideo(
     emit matrixRtcVideoActionFinished(roomId, errorMessage);
 }
 
+
+void StorageWorker::stopRtcVideo(const QString &roomId)
+{
+    stopRtcCamera();
+    if (!m_matrixClient || roomId.isEmpty()) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+    const int32_t result = astro_matrix_stop_rtc_video(
+        m_matrixClient, roomIdBytes.constData(), &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+    if (result < 0 && errorMessage.isEmpty())
+        errorMessage = QStringLiteral("Could not stop LiveKit video");
+
+    emit matrixRtcVideoActionFinished(roomId, errorMessage);
+}
+
+
 void StorageWorker::processRtcCameraFrame(const QVideoFrame &frame)
 {
     // RtcCameraVideoFilter calls this directly from the Qt Quick render
