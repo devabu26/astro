@@ -2944,7 +2944,12 @@ impl MatrixClientManager {
             .screen_share_audio_source
             .as_ref()
             .ok_or_else(|| "Screen-share audio is not active in this room".to_string())?;
-        let frame = AudioFrame::new(pcm, 48_000, 2);
+        let frame = AudioFrame {
+            data: std::borrow::Cow::Borrowed(pcm),
+            sample_rate: 48_000,
+            num_channels: 2,
+            samples_per_channel: 480,
+        };
 
         runtime.block_on(async {
             source
