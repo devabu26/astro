@@ -20,18 +20,6 @@ class Backend : public QObject
         NOTIFY storageReadyChanged
     )
 
-    Q_PROPERTY(
-        bool lifecycleExemptionEnabled
-        READ lifecycleExemptionEnabled
-        NOTIFY lifecycleExemptionChanged
-    )
-
-    Q_PROPERTY(
-        QString lifecycleExemptionError
-        READ lifecycleExemptionError
-        NOTIFY lifecycleExemptionChanged
-    )
-
 public:
     explicit Backend(QObject *parent = nullptr);
     ~Backend() override;
@@ -42,10 +30,6 @@ public:
 
     Q_INVOKABLE QString status() const;
     Q_INVOKABLE QString rtcRingbackToneUrl() const;
-    Q_INVOKABLE bool refreshLifecycleExemption();
-
-    bool lifecycleExemptionEnabled() const;
-    QString lifecycleExemptionError() const;
     Q_INVOKABLE QString prepareDataDirectory() const;
     Q_INVOKABLE bool hasExistingStorage() const;
     Q_INVOKABLE QString secretServiceStatus() const;
@@ -201,7 +185,6 @@ signals:
     // ---------------------------------------------------------
 
     void storageReadyChanged();
-    void lifecycleExemptionChanged();
     void storageStatusChanged(const QString &status);
     void secretServiceTestFinished(const QString &result);
     void dataDeleted();
@@ -542,8 +525,6 @@ private:
 
     bool m_storageReady = false;
     bool m_applicationActive = true;
-    bool m_lifecycleExemptionEnabled = false;
-    QString m_lifecycleExemptionError;
     bool m_storageOperationInProgress = false;
     bool m_matrixResumeInProgress = false;
 
@@ -560,8 +541,4 @@ private:
     // ---------------------------------------------------------
 
     void setStorageReady(bool ready);
-    void setLifecycleExemptionState(
-        bool enabled,
-        const QString &error
-    );
 };
