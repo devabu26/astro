@@ -29,7 +29,7 @@ public:
 
     void setBackend(Backend *backend);
     void setRoomId(const QString &roomId);
-    void setIdentity(const QString &identity) { m_identity = identity; }
+    void setIdentity(const QString &identity);
 
     Q_INVOKABLE void setI420Frame(
         const QByteArray &data,
