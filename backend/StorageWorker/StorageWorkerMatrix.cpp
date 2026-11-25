@@ -7,6 +7,9 @@
 #include <QAbstractVideoBuffer>
 #include <QVideoFrame>
 #include <QCameraInfo>
+#include <QImage>
+#include <QVideoSurfaceFormat>
+#include <cstring>
 
 #include <QByteArray>
 #include <QAtomicInt>
@@ -735,10 +738,26 @@ public:
         if (type != QAbstractVideoBuffer::NoHandle)
             return {};
 
+        // Camera backends on Ubuntu Touch commonly negotiate YUV420P,
+        // YV12 or NV12 rather than the RGB formats used by desktop cameras.
         return {
             QVideoFrame::Format_RGB32,
-            QVideoFrame::Format_ARGB32
+            QVideoFrame::Format_ARGB32,
+            QVideoFrame::Format_ARGB32_Premultiplied,
+            QVideoFrame::Format_RGB24,
+            QVideoFrame::Format_YUV420P,
+            QVideoFrame::Format_YV12,
+            QVideoFrame::Format_NV12,
+            QVideoFrame::Format_NV21
         };
+    }
+
+    bool start(const QVideoSurfaceFormat &format) override
+    {
+        qInfo() << "RTC camera negotiated format:"
+                << format.pixelFormat()
+                << format.frameSize();
+        return QAbstractVideoSurface::start(format);
     }
 
     bool present(const QVideoFrame &frame) override
@@ -746,12 +765,9 @@ public:
         if (!frame.isValid())
             return false;
 
-        if (frame.pixelFormat() != QVideoFrame::Format_RGB32 &&
-            frame.pixelFormat() != QVideoFrame::Format_ARGB32)
-            return false;
-
         const int width = frame.width();
         const int height = frame.height();
+        const QVideoFrame::PixelFormat format = frame.pixelFormat();
 
         if (width < 2 || height < 2 ||
             width > 1920 || height > 1080 ||
@@ -759,94 +775,177 @@ public:
             return false;
 
         QVideoFrame mapped(frame);
-
         if (!mapped.map(QAbstractVideoBuffer::ReadOnly))
             return false;
 
-        const int stride = mapped.bytesPerLine();
-
-        if (stride < width * 4) {
-            mapped.unmap();
-            return false;
-        }
-
-        // Keep at most one queued or active submission.
         if (!m_pending->testAndSetOrdered(0, 1)) {
             mapped.unmap();
             return true;
         }
 
         const int ySize = width * height;
-        QByteArray i420(ySize + ySize / 2, Qt::Uninitialized);
+        const int chromaSize = ySize / 4;
+        QByteArray i420(ySize + chromaSize * 2, Qt::Uninitialized);
+        uchar *yOut = reinterpret_cast<uchar *>(i420.data());
+        uchar *uOut = yOut + ySize;
+        uchar *vOut = uOut + chromaSize;
+        bool converted = false;
 
-        uchar *yPlane = reinterpret_cast<uchar *>(i420.data());
-        uchar *uPlane = yPlane + ySize;
-        uchar *vPlane = uPlane + ySize / 4;
+        if (format == QVideoFrame::Format_YUV420P ||
+            format == QVideoFrame::Format_YV12) {
+            if (mapped.planeCount() >= 3) {
+                const int yStride = mapped.bytesPerLine(0);
+                const int cStride1 = mapped.bytesPerLine(1);
+                const int cStride2 = mapped.bytesPerLine(2);
+                const uchar *yIn = mapped.bits(0);
+                const uchar *plane1 = mapped.bits(1);
+                const uchar *plane2 = mapped.bits(2);
 
-        auto clamp = [](int value) -> uchar {
-            return static_cast<uchar>(qBound(0, value, 255));
-        };
+                if (yIn && plane1 && plane2 &&
+                    yStride >= width &&
+                    cStride1 >= width / 2 &&
+                    cStride2 >= width / 2) {
+                    for (int row = 0; row < height; ++row)
+                        memcpy(yOut + row * width, yIn + row * yStride, width);
 
-        for (int y = 0; y < height; y += 2) {
-            const QRgb *row0 =
-                reinterpret_cast<const QRgb *>(
-                    mapped.bits() + y * stride
-                );
+                    const uchar *uIn =
+                        format == QVideoFrame::Format_YUV420P
+                            ? plane1 : plane2;
+                    const uchar *vIn =
+                        format == QVideoFrame::Format_YUV420P
+                            ? plane2 : plane1;
+                    const int uStride =
+                        format == QVideoFrame::Format_YUV420P
+                            ? cStride1 : cStride2;
+                    const int vStride =
+                        format == QVideoFrame::Format_YUV420P
+                            ? cStride2 : cStride1;
 
-            const QRgb *row1 =
-                reinterpret_cast<const QRgb *>(
-                    mapped.bits() + (y + 1) * stride
-                );
-
-            for (int x = 0; x < width; x += 2) {
-                const QRgb pixels[4] = {
-                    row0[x], row0[x + 1],
-                    row1[x], row1[x + 1]
-                };
-
-                int rSum = 0;
-                int gSum = 0;
-                int bSum = 0;
-
-                for (int p = 0; p < 4; ++p) {
-                    const int r = qRed(pixels[p]);
-                    const int g = qGreen(pixels[p]);
-                    const int b = qBlue(pixels[p]);
-
-                    rSum += r;
-                    gSum += g;
-                    bSum += b;
-
-                    const int index =
-                        (y + p / 2) * width + x + p % 2;
-
-                    yPlane[index] = clamp(
-                        ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16
-                    );
+                    for (int row = 0; row < height / 2; ++row) {
+                        memcpy(uOut + row * (width / 2),
+                               uIn + row * uStride, width / 2);
+                        memcpy(vOut + row * (width / 2),
+                               vIn + row * vStride, width / 2);
+                    }
+                    converted = true;
                 }
+            }
+        } else if (format == QVideoFrame::Format_NV12 ||
+                   format == QVideoFrame::Format_NV21) {
+            if (mapped.planeCount() >= 2) {
+                const int yStride = mapped.bytesPerLine(0);
+                const int uvStride = mapped.bytesPerLine(1);
+                const uchar *yIn = mapped.bits(0);
+                const uchar *uvIn = mapped.bits(1);
 
-                const int r = (rSum + 2) / 4;
-                const int g = (gSum + 2) / 4;
-                const int b = (bSum + 2) / 4;
+                if (yIn && uvIn &&
+                    yStride >= width &&
+                    uvStride >= width) {
+                    for (int row = 0; row < height; ++row)
+                        memcpy(yOut + row * width, yIn + row * yStride, width);
 
-                const int ci =
-                    (y / 2) * (width / 2) + x / 2;
-
-                uPlane[ci] = clamp(
-                    ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128
+                    for (int row = 0; row < height / 2; ++row) {
+                        const uchar *src = uvIn + row * uvStride;
+                        for (int col = 0; col < width / 2; ++col) {
+                            const int offset = col * 2;
+                            if (format == QVideoFrame::Format_NV12) {
+                                uOut[row * (width / 2) + col] = src[offset];
+                                vOut[row * (width / 2) + col] = src[offset + 1];
+                            } else {
+                                vOut[row * (width / 2) + col] = src[offset];
+                                uOut[row * (width / 2) + col] = src[offset + 1];
+                            }
+                        }
+                    }
+                    converted = true;
+                }
+            }
+        } else {
+            const QImage::Format imageFormat =
+                QVideoFrame::imageFormatFromPixelFormat(format);
+            if (imageFormat != QImage::Format_Invalid &&
+                mapped.bits(0) &&
+                mapped.bytesPerLine(0) > 0) {
+                const QImage source(
+                    mapped.bits(0),
+                    width,
+                    height,
+                    mapped.bytesPerLine(0),
+                    imageFormat
                 );
+                const QImage rgb = source.convertToFormat(QImage::Format_RGB32);
 
-                vPlane[ci] = clamp(
-                    ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128
-                );
+                if (!rgb.isNull()) {
+                    auto clamp = [](int value) -> uchar {
+                        return static_cast<uchar>(qBound(0, value, 255));
+                    };
+
+                    for (int row = 0; row < height; row += 2) {
+                        const QRgb *row0 =
+                            reinterpret_cast<const QRgb *>(rgb.constScanLine(row));
+                        const QRgb *row1 =
+                            reinterpret_cast<const QRgb *>(rgb.constScanLine(row + 1));
+
+                        for (int col = 0; col < width; col += 2) {
+                            const QRgb pixels[4] = {
+                                row0[col], row0[col + 1],
+                                row1[col], row1[col + 1]
+                            };
+
+                            int rSum = 0;
+                            int gSum = 0;
+                            int bSum = 0;
+
+                            for (int p = 0; p < 4; ++p) {
+                                const int r = qRed(pixels[p]);
+                                const int g = qGreen(pixels[p]);
+                                const int b = qBlue(pixels[p]);
+                                rSum += r;
+                                gSum += g;
+                                bSum += b;
+
+                                const int index =
+                                    (row + p / 2) * width + col + p % 2;
+                                yOut[index] = clamp(
+                                    ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16
+                                );
+                            }
+
+                            const int r = (rSum + 2) / 4;
+                            const int g = (gSum + 2) / 4;
+                            const int b = (bSum + 2) / 4;
+                            const int chromaIndex =
+                                (row / 2) * (width / 2) + col / 2;
+
+                            uOut[chromaIndex] = clamp(
+                                ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128
+                            );
+                            vOut[chromaIndex] = clamp(
+                                ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128
+                            );
+                        }
+                    }
+                    converted = true;
+                }
             }
         }
 
         mapped.unmap();
 
+        if (!converted) {
+            if (m_loggedUnsupportedFormat.testAndSetOrdered(0, 1)) {
+                qWarning() << "RTC camera frame format is not convertible:"
+                           << format
+                           << "planes:" << mapped.planeCount();
+            }
+            m_pending->storeRelease(0);
+            return false;
+        }
+
         if (m_loggedFirstFrame.testAndSetOrdered(0, 1)) {
-            qInfo() << "RTC camera converted first I420 frame:"
-                    << width << "x" << height;
+            qInfo() << "RTC camera submitted first I420 frame:"
+                    << width << "x" << height
+                    << "source format:" << format;
         }
 
         StorageWorker *worker = m_worker;
@@ -856,10 +955,7 @@ public:
         const bool queued = QMetaObject::invokeMethod(
             worker,
             [worker, pending, roomId, i420, width, height]() {
-                worker->pushRtcVideoFrame(
-                    roomId, width, height, i420
-                );
-
+                worker->pushRtcVideoFrame(roomId, width, height, i420);
                 pending->storeRelease(0);
             },
             Qt::QueuedConnection
@@ -876,6 +972,7 @@ private:
     QString m_roomId;
     QSharedPointer<QAtomicInt> m_pending;
     QAtomicInt m_loggedFirstFrame{0};
+    QAtomicInt m_loggedUnsupportedFormat{0};
 };
 
 void StorageWorker::startRtcVideo(
@@ -905,7 +1002,6 @@ void StorageWorker::startRtcVideo(
 
     const QByteArray roomIdBytes = roomId.toUtf8();
     char *error = nullptr;
-
     const int32_t result = astro_matrix_start_rtc_video(
         m_matrixClient,
         roomIdBytes.constData(),
@@ -919,71 +1015,162 @@ void StorageWorker::startRtcVideo(
         errorMessage = QString::fromUtf8(error);
         astro_string_free(error);
     }
-
-    if (result < 0 && errorMessage.isEmpty()) {
+    if (result < 0 && errorMessage.isEmpty())
         errorMessage = QStringLiteral("Could not start LiveKit video");
-    }
 
     if (result >= 0 && errorMessage.isEmpty()) {
-        qInfo() << "RTC available cameras:";
-       const auto cameras = QCameraInfo::availableCameras();
-       for (const QCameraInfo &camera : cameras) {
-           qInfo() << " -" << camera.description()
-                   << "device:" << camera.deviceName();
-       }
+        const QList<QCameraInfo> cameras = QCameraInfo::availableCameras();
+        qInfo() << "RTC available cameras:" << cameras.size();
+        for (const QCameraInfo &camera : cameras) {
+            qInfo() << " -" << camera.description()
+                    << "device:" << camera.deviceName()
+                    << "position:" << camera.position();
+        }
 
-       const QCameraInfo defaultCamera = QCameraInfo::defaultCamera();
-       qInfo() << "RTC default camera:"
-               << defaultCamera.description()
-               << "device:" << defaultCamera.deviceName();
+        QCameraInfo selected = QCameraInfo::defaultCamera();
+        if (selected.deviceName().isEmpty() && !cameras.isEmpty())
+            selected = cameras.first();
 
-       m_rtcCamera = new QCamera(this);
-
-       connect(m_rtcCamera, &QCamera::statusChanged, this,
-               [](QCamera::Status status) {
-           qInfo() << "RTC camera status:" << static_cast<int>(status);
-       });
-
-       connect(m_rtcCamera,
-               QOverload<QCamera::Error>::of(&QCamera::error),
-               this, [this](QCamera::Error error) {
-           qWarning() << "RTC camera error:"
-                      << static_cast<int>(error)
-                      << m_rtcCamera->errorString();
-       });
-
-        if (!m_rtcCamera->isAvailable()) {
-            errorMessage = QStringLiteral(
-                "No available camera device or camera permission denied"
-            );
+        if (selected.deviceName().isEmpty()) {
+            errorMessage = QStringLiteral("No camera device is available");
         } else {
-            // Configure the camera for video before attaching the probe.
-            m_rtcCamera->setCaptureMode(QCamera::CaptureVideo);
+            m_rtcCamera = new QCamera(selected, this);
+            connect(
+                m_rtcCamera, &QCamera::statusChanged, this,
+                [](QCamera::Status status) {
+                    qInfo() << "RTC camera status:" << static_cast<int>(status);
+                }
+            );
+            connect(
+                m_rtcCamera,
+                QOverload<QCamera::Error>::of(&QCamera::error),
+                this,
+                [this](QCamera::Error cameraError) {
+                    qWarning() << "RTC camera error:"
+                               << static_cast<int>(cameraError)
+                               << m_rtcCamera->errorString();
+                }
+            );
 
+            m_rtcCamera->setCaptureMode(QCamera::CaptureVideo);
             m_rtcVideoSurface = new RtcCameraVideoSurface(
                 this, roomId, this
             );
             m_rtcCamera->setViewfinder(m_rtcVideoSurface);
             m_rtcCamera->start();
+
+            if (!m_rtcCamera->isAvailable())
+                errorMessage = QStringLiteral("Selected camera is unavailable");
         }
 
         if (!errorMessage.isEmpty()) {
             stopRtcCamera();
-
             char *stopError = nullptr;
             astro_matrix_stop_rtc_video(
-                m_matrixClient,
-                roomIdBytes.constData(),
-                &stopError
+                m_matrixClient, roomIdBytes.constData(), &stopError
             );
-
-            if (stopError) {
+            if (stopError)
                 astro_string_free(stopError);
-            }
         }
     }
 
     emit matrixRtcVideoActionFinished(roomId, errorMessage);
+}
+
+void StorageWorker::switchRtcCamera(const QString &roomId)
+{
+    if (!m_matrixClient || roomId.isEmpty() ||
+        !m_rtcCamera || !m_rtcVideoSurface) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : !m_rtcCamera
+                    ? QStringLiteral("Camera is not running")
+                    : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    const QList<QCameraInfo> cameras = QCameraInfo::availableCameras();
+    if (cameras.size() < 2) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            QStringLiteral("Only one camera is available")
+        );
+        return;
+    }
+
+    const QString currentDevice = QCameraInfo(m_rtcCamera).deviceName();
+    const QCamera::Position currentPosition =
+        QCameraInfo(m_rtcCamera).position();
+
+    QCameraInfo selected;
+    // Prefer the opposite physical facing (front <-> back).
+    for (const QCameraInfo &camera : cameras) {
+        if (camera.deviceName() != currentDevice &&
+            camera.position() != QCamera::UnspecifiedPosition &&
+            currentPosition != QCamera::UnspecifiedPosition &&
+            camera.position() != currentPosition) {
+            selected = camera;
+            break;
+        }
+    }
+
+    // Fall back to the next enumerated device when facing metadata is absent.
+    if (selected.deviceName().isEmpty()) {
+        for (int i = 0; i < cameras.size(); ++i) {
+            if (cameras.at(i).deviceName() == currentDevice) {
+                selected = cameras.at((i + 1) % cameras.size());
+                break;
+            }
+        }
+    }
+
+    if (selected.deviceName().isEmpty() ||
+        selected.deviceName() == currentDevice) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            QStringLiteral("Could not find another camera device")
+        );
+        return;
+    }
+
+    stopRtcCamera();
+    m_rtcCamera = new QCamera(selected, this);
+    connect(
+        m_rtcCamera, &QCamera::statusChanged, this,
+        [](QCamera::Status status) {
+            qInfo() << "RTC camera status:" << static_cast<int>(status);
+        }
+    );
+    connect(
+        m_rtcCamera,
+        QOverload<QCamera::Error>::of(&QCamera::error),
+        this,
+        [this](QCamera::Error cameraError) {
+            qWarning() << "RTC camera error:"
+                       << static_cast<int>(cameraError)
+                       << m_rtcCamera->errorString();
+        }
+    );
+
+    m_rtcCamera->setCaptureMode(QCamera::CaptureVideo);
+    m_rtcVideoSurface = new RtcCameraVideoSurface(this, roomId, this);
+    m_rtcCamera->setViewfinder(m_rtcVideoSurface);
+    m_rtcCamera->start();
+
+    const QString switchError = m_rtcCamera->isAvailable()
+        ? QString()
+        : QStringLiteral("The selected camera is unavailable");
+    if (!switchError.isEmpty())
+        stopRtcCamera();
+
+    qInfo() << "RTC switched camera to:"
+            << selected.description()
+            << selected.deviceName()
+            << "position:" << selected.position();
+    emit matrixRtcVideoActionFinished(roomId, switchError);
 }
 
 void StorageWorker::pushRtcVideoFrame(
