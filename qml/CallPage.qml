@@ -349,10 +349,15 @@ Item {
     }
 
     onVideoStartedChanged: {
-        if (videoStarted)
+        if (videoStarted) {
             localCamera.start()
-        else
+            if (backend)
+                backend.setRtcCameraProbe(localCamera.mediaObject)
+        } else {
+            if (backend)
+                backend.setRtcCameraProbe(null)
             localCamera.stop()
+        }
     }
 
     Component.onDestruction: {
