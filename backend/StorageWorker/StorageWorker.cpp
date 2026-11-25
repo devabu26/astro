@@ -24,12 +24,26 @@ StorageWorker::StorageWorker(QObject *parent)
         this,
         &StorageWorker::pollRoomTimelineUpdates
     );
+
+    // Remote video is polled independently so timeline polling does not
+    // cap incoming video refresh to its slower interval.
+    m_rtcVideoPollTimer = new QTimer(this);
+    m_rtcVideoPollTimer->setInterval(33);
+    connect(
+        m_rtcVideoPollTimer,
+        &QTimer::timeout,
+        this,
+        &StorageWorker::pollRtcRemoteVideoFrames
+    );
 }
 
 StorageWorker::~StorageWorker()
 {
     if (m_timelinePollTimer) {
         m_timelinePollTimer->stop();
+    }
+    if (m_rtcVideoPollTimer) {
+        m_rtcVideoPollTimer->stop();
     }
 
     // Clear retained credentials before releasing the worker.
@@ -161,6 +175,10 @@ void StorageWorker::openStorage(const QString &passphrase)
     m_matrixClient = client;
     m_matrixSessionActive = (result == 1);
 
+    if (m_rtcVideoPollTimer) {
+        m_rtcVideoPollTimer->start();
+    }
+
     registerPushTokenIfReady();
 
     if (m_timelinePollTimer) {
@@ -180,6 +198,9 @@ void StorageWorker::closeStorage()
     stopRtcCamera();
     if (m_timelinePollTimer) {
         m_timelinePollTimer->stop();
+    }
+    if (m_rtcVideoPollTimer) {
+        m_rtcVideoPollTimer->stop();
     }
 
     // Clear the retained passphrase before closing the session.
