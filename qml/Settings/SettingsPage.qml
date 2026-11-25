@@ -322,11 +322,95 @@ Item {
                             spacing: units.gu(1)
                             visible: root.selectedCategory === "General"
 
+                            Component.onCompleted: {
+                                if (root.backend)
+                                    root.backend.refreshLifecycleExemption()
+                            }
+
                             Text {
                                 width: parent.width
-                                text: "General preferences will be available here as Astro develops."
-                                color: root.secondaryText
-                                font.pixelSize: units.gu(1.6)
+                                text: "BACKGROUND ACTIVITY"
+                                color: root.accentColor
+                                font.pixelSize: units.gu(1.4)
+                                font.bold: true
+                            }
+
+                            Rectangle {
+                                width: parent.width
+                                height: units.gu(15)
+                                radius: units.gu(1.5)
+                                color: root.panelColor
+
+                                Row {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: units.gu(2)
+                                    anchors.rightMargin: units.gu(2)
+                                    spacing: units.gu(2)
+
+                                    Column {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: parent.width - units.gu(14)
+                                        spacing: units.gu(0.7)
+
+                                        Text {
+                                            width: parent.width
+                                            text: "Allow Astro to run in the background"
+                                            color: root.primaryText
+                                            font.pixelSize: units.gu(1.8)
+                                            font.bold: true
+                                            wrapMode: Text.WordWrap
+                                        }
+
+                                        Text {
+                                            width: parent.width
+                                            text: "Prevent Ubuntu Touch from suspending Astro when you switch apps or turn off the screen. This may increase battery and data usage."
+                                            color: root.secondaryText
+                                            font.pixelSize: units.gu(1.35)
+                                            wrapMode: Text.WordWrap
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        width: units.gu(11)
+                                        height: units.gu(4.5)
+                                        radius: units.gu(2.25)
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        color: root.backend
+                                               && root.backend.lifecycleExemptionEnabled
+                                               ? root.accentColor : root.raisedColor
+                                        opacity: root.backend ? 1.0 : 0.45
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: root.backend
+                                                  && root.backend.lifecycleExemptionEnabled
+                                                  ? "Enabled" : "Disabled"
+                                            color: root.primaryText
+                                            font.pixelSize: units.gu(1.4)
+                                            font.bold: true
+                                        }
+                                    }
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    enabled: root.backend !== null
+                                    onClicked: {
+                                        root.backend.setLifecycleExemption(
+                                            !root.backend.lifecycleExemptionEnabled
+                                        )
+                                    }
+                                }
+                            }
+
+                            Text {
+                                width: parent.width
+                                visible: root.backend
+                                         && root.backend.lifecycleExemptionError !== ""
+                                text: root.backend
+                                      ? root.backend.lifecycleExemptionError : ""
+                                color: "#ff9b9b"
+                                font.pixelSize: units.gu(1.35)
                                 wrapMode: Text.WordWrap
                             }
                         }
