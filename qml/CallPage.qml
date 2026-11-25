@@ -21,12 +21,6 @@ Item {
     property bool videoStarted: false
 
     signal backRequested()
-    signal remoteVideoFrameReceived(
-        string identity,
-        var data,
-        int width,
-        int height
-    )
     signal remoteVideoCleared(string identity)
 
     readonly property var participants:
@@ -296,17 +290,6 @@ Item {
         target: root.backend
         ignoreUnknownSignals: true
 
-        onMatrixRtcRemoteVideoFrame: {
-            if (roomId === root.roomId) {
-                root.remoteVideoFrameReceived(
-                    identity,
-                    i420,
-                    width,
-                    height
-                )
-            }
-        }
-
         onMatrixRtcAudioEventsUpdated: {
             try {
                 var payload = JSON.parse(json)
@@ -507,21 +490,14 @@ Item {
                         RtcVideoItem {
                             id: remoteVideo
                             anchors.fill: parent
+                            backend: root.backend
+                            roomId: root.roomId
+                            identity: modelData.identity || ""
                             visible: hasFrame
                         }
 
                         Connections {
                             target: root
-
-                            onRemoteVideoFrameReceived: {
-                                if (identity === modelData.identity) {
-                                    remoteVideo.setI420Frame(
-                                        data,
-                                        width,
-                                        height
-                                    )
-                                }
-                            }
 
                             onRemoteVideoCleared: {
                                 if (identity === modelData.identity)
