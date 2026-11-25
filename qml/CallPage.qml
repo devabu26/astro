@@ -304,7 +304,8 @@ Item {
                     if (event.room_id !== root.roomId)
                         continue
 
-                    if (event.type === "track_unsubscribed" ||
+                    if ((event.type === "track_unsubscribed" &&
+                         event.is_camera === true) ||
                             event.type === "participant_disconnected") {
                         root.remoteVideoCleared(event.identity)
                     }
