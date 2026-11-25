@@ -3,6 +3,7 @@
 #include "Backend.h"
 
 #include <QVideoFrame>
+#include <QVideoFilterRunnable>
 #include <QVideoSurfaceFormat>
 #include <QMutexLocker>
 
