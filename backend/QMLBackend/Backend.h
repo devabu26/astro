@@ -76,6 +76,7 @@ public:
     );
 
     Q_INVOKABLE void logoutMatrix();
+    Q_INVOKABLE void refreshMatrixAccountProfile();
     Q_INVOKABLE void setPushToken(const QString &token);
     Q_INVOKABLE void setPushPrivacyLevel(const QString &privacyLevel);
     Q_INVOKABLE void setPushNotificationsEnabled(bool enabled);
@@ -230,6 +231,7 @@ signals:
     // Matrix room and Space signals
     // ---------------------------------------------------------
 
+    void matrixAccountProfileRetrieved(const QString &json, const QString &error);
     void matrixDevicesRetrieved(const QString &json, const QString &error);
     void matrixRoomsRetrieved(const QString &json, bool finished);
 
@@ -422,6 +424,7 @@ signals:
     void requestSetPushNotificationsEnabled(bool enabled);
 
     // Matrix room requests.
+    void requestFetchMatrixAccountProfile();
     void requestFetchMatrixDevices();
     void requestStartDeviceVerification(const QString &deviceId);
     void requestRenameMatrixDevice(const QString &deviceId, const QString &displayName);
