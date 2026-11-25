@@ -349,23 +349,54 @@ bool Backend::refreshLifecycleExemption()
         return false;
     }
 
-    gchar **appIds = g_settings_get_strv(
+    // Do not report the schema default as the live system setting.
+    // In confined Click apps, the dconf user database may be inaccessible;
+    // g_settings_get_strv() can then silently return the schema default.
+    // A user value is required before we can claim the status is known.
+    GVariant *userValue = g_settings_get_user_value(
         settings, kLifecycleKey
     );
 
+    if (!userValue) {
+        g_object_unref(settings);
+        const QString readError = QStringLiteral(
+            "Ubuntu Touch did not expose the saved lifecycle setting to Astro. "
+            "The status cannot be verified; check it in UT Tweak Tool."
+        );
+        setLifecycleExemptionState(false, readError);
+        qWarning() << "No readable user value for Ubuntu Touch lifecycle exemption";
+        return false;
+    }
+
+    if (!g_variant_is_of_type(userValue, G_VARIANT_TYPE_STRING_ARRAY)) {
+        g_variant_unref(userValue);
+        g_object_unref(settings);
+        const QString readError = QStringLiteral(
+            "Ubuntu Touch returned an unexpected value for the lifecycle setting."
+        );
+        setLifecycleExemptionState(false, readError);
+        qWarning() << "Unexpected type for Ubuntu Touch lifecycle exemption setting";
+        return false;
+    }
+
+    gsize appIdCount = 0;
+    const gchar **appIds = g_variant_get_strv(userValue, &appIdCount);
+
     bool enabled = false;
-    for (gchar **entry = appIds; entry && *entry; ++entry) {
-        if (g_strcmp0(*entry, kAstroAppId) == 0) {
+    for (gsize i = 0; i < appIdCount; ++i) {
+        if (g_strcmp0(appIds[i], kAstroAppId) == 0) {
             enabled = true;
             break;
         }
     }
 
-    g_strfreev(appIds);
+    g_free(const_cast<gchar **>(appIds));
+    g_variant_unref(userValue);
     g_object_unref(settings);
 
     qInfo() << "Ubuntu Touch lifecycle exemption for" << kAstroAppId
-            << (enabled ? "is enabled" : "is disabled");
+            << (enabled ? "is enabled" : "is disabled")
+            << "among" << appIdCount << "explicitly saved app IDs";
     setLifecycleExemptionState(enabled, QString());
     return true;
 }
