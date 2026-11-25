@@ -51,6 +51,15 @@ void RtcVideoItem::setIdentity(const QString &identity)
     clearFrame();
 }
 
+void RtcVideoItem::setSource(const QString &source)
+{
+    if (m_source == source)
+        return;
+    m_source = source;
+    m_loggedFirstRemoteFrame = false;
+    clearFrame();
+}
+
 void RtcVideoItem::setBackend(Backend *backend)
 {
     if (m_backend == backend) {
@@ -78,12 +87,13 @@ void RtcVideoItem::setBackend(Backend *backend)
 void RtcVideoItem::receiveRemoteFrame(
     const QString &roomId,
     const QString &identity,
+    const QString &source,
     int width,
     int height,
     const QByteArray &i420
 )
 {
-    if (roomId != m_roomId || identity != m_identity) {
+    if (roomId != m_roomId || identity != m_identity || source != m_source) {
         return;
     }
 

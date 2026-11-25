@@ -497,10 +497,11 @@ void StorageWorker::pollRtcRemoteVideoFrames()
             astro_string_free(frameError);
         }
 
-        if (frame->room_id && frame->identity && frame->data &&
+        if (frame->room_id && frame->identity && frame->source && frame->data &&
             frame->len <= static_cast<uintptr_t>(std::numeric_limits<int>::max())) {
             const QString roomId = QString::fromUtf8(frame->room_id);
             const QString identity = QString::fromUtf8(frame->identity);
+            const QString source = QString::fromUtf8(frame->source);
             const QByteArray i420(
                 reinterpret_cast<const char *>(frame->data),
                 static_cast<int>(frame->len)
@@ -518,6 +519,7 @@ void StorageWorker::pollRtcRemoteVideoFrames()
             emit matrixRtcRemoteVideoFrame(
                 roomId,
                 identity,
+                source,
                 static_cast<int>(frame->width),
                 static_cast<int>(frame->height),
                 i420

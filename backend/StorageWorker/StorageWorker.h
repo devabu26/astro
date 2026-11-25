@@ -5,6 +5,7 @@
 #include <QString>
 #include <QByteArray>
 #include <QTimer>
+#include <QProcess>
 #include <QMutex>
 #include <QCamera>
 #include <cstdint>
@@ -106,6 +107,8 @@ public slots:
 
     // ASTRO_RTC_VIDEO_STAGE3
     void startRtcVideo(const QString &roomId, int width, int height);
+    void startRtcScreenShare(const QString &roomId, int width, int height);
+    void stopRtcScreenShare(const QString &roomId);
     // Called directly by the Qt Quick video-filter render thread while its GL context is current.
     void processRtcCameraFrame(const QVideoFrame &frame);
     void processRtcCameraImage(const QString &roomId, const QImage &image);
@@ -430,6 +433,7 @@ signals:
 
 private:
     void stopRtcCamera();
+    void stopRtcScreenShareCapture();
 
     /*
      * Common signature for Rust verification actions.
@@ -468,6 +472,10 @@ private:
     QCamera *m_rtcCamera = nullptr;
     RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
     QString m_rtcVideoRoomId;
+    QProcess *m_rtcScreenShareProcess = nullptr;
+    QString m_rtcScreenShareRoomId;
+    QByteArray m_rtcScreenShareBuffer;
+    bool m_stoppingRtcScreenShare = false;
 
     // Retained push notification configuration.
     QByteArray m_pushToken;
