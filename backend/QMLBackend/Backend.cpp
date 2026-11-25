@@ -273,7 +273,7 @@ namespace {
 
 static const char kLifecycleSchema[] = "com.canonical.qtmir";
 static const char kLifecycleKey[] = "lifecycle-exempt-appids";
-static const char kAstroAppId[] = "astro.madabu";
+static const char kAstroAppId[] = "astro.madabu_astro";
 
 GSettings *createLifecycleSettings(QString *error)
 {
@@ -364,6 +364,8 @@ bool Backend::refreshLifecycleExemption()
     g_strfreev(appIds);
     g_object_unref(settings);
 
+    qInfo() << "Ubuntu Touch lifecycle exemption for" << kAstroAppId
+            << (enabled ? "is enabled" : "is disabled");
     setLifecycleExemptionState(enabled, QString());
     return true;
 }
