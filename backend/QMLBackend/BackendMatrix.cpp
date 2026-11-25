@@ -497,6 +497,10 @@ void Backend::startRtcScreenShare(
     int height
 )
 {
+    qInfo() << "ASTRO_SCREEN_SHARE: backend request received"
+            << "storageReady:" << m_storageReady
+            << "roomIdEmpty:" << roomId.isEmpty()
+            << "size:" << width << "x" << height;
     if (!m_storageReady || roomId.isEmpty()) {
         emit matrixRtcScreenShareActionFinished(
             roomId,
