@@ -6,6 +6,78 @@ Item {
 
     property var backend
 
+    property string matrixUserId: ""
+    property string matrixDisplayName: ""
+    property string matrixAvatarData: ""
+    property string profileError: ""
+    property bool profileLoading: false
+
+    function refreshAccountProfile() {
+        if (!root.backend)
+            return
+
+        root.profileLoading = true
+        root.profileError = ""
+        root.backend.refreshMatrixAccountProfile()
+    }
+
+    Component.onCompleted: refreshAccountProfile()
+
+    onVisibleChanged: {
+        if (visible)
+            refreshAccountProfile()
+    }
+
+    Connections {
+        target: root.backend
+
+        onMatrixAccountProfileRetrieved: {
+            root.profileLoading = false
+            root.profileError = ""
+
+            if (error !== "") {
+                root.profileError = error
+                return
+            }
+
+            try {
+                var profile = JSON.parse(json || "{}")
+                root.matrixUserId = profile.user_id || ""
+                root.matrixDisplayName =
+                    profile.display_name || root.matrixUserId
+                root.matrixAvatarData = ""
+
+                if (profile.avatar_url && root.backend)
+                    root.backend.requestSenderAvatar(
+                        "account-profile",
+                        profile.avatar_url,
+                        128,
+                        128
+                    )
+            } catch (parseError) {
+                root.profileError = "Could not read your Matrix account profile."
+                console.warn("ASTRO: Could not parse Matrix account profile:", parseError)
+            }
+        }
+
+        onSenderAvatarRetrieved: {
+            if (requestKey === "account-profile")
+                root.matrixAvatarData = dataUrl
+        }
+
+        onSenderAvatarFailed: {
+            if (requestKey === "account-profile")
+                root.matrixAvatarData = ""
+        }
+
+        onMatrixLogoutSucceeded: {
+            root.matrixUserId = ""
+            root.matrixDisplayName = ""
+            root.matrixAvatarData = ""
+            root.profileError = ""
+        }
+    }
+
     Column {
         anchors {
             left: parent.left
@@ -29,28 +101,93 @@ Item {
 
         Rectangle {
             width: parent.width
-            height: units.gu(12)
+            height: Math.max(units.gu(17), accountProfileContent.height + units.gu(4))
             radius: units.gu(2)
             color: "#1b2935"
 
-            Column {
+            Row {
+                id: accountProfileContent
                 anchors {
-                    fill: parent
+                    left: parent.left
+                    right: parent.right
+                    verticalCenter: parent.verticalCenter
                     margins: units.gu(2)
                 }
+                spacing: units.gu(2)
 
-                spacing: units.gu(1)
+                Rectangle {
+                    width: units.gu(9)
+                    height: width
+                    radius: width / 2
+                    color: "#344451"
+                    clip: true
 
-                Label {
-                    text: "Matrix account"
-                    color: "white"
-                    font.bold: true
+                    Image {
+                        anchors.fill: parent
+                        source: root.matrixAvatarData
+                        visible: source !== ""
+                        fillMode: Image.PreserveAspectCrop
+                        smooth: true
+                    }
+
+                    Label {
+                        anchors.centerIn: parent
+                        visible: root.matrixAvatarData === ""
+                        text: root.matrixDisplayName.length > 0
+                              ? root.matrixDisplayName.charAt(0).toUpperCase()
+                              : "?"
+                        color: "white"
+                        fontSize: "x-large"
+                    }
                 }
 
-                Label {
-                    text: "Account information will appear here."
-                    color: "#91a4b5"
-                    wrapMode: Text.WordWrap
+                Column {
+                    width: parent.width - units.gu(11)
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: units.gu(0.7)
+
+                    Label {
+                        text: "Matrix account"
+                        color: "#a78bfa"
+                        fontSize: "small"
+                    }
+
+                    Label {
+                        width: parent.width
+                        text: root.matrixDisplayName !== ""
+                              ? root.matrixDisplayName
+                              : (root.profileLoading
+                                 ? "Loading account…"
+                                 : "Account profile unavailable")
+                        color: "white"
+                        fontSize: "large"
+                        wrapMode: Text.WordWrap
+                    }
+
+                    Label {
+                        width: parent.width
+                        text: root.matrixUserId
+                        color: "#91a4b5"
+                        wrapMode: Text.WordWrap
+                        visible: text !== ""
+                    }
+
+                    Label {
+                        width: parent.width
+                        text: root.profileError
+                        color: "#ff8585"
+                        wrapMode: Text.WordWrap
+                        visible: text !== ""
+                    }
+
+                    Button {
+                        text: root.profileLoading
+                              ? "Refreshing…"
+                              : "Refresh account profile"
+                        color: "#385267"
+                        enabled: !root.profileLoading
+                        onClicked: root.refreshAccountProfile()
+                    }
                 }
             }
         }
