@@ -2613,7 +2613,7 @@ impl MatrixClientManager {
                 true,
             );
 
-            let track = LocalVideoTrack::create_screen_share_track(
+            let track = LocalVideoTrack::create_video_track(
                 "screen_share",
                 RtcVideoSource::Native(source.clone()),
             );

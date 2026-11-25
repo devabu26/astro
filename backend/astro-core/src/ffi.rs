@@ -1657,6 +1657,7 @@ pub unsafe extern "C" fn astro_matrix_poll_rtc_audio_events_json(
 pub struct AstroRtcVideoFrame {
     pub room_id: *mut c_char,
     pub identity: *mut c_char,
+    pub source: *mut c_char,
     pub width: u32,
     pub height: u32,
     pub data: *mut u8,
@@ -1682,7 +1683,7 @@ pub unsafe extern "C" fn astro_matrix_take_rtc_video_frame(
     }));
 
     match result {
-        Ok(Some((room_id, identity, width, height, data))) => {
+        Ok(Some((room_id, identity, source, width, height, data))) => {
             let room_id = match CString::new(room_id) {
                 Ok(value) => value.into_raw(),
                 Err(_) => {
@@ -1698,12 +1699,24 @@ pub unsafe extern "C" fn astro_matrix_take_rtc_video_frame(
                     return ptr::null_mut();
                 }
             };
+            let source = match CString::new(source) {
+                Ok(value) => value.into_raw(),
+                Err(_) => {
+                    unsafe {
+                        drop(CString::from_raw(room_id));
+                        drop(CString::from_raw(identity));
+                    }
+                    set_error(error_out, "Video frame source contained a null byte");
+                    return ptr::null_mut();
+                }
+            };
             let mut data = data.into_boxed_slice();
             let len = data.len();
             let data_ptr = Box::into_raw(data) as *mut u8;
             Box::into_raw(Box::new(AstroRtcVideoFrame {
                 room_id,
                 identity,
+                source,
                 width,
                 height,
                 data: data_ptr,
@@ -1731,6 +1744,9 @@ pub unsafe extern "C" fn astro_matrix_rtc_video_frame_free(
     }
     if !frame.identity.is_null() {
         unsafe { drop(CString::from_raw(frame.identity)); }
+    }
+    if !frame.source.is_null() {
+        unsafe { drop(CString::from_raw(frame.source)); }
     }
     if !frame.data.is_null() {
         let slice = ptr::slice_from_raw_parts_mut(frame.data, frame.len);
