@@ -273,7 +273,7 @@ namespace {
 
 static const char kLifecycleSchema[] = "com.canonical.qtmir";
 static const char kLifecycleKey[] = "lifecycle-exempt-appids";
-static const char kAstroAppId[] = "astro.madabu_astro";
+static const char kAstroAppId[] = "astro.madabu";
 
 GSettings *createLifecycleSettings(QString *error)
 {
