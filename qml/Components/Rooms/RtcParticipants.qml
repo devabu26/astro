@@ -11,17 +11,22 @@ Item {
     property var callState: ({})
     property bool expanded: false
     property bool actionPending: false
+    property bool pendingMembershipValue: false
+    property var membershipOverride: null
     property string actionError: ""
 
 
     readonly property bool joinedByMe:
-        callState.joinedByMe === true
+        membershipOverride === null
+            ? callState.joinedByMe === true
+            : membershipOverride === true
 
     function performRtcAction() {
         if (actionPending || !backend || !roomId)
             return
 
         actionError = ""
+        pendingMembershipValue = !joinedByMe
         actionPending = true
 
         if (joinedByMe)
@@ -32,8 +37,16 @@ Item {
 
     onRoomIdChanged: {
         actionPending = false
+        pendingMembershipValue = false
+        membershipOverride = null
         actionError = ""
         expanded = false
+    }
+
+    onCallStateChanged: {
+        if (membershipOverride !== null &&
+                callState.joinedByMe === (membershipOverride === true))
+            membershipOverride = null
     }
 
     Connections {
@@ -41,14 +54,20 @@ Item {
         ignoreUnknownSignals: true
 
         onMatrixRtcActionFinished: {
-            if (roomId !== root.roomId)
+            if (roomId !== root.roomId || !root.actionPending)
                 return
 
             root.actionPending = false
             root.actionError = error || ""
 
-            if (root.actionError.length > 0)
+            if (root.actionError.length > 0) {
+                root.membershipOverride = null
                 root.expanded = true
+            } else {
+                root.membershipOverride =
+                    root.callState.joinedByMe === root.pendingMembershipValue
+                        ? null : root.pendingMembershipValue
+            }
         }
     }
 

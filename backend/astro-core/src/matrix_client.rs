@@ -3060,6 +3060,9 @@ impl MatrixClientManager {
             renewals.remove(room_id);
         }
 
+        // Force the next membership poll to publish the cleared state to QML.
+        self.rtc_last_snapshots.remove(room_id);
+
         let _ = state_key;
         Ok(())
     }

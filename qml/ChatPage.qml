@@ -464,7 +464,8 @@ function loadRooms(json, finished) {
                             name: event.name || event.identity || "Participant",
                             speaking: event.speaking === true,
                             audioLevel: Number(event.audio_level || 0),
-                            hasTrack: false
+                            hasTrack: participantIndex >= 0 &&
+                                      participants[participantIndex].hasTrack === true
                         }
 
                         if (participantIndex >= 0)
@@ -479,6 +480,16 @@ function loadRooms(json, finished) {
                     } else if (event.type === "track_subscribed") {
                         if (participantIndex >= 0) {
                             participants[participantIndex].hasTrack = true
+                        } else if (event.identity) {
+                            // A camera subscription is itself authoritative evidence
+                            // of a participant. Do not depend on event ordering.
+                            participants.push({
+                                identity: event.identity,
+                                name: event.name || event.identity,
+                                speaking: false,
+                                audioLevel: 0,
+                                hasTrack: true
+                            })
                         }
 
                     } else if (event.type === "track_unsubscribed") {

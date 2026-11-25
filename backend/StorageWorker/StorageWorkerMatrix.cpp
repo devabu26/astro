@@ -9,6 +9,8 @@
 #include <QCameraInfo>
 #include <QImage>
 #include <QVideoSurfaceFormat>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
 #include <cstring>
 
 #include <QByteArray>
@@ -723,6 +725,95 @@ void StorageWorker::startRtcAudio(const QString &roomId)
     emit matrixRtcAudioActionFinished(roomId, errorMessage);
 }
 
+// Read back Qt's GLTextureHandle camera frames while their producer context is current.
+// QVideoFrame::map() is not available for GL-backed buffers.
+static bool readGlCameraFrame(const QVideoFrame &frame, QImage *image)
+{
+    if (!image || frame.handleType() != QAbstractVideoBuffer::GLTextureHandle ||
+        frame.pixelFormat() != QVideoFrame::Format_RGB32)
+        return false;
+
+    bool handleOk = false;
+    const GLuint texture = frame.handle().toUInt(&handleOk);
+    if (!handleOk || texture == 0)
+        return false;
+
+    QOpenGLContext *context = QOpenGLContext::currentContext();
+    if (!context)
+        return false;
+
+    QOpenGLFunctions *gl = context->functions();
+    if (!gl)
+        return false;
+
+    while (gl->glGetError() != GL_NO_ERROR) { }
+
+    GLint previousFramebuffer = 0;
+    GLint previousPackAlignment = 4;
+    gl->glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
+    gl->glGetIntegerv(GL_PACK_ALIGNMENT, &previousPackAlignment);
+
+    GLuint framebuffer = 0;
+    gl->glGenFramebuffers(1, &framebuffer);
+    if (framebuffer == 0)
+        return false;
+
+    gl->glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    gl->glFramebufferTexture2D(
+        GL_FRAMEBUFFER,
+        GL_COLOR_ATTACHMENT0,
+        GL_TEXTURE_2D,
+        texture,
+        0
+    );
+
+    const GLenum framebufferStatus = gl->glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    bool readOk = framebufferStatus == GL_FRAMEBUFFER_COMPLETE;
+    QByteArray pixels;
+
+    if (readOk) {
+        const int width = frame.width();
+        const int height = frame.height();
+        pixels.resize(width * height * 4);
+        gl->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        gl->glReadPixels(
+            0, 0, width, height,
+            GL_RGBA, GL_UNSIGNED_BYTE,
+            pixels.data()
+        );
+        readOk = gl->glGetError() == GL_NO_ERROR;
+    }
+
+    gl->glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFramebuffer));
+    gl->glPixelStorei(GL_PACK_ALIGNMENT, previousPackAlignment);
+    gl->glDeleteFramebuffers(1, &framebuffer);
+
+    if (!readOk)
+        return false;
+
+    const int width = frame.width();
+    const int height = frame.height();
+    QImage result(width, height, QImage::Format_RGB32);
+    if (result.isNull())
+        return false;
+
+    // OpenGL's origin is bottom-left; QImage's is top-left.
+    for (int y = 0; y < height; ++y) {
+        const uchar *source = reinterpret_cast<const uchar *>(pixels.constData())
+            + (height - 1 - y) * width * 4;
+        QRgb *destination = reinterpret_cast<QRgb *>(result.scanLine(y));
+        for (int x = 0; x < width; ++x) {
+            const int offset = x * 4;
+            destination[x] = qRgb(
+                source[offset], source[offset + 1], source[offset + 2]
+            );
+        }
+    }
+
+    *image = result;
+    return true;
+}
+
 // ASTRO_RTC_VIDEO_STAGE3
 class RtcCameraVideoSurface : public QAbstractVideoSurface
 {
@@ -744,6 +835,9 @@ public:
             QAbstractVideoBuffer::NoHandle
     ) const override
     {
+        if (type == QAbstractVideoBuffer::GLTextureHandle)
+            return { QVideoFrame::Format_RGB32 };
+
         if (type != QAbstractVideoBuffer::NoHandle)
             return {};
 
@@ -769,8 +863,9 @@ public:
         qInfo() << "RTC camera negotiated format:"
                 << format.pixelFormat()
                 << format.frameSize()
+                << "surface handle:" << format.handleType()
                 << "surface started:" << started
-                << "surface error:" << errorString();
+                << "surface error code:" << static_cast<int>(error());
         return started;
     }
 
@@ -804,8 +899,22 @@ public:
             return false;
         }
 
+        const bool glTextureFrame =
+            frame.handleType() == QAbstractVideoBuffer::GLTextureHandle;
         QVideoFrame mapped(frame);
-        if (!mapped.map(QAbstractVideoBuffer::ReadOnly)) {
+        QImage glFrameImage;
+
+        if (glTextureFrame) {
+            if (!readGlCameraFrame(frame, &glFrameImage)) {
+                if (m_loggedMapFailure.testAndSetOrdered(0, 1)) {
+                    qWarning() << "RTC camera could not read GL texture frame:"
+                               << width << "x" << height
+                               << "format:" << format
+                               << "texture:" << frame.handle();
+                }
+                return false;
+            }
+        } else if (!mapped.map(QAbstractVideoBuffer::ReadOnly)) {
             if (m_loggedMapFailure.testAndSetOrdered(0, 1))
                 qWarning() << "RTC camera could not map first frame:"
                            << width << "x" << height
@@ -816,7 +925,8 @@ public:
         }
 
         if (!m_pending->testAndSetOrdered(0, 1)) {
-            mapped.unmap();
+            if (mapped.isMapped())
+                mapped.unmap();
             return true;
         }
 
@@ -827,7 +937,7 @@ public:
         uchar *uOut = yOut + ySize;
         uchar *vOut = uOut + chromaSize;
         bool converted = false;
-        const int sourcePlaneCount = mapped.planeCount();
+        const int sourcePlaneCount = glTextureFrame ? 0 : mapped.planeCount();
         QImage::Format fallbackImageFormat = QImage::Format_Invalid;
         int fallbackStride = 0;
         bool fallbackHasBits = false;
@@ -945,21 +1055,28 @@ public:
                 converted = true;
             }
         } else {
-            const QImage::Format imageFormat =
-                QVideoFrame::imageFormatFromPixelFormat(format);
+            const QImage::Format imageFormat = glTextureFrame
+                ? QImage::Format_RGB32
+                : QVideoFrame::imageFormatFromPixelFormat(format);
             fallbackImageFormat = imageFormat;
-            fallbackStride = mapped.bytesPerLine(0);
-            fallbackHasBits = mapped.bits(0) != nullptr;
+            fallbackStride = glTextureFrame
+                ? glFrameImage.bytesPerLine()
+                : mapped.bytesPerLine(0);
+            fallbackHasBits = glTextureFrame
+                ? !glFrameImage.isNull()
+                : mapped.bits(0) != nullptr;
             if (imageFormat != QImage::Format_Invalid &&
                 fallbackHasBits &&
                 fallbackStride > 0) {
-                const QImage source(
-                    mapped.bits(0),
-                    width,
-                    height,
-                    mapped.bytesPerLine(0),
-                    imageFormat
-                );
+                const QImage source = glTextureFrame
+                    ? glFrameImage
+                    : QImage(
+                        mapped.bits(0),
+                        width,
+                        height,
+                        mapped.bytesPerLine(0),
+                        imageFormat
+                    );
                 const QImage rgb = source.convertToFormat(QImage::Format_RGB32);
 
                 if (!rgb.isNull()) {
@@ -1017,7 +1134,8 @@ public:
             }
         }
 
-        mapped.unmap();
+        if (mapped.isMapped())
+            mapped.unmap();
 
         if (!converted) {
             if (m_loggedUnsupportedFormat.testAndSetOrdered(0, 1)) {
