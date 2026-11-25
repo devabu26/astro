@@ -357,6 +357,14 @@ Backend::Backend(QObject *parent)
         Qt::QueuedConnection
     );
 
+    connect(
+        this,
+        &Backend::requestSwitchRtcCamera,
+        m_storageWorker,
+        &StorageWorker::switchRtcCamera,
+        Qt::QueuedConnection
+    );
+
    connect(
        this,
        &Backend::requestStopRtcAudio,
