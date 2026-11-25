@@ -25,6 +25,7 @@ Item {
     property string selectedRoom: "Welcome to Astro"
     property string selectedPreview: "Your Matrix client starts here."
     property string selectedRoomAvatarUrl: ""
+    property string selectedRoomKind: ""
 
     // MatrixRTC membership snapshots, indexed by room ID.
     property var rtcMembershipsByRoom: ({})
@@ -146,6 +147,7 @@ function openNotification(roomId, eventId) {
         root.selectedRoom = room.name
         root.selectedPreview = room.preview
         root.selectedRoomAvatarUrl = room.avatarUrl || ""
+        root.selectedRoomKind = room.kind || "room"
         found = true
         break
     }
@@ -156,6 +158,7 @@ function openNotification(roomId, eventId) {
         root.selectedRoom = roomId
         root.selectedPreview = ""
         root.selectedRoomAvatarUrl = ""
+        root.selectedRoomKind = "room"
     }
 
     root.showConversation = true
@@ -1038,11 +1041,14 @@ function loadRooms(json, finished) {
                             root.selectedRoom = name
                             root.selectedPreview = preview
                             root.selectedRoomAvatarUrl = ""
+                            root.selectedRoomKind = "room"
 
                             for (var i = 0; i < roomModel.count; i++) {
                                 if (roomModel.get(i).roomId === roomId) {
                                     root.selectedRoomAvatarUrl =
                                         roomModel.get(i).avatarUrl
+                                    root.selectedRoomKind =
+                                        roomModel.get(i).kind || "room"
                                     break
                                 }
                             }
