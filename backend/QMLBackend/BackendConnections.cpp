@@ -6,6 +6,7 @@
 
 #include <QCoreApplication>
 #include <QGuiApplication>
+#include <QGuiApplication>
 #include <QOpenGLContext>
 #include <QOffscreenSurface>
 #include <QSurfaceFormat>
@@ -48,6 +49,19 @@ Backend::Backend(QObject *parent)
     );
 
     m_notificationManager = new NotificationManager(this);
+
+    if (qGuiApp) {
+        connect(
+            qGuiApp,
+            &QGuiApplication::applicationStateChanged,
+            this,
+            [this](Qt::ApplicationState state) {
+                emit applicationActiveChanged(
+                    state == Qt::ApplicationActive
+                );
+            }
+        );
+    }
 
     // ---------------------------------------------------------
     // Create the dedicated storage thread and worker.
@@ -408,6 +422,22 @@ Backend::Backend(QObject *parent)
         &Backend::requestStopRtcVideo,
         m_storageWorker,
         &StorageWorker::stopRtcVideo,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestStartRtcBackgroundCamera,
+        m_storageWorker,
+        &StorageWorker::startRtcBackgroundCamera,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestStopRtcBackgroundCamera,
+        m_storageWorker,
+        &StorageWorker::stopRtcBackgroundCamera,
         Qt::QueuedConnection
     );
 
