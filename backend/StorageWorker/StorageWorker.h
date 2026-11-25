@@ -493,6 +493,8 @@ private:
     QCamera *m_rtcCamera = nullptr;
     RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
     QString m_rtcVideoRoomId;
+    int m_rtcVideoWidth = 0;
+    int m_rtcVideoHeight = 0;
     QString m_rtcScreenShareRoomId;
     MirConnection *m_rtcScreenShareConnection = nullptr;
     MirScreencast *m_rtcScreenCast = nullptr;
