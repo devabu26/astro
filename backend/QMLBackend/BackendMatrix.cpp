@@ -422,12 +422,57 @@ void Backend::leaveRtcRoom(const QString &roomId)
 }
 
 
-void Backend::requestRtcLiveKitCredentials(const QString &roomId)
+void Backend::startRtcAudio(const QString &roomId)
 {
     if (!m_storageReady || roomId.isEmpty()) {
-        emit matrixRtcCredentialsReady(
+        emit matrixRtcAudioActionFinished(
             roomId,
-            QString(),
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+    emit requestStartRtcAudio(roomId);
+}
+
+void Backend::stopRtcAudio(const QString &roomId)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcAudioActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+    emit requestStopRtcAudio(roomId);
+}
+
+void Backend::setRtcAudioMuted(const QString &roomId, bool muted)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcAudioActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+    emit requestSetRtcAudioMuted(roomId, muted);
+}
+
+void Backend::startRtcVideo(
+    const QString &roomId,
+    int width,
+    int height
+)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
             !m_storageReady
                 ? QStringLiteral("Encrypted storage is not open")
                 : QStringLiteral("Room ID is empty")
@@ -435,7 +480,30 @@ void Backend::requestRtcLiveKitCredentials(const QString &roomId)
         return;
     }
 
-    emit requestRtcLiveKitCredentialsWorker(roomId);
+    if (width < 2 || height < 2) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            QStringLiteral("Invalid video dimensions")
+        );
+        return;
+    }
+
+    emit requestStartRtcVideo(roomId, width, height);
+}
+
+void Backend::stopRtcVideo(const QString &roomId)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    emit requestStopRtcVideo(roomId);
 }
 
 void Backend::toggleRoomReaction(

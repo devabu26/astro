@@ -216,9 +216,47 @@ char *astro_matrix_poll_room_timeline_updates_json(
 
 int32_t astro_matrix_join_rtc_room(AstroMatrixClient *handle, const char *room_id, char **error_out);
 int32_t astro_matrix_leave_rtc_room(AstroMatrixClient *handle, const char *room_id, char **error_out);
-char *astro_matrix_rtc_livekit_credentials_json(
+int32_t astro_matrix_start_rtc_audio(
     AstroMatrixClient *handle,
     const char *room_id,
+    char **error_out
+);
+/* ASTRO_RTC_VIDEO_STAGE1 */
+int32_t astro_matrix_start_rtc_video(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    uint32_t width,
+    uint32_t height,
+    char **error_out
+);
+/* ASTRO_RTC_VIDEO_STAGE2 */
+int32_t astro_matrix_push_rtc_video_frame(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    uint32_t width,
+    uint32_t height,
+    const uint8_t *frame_data,
+    uint64_t frame_data_len,
+    char **error_out
+);
+int32_t astro_matrix_stop_rtc_video(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    char **error_out
+);
+int32_t astro_matrix_stop_rtc_audio(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    char **error_out
+);
+int32_t astro_matrix_set_rtc_audio_muted(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    int32_t muted,
+    char **error_out
+);
+char *astro_matrix_poll_rtc_audio_events_json(
+    AstroMatrixClient *handle,
     char **error_out
 );
 char *astro_matrix_poll_rtc_memberships_json(

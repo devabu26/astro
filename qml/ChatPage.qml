@@ -30,6 +30,9 @@ Item {
     property var rtcMembershipsByRoom: ({})
     property var rtcCallStatesByRoom: ({})
 
+    // LiveKit audio state and participants, indexed by room ID.
+    property var rtcAudioStatesByRoom: ({})
+
     // Notification navigation request passed to RoomView.
     property string pendingNotificationEventId: ""
     property int notificationRequestSerial: 0
@@ -407,6 +410,147 @@ function loadRooms(json, finished) {
                     error
                 )
             }
+        }
+
+        onMatrixRtcAudioEventsUpdated: {
+            try {
+                var result = JSON.parse(json)
+                var events = result.events || []
+                var updatedStates = ({})
+
+                for (var roomId in root.rtcAudioStatesByRoom) {
+                    var previous = root.rtcAudioStatesByRoom[roomId]
+                    updatedStates[roomId] = {
+                        active: previous.active === true,
+                        reconnecting: previous.reconnecting === true,
+                        connectionState: previous.connectionState || "",
+                        participants: (previous.participants || []).slice(0),
+                        lastError: previous.lastError || ""
+                    }
+                }
+
+                for (var i = 0; i < events.length; i++) {
+                    var event = events[i]
+                    var eventRoomId = event.room_id
+
+                    if (!eventRoomId)
+                        continue
+
+                    if (!updatedStates[eventRoomId]) {
+                        updatedStates[eventRoomId] = {
+                            active: false,
+                            reconnecting: false,
+                            connectionState: "",
+                            participants: [],
+                            lastError: ""
+                        }
+                    }
+
+                    var state = updatedStates[eventRoomId]
+                    var participants = state.participants
+                    var participantIndex = -1
+
+                    for (var p = 0; p < participants.length; p++) {
+                        if (participants[p].identity === event.identity) {
+                            participantIndex = p
+                            break
+                        }
+                    }
+
+                    if (event.type === "participant_connected" ||
+                            event.type === "participant_active") {
+                        var participant = {
+                            identity: event.identity || "",
+                            name: event.name || event.identity || "Participant",
+                            speaking: event.speaking === true,
+                            audioLevel: Number(event.audio_level || 0),
+                            hasTrack: false
+                        }
+
+                        if (participantIndex >= 0)
+                            participants[participantIndex] = participant
+                        else
+                            participants.push(participant)
+
+                    } else if (event.type === "participant_disconnected") {
+                        if (participantIndex >= 0)
+                            participants.splice(participantIndex, 1)
+
+                    } else if (event.type === "track_subscribed") {
+                        if (participantIndex >= 0) {
+                            participants[participantIndex].hasTrack = true
+                        }
+
+                    } else if (event.type === "track_unsubscribed") {
+                        if (participantIndex >= 0) {
+                            participants[participantIndex].hasTrack = false
+                        }
+
+                    } else if (event.type === "reconnecting") {
+                        state.reconnecting = true
+
+                    } else if (event.type === "reconnected") {
+                        state.reconnecting = false
+                        state.active = true
+
+                    } else if (event.type === "connection_state_changed") {
+                        state.connectionState = event.state || ""
+                        var connectionState =
+                            String(event.state || "").toLowerCase()
+
+                        if (connectionState.indexOf("connected") >= 0) {
+                            state.active = true
+                            state.reconnecting = false
+                        } else if (connectionState.indexOf("disconnected") >= 0) {
+                            state.active = false
+                            state.reconnecting = false
+                        }
+
+                    } else if (event.type === "disconnected") {
+                        state.active = false
+                        state.reconnecting = false
+                        state.connectionState = "Disconnected"
+                        state.participants = []
+                    }
+                }
+
+                if (events.length > 0)
+                    root.rtcAudioStatesByRoom = updatedStates
+
+            } catch (error) {
+                console.warn(
+                    "ASTRO: Could not process LiveKit audio events:",
+                    error
+                )
+            }
+        }
+
+        onMatrixRtcAudioActionFinished: {
+            var updatedStates = ({})
+
+            for (var existingRoomId in root.rtcAudioStatesByRoom) {
+                var previous = root.rtcAudioStatesByRoom[existingRoomId]
+                updatedStates[existingRoomId] = {
+                    active: previous.active === true,
+                    reconnecting: previous.reconnecting === true,
+                    connectionState: previous.connectionState || "",
+                    participants: (previous.participants || []).slice(0),
+                    lastError: previous.lastError || ""
+                }
+            }
+
+            if (!updatedStates[roomId]) {
+                updatedStates[roomId] = {
+                    active: false,
+                    reconnecting: false,
+                    connectionState: "",
+                    participants: [],
+                    lastError: ""
+                }
+            }
+
+            updatedStates[roomId].lastError = error || ""
+            root.rtcAudioStatesByRoom = updatedStates
         }
 
     }
@@ -928,6 +1072,8 @@ function loadRooms(json, finished) {
                     root.rtcMembershipsByRoom[root.selectedRoomId] || []
                 rtcCallState:
                     root.rtcCallStatesByRoom[root.selectedRoomId] || ({})
+                rtcAudioState:
+                    root.rtcAudioStatesByRoom[root.selectedRoomId] || ({})
 
                 avatarFallbackColour: {
                        for (var i = 0; i < roomModel.count; i++) {
@@ -944,6 +1090,15 @@ function loadRooms(json, finished) {
 
                 onBackRequested: {
                     root.showConversation = false
+                }
+
+                onCallRequested: {
+                    if (!root.mainRoot)
+                        return
+
+                    root.mainRoot.callRoomId = roomId
+                    root.mainRoot.callRoomName = roomName
+                    root.mainRoot.showingCallPage = true
                 }
             }
         }

@@ -113,7 +113,16 @@ public:
     Q_INVOKABLE void sendRoomMessage(const QString &roomId, const QString &message);
     Q_INVOKABLE void joinRtcRoom(const QString &roomId);
     Q_INVOKABLE void leaveRtcRoom(const QString &roomId);
-    Q_INVOKABLE void requestRtcLiveKitCredentials(const QString &roomId);
+    Q_INVOKABLE void startRtcAudio(const QString &roomId);
+    Q_INVOKABLE void stopRtcAudio(const QString &roomId);
+    Q_INVOKABLE void setRtcAudioMuted(const QString &roomId, bool muted);
+
+    Q_INVOKABLE void startRtcVideo(
+        const QString &roomId,
+        int width,
+        int height
+    );
+    Q_INVOKABLE void stopRtcVideo(const QString &roomId);
 
     Q_INVOKABLE void sendRoomAttachment(
         const QString &requestKey,
@@ -243,9 +252,13 @@ signals:
     // MatrixRTC membership snapshots, separate from timeline notifications.
     void matrixRtcMembershipsUpdated(const QString &json);
     void matrixRtcActionFinished(const QString &roomId, const QString &error);
-    void matrixRtcCredentialsReady(
+
+    // LiveKit audio/camera events and actions are separate from MatrixRTC presence.
+    void matrixRtcAudioEventsUpdated(const QString &json);
+    void matrixRtcAudioActionFinished(const QString &roomId, const QString &error);
+
+    void matrixRtcVideoActionFinished(
         const QString &roomId,
-        const QString &credentialsJson,
         const QString &error
     );
 
@@ -371,7 +384,13 @@ signals:
     void requestSendRoomMessage(const QString &roomId, const QString &message);
     void requestJoinRtcRoom(const QString &roomId);
     void requestLeaveRtcRoom(const QString &roomId);
-    void requestRtcLiveKitCredentialsWorker(const QString &roomId);
+    void requestStartRtcAudio(const QString &roomId);
+    void requestStopRtcAudio(const QString &roomId);
+    void requestSetRtcAudioMuted(const QString &roomId, bool muted);
+
+   // ASTRO_RTC_VIDEO_STAGE3
+   void requestStartRtcVideo(const QString &roomId, int width, int height);
+   void requestStopRtcVideo(const QString &roomId);
 
     void requestSendRoomAttachment(
         const QString &requestKey,

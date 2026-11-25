@@ -8,9 +8,10 @@ import "Components/Rooms"
 Item {
     id: root
 
-    // Current MatrixRTC memberships for this room.
+    // Current MatrixRTC memberships and LiveKit state for this room.
     property var rtcMemberships: []
     property var rtcCallState: ({})
+    property var rtcAudioState: ({})
 
     onRtcMembershipsChanged: root.requestRtcParticipantAvatars()
 
@@ -452,6 +453,7 @@ Item {
     }
 
     signal backRequested()
+    signal callRequested(string roomId, string roomName)
     signal sendMessageRequested(string roomId, string message)
 
     property var fullscreenVideoOutput: null
@@ -527,6 +529,7 @@ Item {
         // Resuming the same video does not require a new renderer.
         if (sameVideo &&
                 root.roomSharedVideoOutput &&
+                root.roomSharedVideoPlayer &&
                 root.roomSharedVideoPlayer.source.toString() === fileUrl) {
             root.roomSharedVideoOutput.parent = outputHost
             root.roomSharedVideoOutput.visible = true
@@ -580,7 +583,8 @@ Item {
         root.pendingSharedVideoHost = null
         root.pendingSharedVideoOwner = null
 
-        root.roomSharedVideoPlayer.stop()
+        if (root.roomSharedVideoPlayer)
+            root.roomSharedVideoPlayer.stop()
 
 
         // Retain the VideoOutput; only detach and hide it when idle.
@@ -595,13 +599,16 @@ Item {
     }
 
     function stopSharedVideo() {
+        var player = root.roomSharedVideoPlayer
+
         console.log(
             "[AstroVideoDiag] stopSharedVideo ENTER",
             "visible:", root.visible,
             "activeKey:", root.activeVideoKey,
-            "playbackState:", root.roomSharedVideoPlayer.playbackState,
-            "status:", root.roomSharedVideoPlayer.status,
-            "source:", root.roomSharedVideoPlayer.source
+            "playerAvailable:", player !== null,
+            "playbackState:", player ? player.playbackState : "unavailable",
+            "status:", player ? player.status : "unavailable",
+            "source:", player ? player.source : "unavailable"
         )
 
         if (root.fullscreenVideoOutput)
@@ -614,20 +621,24 @@ Item {
         root.pendingSharedVideoHost = null
         root.pendingSharedVideoOwner = null
 
-        root.roomSharedVideoPlayer.stop()
-        console.log(
-            "[AstroVideoDiag] player.stop() returned",
-            "playbackState:", root.roomSharedVideoPlayer.playbackState,
-            "status:", root.roomSharedVideoPlayer.status
-        )
+        if (player) {
+            player.stop()
+            console.log(
+                "[AstroVideoDiag] player.stop() returned",
+                "playbackState:", player.playbackState,
+                "status:", player.status
+            )
+        } else {
+            console.warn("[AstroVideo] Cannot stop shared video: player unavailable")
+        }
 
 
 
         console.log(
             "[AstroVideoDiag] source retained after stop",
-            "playbackState:", root.roomSharedVideoPlayer.playbackState,
-            "status:", root.roomSharedVideoPlayer.status,
-            "source:", root.roomSharedVideoPlayer.source
+            "playbackState:", player ? player.playbackState : "unavailable",
+            "status:", player ? player.status : "unavailable",
+            "source:", player ? player.source : "unavailable"
         )
 
         // Retain the VideoOutput; only detach and hide it when idle.
@@ -1012,7 +1023,10 @@ Item {
             "[AstroVideoDiag] RoomView visible changed:",
             visible,
             "activeKey:", root.activeVideoKey,
-            "playbackState:", root.roomSharedVideoPlayer.playbackState
+            "playbackState:",
+            root.roomSharedVideoPlayer
+                ? root.roomSharedVideoPlayer.playbackState
+                : "unavailable"
         )
 
         if (!visible)
@@ -1895,7 +1909,9 @@ Item {
                                     "visible:", root.visible,
                                     "activeKey:", root.activeVideoKey,
                                     "playbackState:",
-                                    root.roomSharedVideoPlayer.playbackState
+                                    root.roomSharedVideoPlayer
+                                        ? root.roomSharedVideoPlayer.playbackState
+                                        : "unavailable"
                                 )
 
                                 messageComposer.dismissKeyboard()
@@ -1951,7 +1967,7 @@ Item {
                             left: conversationAvatar.right
                             leftMargin: units.gu(2)
                             verticalCenter: parent.verticalCenter
-                            right: roomMenuButton.left
+                            right: callButton.left
                             rightMargin: units.gu(1)
                         }
 
@@ -1962,6 +1978,42 @@ Item {
                         font.bold: true
 
                         elide: Text.ElideRight
+                    }
+
+                    // Open the dedicated audio call page.
+                    Rectangle {
+                        id: callButton
+
+                        anchors {
+                            right: roomMenuButton.left
+                            rightMargin: units.gu(1)
+                            verticalCenter: parent.verticalCenter
+                        }
+
+                        width: units.gu(5)
+                        height: units.gu(5)
+                        radius: units.gu(1)
+
+                        color: callButtonMouse.pressed
+                               ? "#40596b" : "transparent"
+
+                        visible: root.roomId.length > 0
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "📞"
+                            color: "white"
+                            font.pixelSize: units.gu(2.5)
+                        }
+
+                        MouseArea {
+                            id: callButtonMouse
+                            anchors.fill: parent
+
+                            onClicked: {
+                                root.callRequested(root.roomId, root.roomName)
+                            }
+                        }
                     }
 
                     // Room options button.

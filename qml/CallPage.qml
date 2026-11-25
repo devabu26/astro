@@ -1,0 +1,688 @@
+
+import QtQuick 2.7
+import Lomiri.Components 1.3
+
+Item {
+    id: root
+
+    property var backend
+    property string roomId: ""
+    property string roomName: ""
+    property var audioState: ({})
+
+    property string pendingOperation: ""
+    property string actionError: ""
+
+    property bool audioStarted: false
+    property bool membershipJoined: false
+    property bool muted: false
+    property bool pendingMuted: false
+    property bool videoStarted: false
+
+    signal backRequested()
+
+    readonly property var participants:
+        audioState.participants || []
+
+    readonly property bool callActive:
+        audioState.active === true || audioStarted
+
+    function startCall() {
+        if (!backend || !roomId || pendingOperation.length > 0)
+            return
+
+        actionError = ""
+
+        if (audioState.active === true) {
+            audioStarted = true
+            membershipJoined = true
+            return
+        }
+
+        pendingOperation = "join"
+        backend.joinRtcRoom(roomId)
+    }
+
+    function startAudio() {
+        if (!backend || !roomId || pendingOperation.length > 0)
+            return
+
+        pendingOperation = "start"
+        backend.startRtcAudio(roomId)
+    }
+
+    function toggleMute() {
+        if (!backend || !audioStarted ||
+                pendingOperation.length > 0)
+            return
+
+        actionError = ""
+        pendingMuted = !muted
+        pendingOperation = "mute"
+        backend.setRtcAudioMuted(roomId, pendingMuted)
+    }
+
+    function toggleCamera() {
+        if (!backend || !roomId ||
+                pendingOperation.length > 0 ||
+                !callActive)
+            return
+
+        actionError = ""
+
+        if (videoStarted) {
+            pendingOperation = "stopVideo"
+            backend.stopRtcVideo(roomId)
+        } else {
+            pendingOperation = "startVideo"
+            backend.startRtcVideo(roomId, 640, 480)
+        }
+    }
+
+    function hangUp() {
+        if (!backend || !roomId ||
+                pendingOperation.length > 0)
+            return
+
+        actionError = ""
+
+        if (videoStarted) {
+            pendingOperation = "stopVideoForHangup"
+            backend.stopRtcVideo(roomId)
+            return
+        }
+
+        stopAudioOrLeave()
+    }
+
+    function stopAudioOrLeave() {
+        if (!backend || !roomId ||
+                pendingOperation.length > 0)
+            return
+
+        if (audioStarted || audioState.active === true) {
+            pendingOperation = "stop"
+            backend.stopRtcAudio(roomId)
+        } else {
+            leaveMembership()
+        }
+    }
+
+    function leaveMembership() {
+        if (!backend || !roomId ||
+                pendingOperation.length > 0)
+            return
+
+        pendingOperation = "leave"
+        backend.leaveRtcRoom(roomId)
+    }
+
+    function statusText() {
+        if (pendingOperation === "join")
+            return "Joining call..."
+
+        if (pendingOperation === "start")
+            return "Connecting audio..."
+
+        if (pendingOperation === "mute")
+            return pendingMuted
+                    ? "Muting microphone..."
+                    : "Unmuting microphone..."
+
+        if (pendingOperation === "startVideo")
+            return "Starting camera..."
+
+        if (pendingOperation === "stopVideo")
+            return "Stopping camera..."
+
+        if (pendingOperation === "stopVideoForHangup")
+            return "Stopping camera before leaving..."
+
+        if (pendingOperation === "stop")
+            return "Disconnecting audio..."
+
+        if (pendingOperation === "leave")
+            return "Leaving call..."
+
+        if (audioState.reconnecting === true)
+            return "Reconnecting..."
+
+        if (audioState.active === true)
+            return "Connected"
+
+        if (audioStarted)
+            return "Connecting..."
+
+        if (membershipJoined)
+            return "Call presence joined"
+
+        return "Not connected"
+    }
+
+    function participantInitial(name) {
+        name = String(name || "P").trim()
+        return name.length > 0
+                ? name.charAt(0).toUpperCase()
+                : "P"
+    }
+
+    onAudioStateChanged: {
+        if (audioState.active === true) {
+            audioStarted = true
+            membershipJoined = true
+        } else if (audioState.connectionState === "Disconnected" &&
+                   pendingOperation.length === 0) {
+            audioStarted = false
+            videoStarted = false
+        }
+    }
+
+    onRoomIdChanged: {
+        actionError = ""
+        pendingOperation = ""
+
+        videoStarted = false
+
+        if (audioState.active === true) {
+            audioStarted = true
+            membershipJoined = true
+        } else {
+            audioStarted = false
+            membershipJoined = false
+            muted = false
+        }
+    }
+
+    Connections {
+        target: root.backend
+        ignoreUnknownSignals: true
+
+        onMatrixRtcActionFinished: {
+            if (roomId !== root.roomId)
+                return
+
+            if (root.pendingOperation === "join") {
+                root.pendingOperation = ""
+
+                if (error && error.length > 0) {
+                    root.actionError = error
+                    return
+                }
+
+                root.membershipJoined = true
+                root.startAudio()
+
+            } else if (root.pendingOperation === "leave") {
+                root.pendingOperation = ""
+
+                if (error && error.length > 0) {
+                    root.actionError = error
+                    return
+                }
+
+                root.membershipJoined = false
+                root.audioStarted = false
+                root.videoStarted = false
+                root.muted = false
+                root.actionError = ""
+                root.backRequested()
+            }
+        }
+
+        onMatrixRtcAudioActionFinished: {
+            if (roomId !== root.roomId)
+                return
+
+            var operation = root.pendingOperation
+            root.pendingOperation = ""
+
+            if (error && error.length > 0) {
+                root.actionError = error
+                return
+            }
+
+            root.actionError = ""
+
+            if (operation === "start") {
+                root.audioStarted = true
+                root.muted = false
+
+            } else if (operation === "mute") {
+                root.muted = root.pendingMuted
+
+            } else if (operation === "stop") {
+                root.audioStarted = false
+                root.muted = false
+                root.leaveMembership()
+            }
+        }
+
+        onMatrixRtcVideoActionFinished: {
+            if (roomId !== root.roomId)
+                return
+
+            var operation = root.pendingOperation
+            root.pendingOperation = ""
+
+            if (error && error.length > 0) {
+                root.actionError = error
+                return
+            }
+
+            root.actionError = ""
+
+            if (operation === "startVideo") {
+                root.videoStarted = true
+
+            } else if (operation === "stopVideo") {
+                root.videoStarted = false
+
+            } else if (operation === "stopVideoForHangup") {
+                root.videoStarted = false
+                root.stopAudioOrLeave()
+            }
+        }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        color: "#101820"
+    }
+
+    Column {
+        anchors.fill: parent
+        spacing: 0
+
+        // Header
+        Rectangle {
+            width: parent.width
+            height: units.gu(8)
+            color: "#172530"
+
+            Row {
+                anchors.fill: parent
+                anchors.leftMargin: units.gu(2)
+                anchors.rightMargin: units.gu(2)
+                spacing: units.gu(2)
+
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: units.gu(5)
+                    height: units.gu(5)
+                    radius: units.gu(1)
+                    color: "#263b4a"
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "‹"
+                        color: "white"
+                        font.pixelSize: units.gu(4)
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: root.backRequested()
+                    }
+                }
+
+                Column {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - units.gu(12)
+                    spacing: units.gu(0.3)
+
+                    Text {
+                        width: parent.width
+                        text: root.roomName || "Voice call"
+                        color: "white"
+                        font.pixelSize: units.gu(2)
+                        font.bold: true
+                        elide: Text.ElideRight
+                    }
+
+                    Text {
+                        width: parent.width
+                        text: "MatrixRTC"
+                        color: "#91a4b5"
+                        font.pixelSize: units.gu(1.3)
+                    }
+                }
+
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: units.gu(2)
+                    height: units.gu(2)
+                    radius: width / 2
+                    color: root.callActive ? "#52c78a" : "#71808c"
+                }
+            }
+        }
+
+        // Main call stage
+        Rectangle {
+            width: parent.width
+            height: parent.height -
+                    units.gu(8) -
+                    units.gu(19)
+            color: "#101820"
+
+            Column {
+                anchors.centerIn: parent
+                width: parent.width - units.gu(4)
+                spacing: units.gu(2)
+
+                Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: units.gu(15)
+                    height: units.gu(15)
+                    radius: width / 2
+                    color: "#263f52"
+                    visible: root.participants.length === 0
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "A"
+                        color: "#d8e7f1"
+                        font.pixelSize: units.gu(6)
+                        font.bold: true
+                    }
+                }
+
+                Text {
+                    width: parent.width
+                    text: root.participants.length === 0
+                          ? (root.roomName || "Your call")
+                          : root.participants.length +
+                            (root.participants.length === 1
+                             ? " participant"
+                             : " participants")
+                    color: "white"
+                    font.pixelSize: units.gu(2.4)
+                    font.bold: true
+                    horizontalAlignment: Text.AlignHCenter
+                    visible: root.participants.length === 0
+                }
+
+                Text {
+                    width: parent.width
+                    text: root.statusText()
+                    color: root.callActive ? "#8de0ad" : "#a9bac6"
+                    font.pixelSize: units.gu(1.7)
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
+
+                Text {
+                    width: parent.width
+                    visible: root.videoStarted
+                    text: "Camera is publishing"
+                    color: "#8de0ad"
+                    font.pixelSize: units.gu(1.4)
+                    horizontalAlignment: Text.AlignHCenter
+                }
+
+                Text {
+                    width: parent.width
+                    visible: root.actionError.length > 0
+                    text: root.actionError
+                    color: "#ffaaa5"
+                    font.pixelSize: units.gu(1.4)
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                }
+            }
+
+            // Participant tiles
+            Grid {
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    bottom: parent.bottom
+                    margins: units.gu(2)
+                }
+
+                columns: width >= units.gu(65) ? 3 : 2
+                spacing: units.gu(1)
+
+                Repeater {
+                    model: root.participants
+
+                    delegate: Rectangle {
+                        width: (parent.width -
+                                (parent.columns - 1) * units.gu(1)) /
+                               parent.columns
+                        height: units.gu(10)
+                        radius: units.gu(1)
+                        color: modelData.speaking === true
+                               ? "#294c43" : "#263b4a"
+                        border.width: modelData.speaking === true
+                                      ? units.gu(0.2) : 0
+                        border.color: "#65d69b"
+
+                        Row {
+                            anchors.fill: parent
+                            anchors.margins: units.gu(1)
+                            spacing: units.gu(1)
+
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: units.gu(6)
+                                height: units.gu(6)
+                                radius: width / 2
+                                color: "#426b8a"
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: root.participantInitial(
+                                              modelData.name ||
+                                              modelData.identity
+                                          )
+                                    color: "white"
+                                    font.pixelSize: units.gu(2.5)
+                                    font.bold: true
+                                }
+                            }
+
+                            Column {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: parent.width - units.gu(8)
+                                spacing: units.gu(0.5)
+
+                                Text {
+                                    width: parent.width
+                                    text: modelData.name ||
+                                          modelData.identity ||
+                                          "Participant"
+                                    color: "white"
+                                    font.pixelSize: units.gu(1.5)
+                                    elide: Text.ElideRight
+                                }
+
+                                Text {
+                                    width: parent.width
+                                    text: modelData.speaking === true
+                                          ? "Speaking"
+                                          : "Connected"
+                                    color: modelData.speaking === true
+                                           ? "#8de0ad" : "#a9bac6"
+                                    font.pixelSize: units.gu(1.2)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Controls
+        Rectangle {
+            width: parent.width
+            height: units.gu(19)
+            color: "#172530"
+
+            Column {
+                anchors.fill: parent
+                anchors.margins: units.gu(2)
+                spacing: units.gu(1)
+
+                Row {
+                    width: parent.width
+                    height: units.gu(8)
+                    spacing: units.gu(1)
+
+                    // Microphone
+                    Rectangle {
+                        width: (parent.width - units.gu(3)) / 4
+                        height: units.gu(7)
+                        radius: units.gu(1)
+                        color: root.muted ? "#8a5555" : "#294c43"
+                        opacity: root.callActive ? 1 : 0.4
+
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: units.gu(0.4)
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: root.muted ? "×" : "●"
+                                color: "white"
+                                font.pixelSize: units.gu(2.5)
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: root.muted ? "Muted" : "Mic"
+                                color: "white"
+                                font.pixelSize: units.gu(1.2)
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: root.callActive &&
+                                     root.pendingOperation.length === 0
+                            onClicked: root.toggleMute()
+                        }
+                    }
+
+                    // Camera
+                    Rectangle {
+                        width: (parent.width - units.gu(3)) / 4
+                        height: units.gu(7)
+                        radius: units.gu(1)
+                        color: root.videoStarted ? "#294c43" : "#263b4a"
+                        opacity: root.callActive ? 1 : 0.4
+
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: units.gu(0.4)
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: root.videoStarted ? "●" : "○"
+                                color: "white"
+                                font.pixelSize: units.gu(2.5)
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: root.videoStarted ? "Camera on" : "Camera"
+                                color: "white"
+                                font.pixelSize: units.gu(1.2)
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: root.callActive &&
+                                     root.pendingOperation.length === 0
+                            onClicked: root.toggleCamera()
+                        }
+                    }
+
+                    // Start audio when not connected
+                    Rectangle {
+                        width: (parent.width - units.gu(3)) / 4
+                        height: units.gu(7)
+                        radius: units.gu(1)
+                        color: "#315d48"
+                        visible: !root.callActive
+
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: units.gu(0.4)
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "▶"
+                                color: "white"
+                                font.pixelSize: units.gu(2.5)
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "Start"
+                                color: "white"
+                                font.pixelSize: units.gu(1.2)
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: root.pendingOperation.length === 0
+                            onClicked: root.startCall()
+                        }
+                    }
+
+                    // Hang up
+                    Rectangle {
+                        width: (parent.width - units.gu(3)) / 4
+                        height: units.gu(7)
+                        radius: units.gu(1)
+                        color: "#853f43"
+
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: units.gu(0.4)
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "×"
+                                color: "white"
+                                font.pixelSize: units.gu(3)
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "Leave"
+                                color: "white"
+                                font.pixelSize: units.gu(1.2)
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: root.pendingOperation.length === 0 &&
+                                     (root.callActive ||
+                                      root.membershipJoined)
+                            onClicked: root.hangUp()
+                        }
+                    }
+                }
+
+                Text {
+                    width: parent.width
+                    text: root.muted
+                          ? "Your microphone is muted"
+                          : root.videoStarted
+                            ? "Audio and camera connected"
+                            : root.callActive
+                              ? "Audio connected"
+                              : "Not in a call"
+                    color: "#91a4b5"
+                    font.pixelSize: units.gu(1.3)
+                    horizontalAlignment: Text.AlignHCenter
+                }
+            }
+        }
+    }
+}

@@ -26,6 +26,9 @@ MainView {
     property bool applicationWasBackgrounded: false
     property bool matrixRoomsReady: false
     property bool showingSettings: false
+    property bool showingCallPage: false
+    property string callRoomId: ""
+    property string callRoomName: ""
     property string pendingNotificationRoomId: ""
     property string pendingNotificationEventId: ""
 
@@ -89,10 +92,15 @@ MainView {
     }
 
     function handleNotificationUrl(argument) {
+        console.warn("ASTRO PUSH TAP: argument:", String(argument))
+        console.warn("ASTRO PUSH TAP: argument type:", typeof argument)
+
         var url = String(argument)
 
-        if (url.indexOf("astro://open") !== 0)
+        if (url.indexOf("astro://open") !== 0) {
+            console.warn("ASTRO PUSH TAP: URL prefix not recognised")
             return
+        }
 
         var queryStart = url.indexOf("?")
         if (queryStart < 0)
@@ -142,6 +150,9 @@ MainView {
 
         pendingNotificationRoomId = ""
         pendingNotificationEventId = ""
+
+        console.warn("ASTRO PUSH TAP: opening room:", roomId)
+        console.warn("ASTRO PUSH TAP: event:", eventId)
 
         chatPage.openNotification(roomId, eventId)
     }
@@ -273,6 +284,9 @@ MainView {
             root.matrixAuthenticated = false
             root.matrixRoomsReady = false
             root.showingSettings = false
+            root.showingCallPage = false
+            root.callRoomId = ""
+            root.callRoomName = ""
 
             verificationDialog.closeDialog()
             chatPage.stopRoomLoading()
@@ -291,6 +305,9 @@ MainView {
             root.matrixAuthenticated = false
             root.matrixRoomsReady = false
             root.showingSettings = false
+            root.showingCallPage = false
+            root.callRoomId = ""
+            root.callRoomName = ""
             root.existingStorage = false
 
             verificationDialog.closeDialog()
@@ -493,7 +510,31 @@ MainView {
 
             visible: astroBackend.storageReady &&
                      root.matrixAuthenticated &&
-                     !root.showingSettings
+                     !root.showingSettings &&
+                     !root.showingCallPage
+        }
+
+        // =====================================================
+        // Dedicated voice call page
+        // =====================================================
+
+        CallPage {
+            id: callPage
+
+            anchors.fill: parent
+
+            backend: astroBackend
+            roomId: root.callRoomId
+            roomName: root.callRoomName
+            audioState: chatPage.rtcAudioStatesByRoom[root.callRoomId] || ({})
+
+            visible: astroBackend.storageReady &&
+                     root.matrixAuthenticated &&
+                     root.showingCallPage
+
+            onBackRequested: {
+                root.showingCallPage = false
+            }
         }
     }
 

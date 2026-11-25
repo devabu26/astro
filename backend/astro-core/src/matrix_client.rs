@@ -25,8 +25,14 @@ use matrix_sdk::{
     config::SyncSettings, ruma::room::RoomType, store::RoomLoadSettings, Client, LoopCtrl,
     Room, RoomMemberships, SqliteStoreConfig, TransmissionProgress,
 };
-use livekit::prelude::{LocalAudioTrack, LocalTrack, PlatformAudio, Room as LiveKitRoom, RoomEvent, RoomOptions, RtcAudioSource, TrackPublishOptions, TrackSource};
-use tokio::task::JoinHandle;
+use livekit::prelude::{LocalAudioTrack, LocalVideoTrack, LocalTrack, PlatformAudio, Room as LiveKitRoom, RoomEvent, RoomOptions, TrackPublishOptions, TrackSource};
+use livekit::webrtc::video_source::native::NativeVideoSource;
+use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
+use livekit::webrtc::video_frame::{
+    I420Buffer, VideoFrame, VideoRotation,
+};
+
+
 use matrix_sdk_ui::spaces::SpaceService;
 use matrix_sdk_ui::timeline::{
     MembershipChange, Timeline, TimelineBuilder, TimelineEventItemId,
@@ -356,6 +362,7 @@ async fn discover_livekit_service_url(client: &Client) -> Result<String, String>
 
 pub struct MatrixClientManager {
     client: Option<Client>,
+    rtc_livekit_audio_sessions: HashMap<String, LiveKitAudioSession>,
     rtc_participant_profiles: HashMap<(String, String), RtcParticipantProfile>,
     rtc_last_snapshots: HashMap<String, serde_json::Value>,
     rtc_local_memberships: HashMap<String, String>,
@@ -377,6 +384,16 @@ pub struct MatrixClientManager {
     verification_sas_queue: Arc<Mutex<Vec<(String, SasVerification)>>>,
     active_verifications: HashMap<String, SasVerification>,
     last_verification_states: HashMap<String, String>,
+}
+
+struct LiveKitAudioSession {
+    room: LiveKitRoom,
+    events: tokio::sync::mpsc::UnboundedReceiver<RoomEvent>,
+    _platform_audio: PlatformAudio,
+    microphone: LocalAudioTrack,
+    muted: bool,
+    video_source: Option<NativeVideoSource>,
+    video_track: Option<LocalVideoTrack>,
 }
 
 fn create_new_store(database_path: &Path) -> Result<(String, PathBuf), String> {
@@ -523,6 +540,7 @@ impl MatrixClientManager {
             active_verifications: HashMap::new(),
             last_verification_states: HashMap::new(),
             client: Some(client),
+            rtc_livekit_audio_sessions: HashMap::new(),
             rtc_participant_profiles: HashMap::new(),
             rtc_last_snapshots: HashMap::new(),
             rtc_local_memberships: HashMap::new(),
@@ -2124,8 +2142,10 @@ impl MatrixClientManager {
         if room_id.is_empty() {
             return Err("Room ID is empty".into());
         }
+        // Joining is idempotent within this Matrix client session. The
+        // call page and the room's presence controls share this membership.
         if self.rtc_local_memberships.contains_key(room_id) {
-            return Err("Astro already has an active membership in this room".into());
+            return Ok(());
         }
 
         let client = self.client.as_ref()
@@ -2195,7 +2215,7 @@ impl MatrixClientManager {
     /// Obtain legacy LiveKit credentials for an active MatrixRTC membership.
     ///
     /// Returns JSON containing the LiveKit WebSocket URL and JWT.
-    pub fn rtc_livekit_credentials_json(
+    fn rtc_livekit_credentials_json(
         &mut self,
         room_id: &str,
     ) -> Result<String, String> {
@@ -2294,6 +2314,444 @@ impl MatrixClientManager {
                 "jwt": jwt
             }).to_string())
         })
+    }
+
+    /// Connect to LiveKit and publish Astro's microphone.
+    ///
+    /// The session is owned by MatrixClientManager, not by a QML page.
+    pub fn start_rtc_audio(&mut self, room_id: &str) -> Result<(), String> {
+        let room_id = room_id.trim().to_owned();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        if self.rtc_livekit_audio_sessions.contains_key(&room_id) {
+            return Err("An audio call is already active in this room".into());
+        }
+
+        // Retrieve credentials internally. The JWT never reaches QML.
+        let credentials_json = self.rtc_livekit_credentials_json(&room_id)?;
+
+        let credentials: serde_json::Value =
+            serde_json::from_str(&credentials_json)
+                .map_err(|error| format!("Invalid LiveKit credentials: {error}"))?;
+
+        let livekit_url = credentials
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "LiveKit credentials contain no URL".to_string())?
+            .to_owned();
+
+        let jwt = credentials
+            .get("jwt")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "LiveKit credentials contain no JWT".to_string())?
+            .to_owned();
+
+        let platform_audio = PlatformAudio::new()
+            .map_err(|error| format!("Could not initialise platform audio: {error}"))?;
+
+        let microphone = LocalAudioTrack::create_audio_track(
+            "microphone",
+            platform_audio.rtc_source(),
+        );
+
+        let runtime = Arc::clone(&self.runtime);
+
+        let audio_session = runtime.block_on(async move {
+            let (room, events) = LiveKitRoom::connect(
+                &livekit_url,
+                &jwt,
+                RoomOptions::default(),
+            )
+            .await
+            .map_err(|error| format!("Could not connect to LiveKit: {error}"))?;
+
+            let publish_options = TrackPublishOptions {
+                source: TrackSource::Microphone,
+                ..Default::default()
+            };
+
+            if let Err(error) = room
+                .local_participant()
+                .publish_track(
+                    LocalTrack::Audio(microphone.clone()),
+                    publish_options,
+                )
+                .await
+            {
+                let _ = room.close().await;
+                return Err(format!("Could not publish microphone: {error}"));
+            }
+
+            Ok::<LiveKitAudioSession, String>(LiveKitAudioSession {
+                room,
+                events,
+                _platform_audio: platform_audio,
+                microphone,
+                muted: false,
+                video_source: None,
+    video_track: None,
+})
+        })?;
+
+        self.rtc_livekit_audio_sessions.insert(room_id, audio_session);
+
+        Ok(())
+    }
+
+    // ASTRO_RTC_VIDEO_STAGE1
+    /// Publish a camera video track into an existing LiveKit audio session.
+    /// Camera frames are supplied separately by the native video capture path.
+    pub fn start_rtc_video(
+        &mut self,
+        room_id: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        if width < 2 || height < 2 || width % 2 != 0 || height % 2 != 0 {
+            return Err("Camera dimensions must be positive even numbers".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get_mut(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+
+        if session.video_track.is_some() {
+            return Err("Camera video is already active in this room".into());
+        }
+
+        let (source, track) = {
+            let _runtime_guard = runtime.enter();
+
+            let source = NativeVideoSource::new(
+                VideoResolution { width, height },
+                false,
+            );
+
+            let track = LocalVideoTrack::create_video_track(
+                "camera",
+                RtcVideoSource::Native(source.clone()),
+            );
+
+            (source, track)
+        };
+
+        let options = TrackPublishOptions {
+            source: TrackSource::Camera,
+            ..Default::default()
+        };
+
+        runtime.block_on(async {
+            session
+                .room
+                .local_participant()
+                .publish_track(LocalTrack::Video(track.clone()), options)
+                .await
+                .map_err(|error| {
+                    format!("Could not publish LiveKit camera track: {error}")
+                })
+        })?;
+
+        session.video_source = Some(source);
+        session.video_track = Some(track);
+
+        Ok(())
+    }
+
+    // ASTRO_RTC_VIDEO_STAGE2
+    /// Submit one tightly packed I420 frame to the active camera source.
+    ///
+    /// Layout: Y plane, followed by U plane, followed by V plane.
+    /// Width and height must be even.
+    pub fn push_rtc_video_frame(
+        &mut self,
+        room_id: &str,
+        width: u32,
+        height: u32,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+
+        if width < 2 || height < 2
+            || width > 1920 || height > 1080
+            || width % 2 != 0 || height % 2 != 0
+        {
+            return Err("Video frame dimensions must be even and no larger than 1920x1080".into());
+        }
+
+        let y_size = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or_else(|| "Video frame dimensions overflow".to_string())?;
+        let chroma_size = y_size / 4;
+        let expected_size = y_size
+            .checked_add(chroma_size.checked_mul(2)
+                .ok_or_else(|| "Video frame size overflow".to_string())?)
+            .ok_or_else(|| "Video frame size overflow".to_string())?;
+
+        if bytes.len() != expected_size {
+            return Err(format!(
+                "Invalid I420 frame size: expected {expected_size} bytes, received {}",
+                bytes.len()
+            ));
+        }
+
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+
+        let source = session
+            .video_source
+            .as_ref()
+            .ok_or_else(|| "Camera video is not active in this room".to_string())?;
+
+        let mut buffer = I420Buffer::new(width, height);
+        let (plane_y, plane_u, plane_v) = buffer.data_mut();
+
+        if plane_y.len() < y_size
+            || plane_u.len() < chroma_size
+            || plane_v.len() < chroma_size
+        {
+            return Err("LiveKit allocated an unexpectedly small I420 buffer".into());
+        }
+
+        plane_y[..y_size].copy_from_slice(&bytes[..y_size]);
+        plane_u[..chroma_size].copy_from_slice(
+            &bytes[y_size..y_size + chroma_size]
+        );
+        plane_v[..chroma_size].copy_from_slice(
+            &bytes[y_size + chroma_size..expected_size]
+        );
+
+        let frame = VideoFrame::new(VideoRotation::VideoRotation0, buffer);
+
+        let captured = {
+            let _runtime_guard = runtime.enter();
+            source.capture_frame(&frame)
+        };
+
+        if !captured {
+            return Err("LiveKit rejected the camera video frame".into());
+        }
+
+        Ok(())
+    }
+
+    /// Unpublish the camera track without stopping the microphone.
+    pub fn stop_rtc_video(&mut self, room_id: &str) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get_mut(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+
+        let Some(track) = session.video_track.as_ref() else {
+            return Ok(());
+        };
+
+        let track_sid = LocalTrack::Video(track.clone()).sid();
+
+        runtime.block_on(async {
+            session
+                .room
+                .local_participant()
+                .unpublish_track(&track_sid)
+                .await
+                .map_err(|error| {
+                    format!("Could not unpublish LiveKit camera track: {error}")
+                })
+        })?;
+
+        session.video_track = None;
+        session.video_source = None;
+
+        Ok(())
+    }
+
+    /// Disconnect the LiveKit audio session for a room.
+    pub fn stop_rtc_audio(&mut self, room_id: &str) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+
+        {
+            let Some(session) = self.rtc_livekit_audio_sessions.get(room_id) else {
+                return Ok(());
+            };
+
+            runtime.block_on(async {
+                session.room.close()
+                    .await
+                    .map_err(|error| format!("Could not close LiveKit room: {error}"))
+            })?;
+        }
+
+        self.rtc_livekit_audio_sessions.remove(room_id);
+        Ok(())
+    }
+
+    /// Set the microphone mute state for a room's LiveKit session.
+    pub fn set_rtc_audio_muted(
+        &mut self,
+        room_id: &str,
+        muted: bool,
+    ) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get_mut(room_id)
+            .ok_or_else(|| "No active audio call in this room".to_string())?;
+
+        if session.muted == muted {
+            return Ok(());
+        }
+
+        {
+            let _runtime_guard = runtime.enter();
+
+            if muted {
+                session.microphone.mute();
+            } else {
+                session.microphone.unmute();
+            }
+        }
+
+        session.muted = muted;
+        Ok(())
+    }
+
+    /// Drain queued LiveKit events for the active audio sessions.
+    ///
+    /// This is intended to be called by StorageWorker's existing polling timer.
+    pub fn poll_rtc_audio_events_json(&mut self) -> String {
+        let mut updates = Vec::new();
+
+        for (room_id, session) in self.rtc_livekit_audio_sessions.iter_mut() {
+            // Bound work per room so a large event burst cannot monopolise the worker.
+            for _ in 0..256 {
+                let event = match session.events.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                };
+
+                let update = match event {
+                    RoomEvent::ParticipantConnected(participant) => {
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "participant_connected",
+                            "identity": participant.identity().to_string(),
+                            "name": participant.name(),
+                            "metadata": participant.metadata(),
+                            "speaking": participant.is_speaking(),
+                            "audio_level": participant.audio_level()
+                        }))
+                    }
+                    RoomEvent::ParticipantActive(participant) => {
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "participant_active",
+                            "identity": participant.identity().to_string(),
+                            "name": participant.name(),
+                            "metadata": participant.metadata(),
+                            "speaking": participant.is_speaking(),
+                            "audio_level": participant.audio_level()
+                        }))
+                    }
+                    RoomEvent::ParticipantDisconnected(participant) => {
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "participant_disconnected",
+                            "identity": participant.identity().to_string(),
+                            "name": participant.name()
+                        }))
+                    }
+                    RoomEvent::TrackSubscribed { participant, .. } => {
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "track_subscribed",
+                            "identity": participant.identity().to_string(),
+                            "name": participant.name()
+                        }))
+                    }
+                    RoomEvent::TrackUnsubscribed { participant, .. } => {
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "track_unsubscribed",
+                            "identity": participant.identity().to_string(),
+                            "name": participant.name()
+                        }))
+                    }
+                    RoomEvent::ConnectionStateChanged(state) => {
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "connection_state_changed",
+                            "state": format!("{state:?}")
+                        }))
+                    }
+                    RoomEvent::Reconnecting => {
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "reconnecting"
+                        }))
+                    }
+                    RoomEvent::Reconnected => {
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "reconnected"
+                        }))
+                    }
+                    RoomEvent::Disconnected { reason } => {
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "disconnected",
+                            "reason": format!("{reason:?}")
+                        }))
+                    }
+                    _ => None,
+                };
+
+                if let Some(update) = update {
+                    updates.push(update);
+                }
+            }
+        }
+
+        serde_json::json!({ "events": updates }).to_string()
     }
 
     /// Withdraw Astro's own compatibility-mode MatrixRTC membership.
@@ -2481,7 +2939,7 @@ impl MatrixClientManager {
                         "avatar_url": profile.and_then(|p| p.avatar_url.clone())
                     }));
                 }
-            }
+            }   //Congrats you found Devabu's secret comment :); 24.11.26
 
             memberships.sort_by(|a, b| {
                 a["sender"].as_str().cmp(&b["sender"].as_str())

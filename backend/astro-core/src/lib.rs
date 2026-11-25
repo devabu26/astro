@@ -14,6 +14,10 @@ pub fn init_tracing() {
     static INIT: OnceLock<()> = OnceLock::new();
 
     INIT.get_or_init(|| {
+        // Matrix SDK and LiveKit enable different Rustls crypto providers.
+        // Select AWS-LC explicitly before either client creates a TLS connection.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let _ = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::DEBUG)
             .with_target(true)

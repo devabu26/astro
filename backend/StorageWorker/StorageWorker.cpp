@@ -177,6 +177,7 @@ void StorageWorker::openStorage(const QString &passphrase)
 
 void StorageWorker::closeStorage()
 {
+    stopRtcCamera();
     if (m_timelinePollTimer) {
         m_timelinePollTimer->stop();
     }

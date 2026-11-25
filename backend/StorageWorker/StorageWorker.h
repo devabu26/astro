@@ -5,7 +5,10 @@
 #include <QString>
 #include <QByteArray>
 #include <QTimer>
+#include <QCamera>
 #include <cstdint>
+
+class RtcCameraVideoSurface;
 
 #include "../astro_core_ffi.h"
 
@@ -85,7 +88,19 @@ public slots:
     void sendRoomMessage(const QString &roomId, const QString &message);
     void joinRtcRoom(const QString &roomId);
     void leaveRtcRoom(const QString &roomId);
-    void requestRtcLiveKitCredentials(const QString &roomId);
+    void startRtcAudio(const QString &roomId);
+    void stopRtcAudio(const QString &roomId);
+    void setRtcAudioMuted(const QString &roomId, bool muted);
+
+    // ASTRO_RTC_VIDEO_STAGE3
+    void startRtcVideo(const QString &roomId, int width, int height);
+    void pushRtcVideoFrame(
+        const QString &roomId,
+        int width,
+        int height,
+        const QByteArray &i420
+    );
+    void stopRtcVideo(const QString &roomId);
 
     void sendRoomAttachment(
         const QString &requestKey,
@@ -288,11 +303,11 @@ signals:
     // MatrixRTC membership changes are forwarded separately from timeline events.
     void matrixRtcMembershipsUpdated(const QString &json);
     void matrixRtcActionFinished(const QString &roomId, const QString &error);
-    void matrixRtcCredentialsReady(
-        const QString &roomId,
-        const QString &credentialsJson,
-        const QString &error
-    );
+
+    // LiveKit audio events and audio-session actions are separate from MatrixRTC presence.
+    void matrixRtcAudioEventsUpdated(const QString &json);
+    void matrixRtcAudioActionFinished(const QString &roomId, const QString &error);
+    void matrixRtcVideoActionFinished(const QString &roomId, const QString &error);
 
     void matrixDeviceVerificationFinished(
         const QString &deviceId,
@@ -390,6 +405,7 @@ signals:
 
 
 private:
+    void stopRtcCamera();
 
     /*
      * Common signature for Rust verification actions.
@@ -422,6 +438,8 @@ private:
 
     // Rust Matrix client; its lifecycle is managed through the FFI.
     AstroMatrixClient *m_matrixClient = nullptr;
+    QCamera *m_rtcCamera = nullptr;
+    RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
 
     // Retained push notification configuration.
     QByteArray m_pushToken;

@@ -225,12 +225,27 @@ Backend::Backend(QObject *parent)
        &Backend::matrixRtcActionFinished
    );
 
+   // Forward LiveKit audio events and action results separately from MatrixRTC.
    connect(
        m_storageWorker,
-       &StorageWorker::matrixRtcCredentialsReady,
+       &StorageWorker::matrixRtcAudioEventsUpdated,
        this,
-       &Backend::matrixRtcCredentialsReady
+       &Backend::matrixRtcAudioEventsUpdated
    );
+
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixRtcAudioActionFinished,
+       this,
+       &Backend::matrixRtcAudioActionFinished
+   );
+
+   connect(
+        m_storageWorker,
+        &StorageWorker::matrixRtcVideoActionFinished,
+        this,
+        &Backend::matrixRtcVideoActionFinished
+    );
 
    connect(
        m_storageWorker,
@@ -312,9 +327,42 @@ Backend::Backend(QObject *parent)
 
    connect(
        this,
-       &Backend::requestRtcLiveKitCredentialsWorker,
+       &Backend::requestStartRtcAudio,
        m_storageWorker,
-       &StorageWorker::requestRtcLiveKitCredentials,
+       &StorageWorker::startRtcAudio,
+       Qt::QueuedConnection
+   );
+
+    // ASTRO_RTC_VIDEO_STAGE3
+    connect(
+        this,
+        &Backend::requestStartRtcVideo,
+        m_storageWorker,
+        &StorageWorker::startRtcVideo,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestStopRtcVideo,
+        m_storageWorker,
+        &StorageWorker::stopRtcVideo,
+        Qt::QueuedConnection
+    );
+
+   connect(
+       this,
+       &Backend::requestStopRtcAudio,
+       m_storageWorker,
+       &StorageWorker::stopRtcAudio,
+       Qt::QueuedConnection
+   );
+
+   connect(
+       this,
+       &Backend::requestSetRtcAudioMuted,
+       m_storageWorker,
+       &StorageWorker::setRtcAudioMuted,
        Qt::QueuedConnection
    );
 

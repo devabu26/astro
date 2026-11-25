@@ -1,7 +1,18 @@
 
 #include "StorageWorker.h"
 
+#include <QMutexLocker>
+#include <QDebug>
+#include <QAbstractVideoSurface>
+#include <QAbstractVideoBuffer>
+#include <QVideoFrame>
+#include <QCameraInfo>
+
 #include <QByteArray>
+#include <QAtomicInt>
+#include <QMetaObject>
+#include <QSharedPointer>
+
 #include <QDebug>
 
 // =============================================================
@@ -379,6 +390,39 @@ void StorageWorker::pollRoomTimelineUpdates()
     }
 
     // ---------------------------------------------------------
+    // LiveKit audio events
+    // ---------------------------------------------------------
+
+    char *rtcAudioError = nullptr;
+    char *rtcAudioJson = astro_matrix_poll_rtc_audio_events_json(
+        m_matrixClient,
+        &rtcAudioError
+    );
+
+    if (!rtcAudioJson) {
+        QString message =
+            QStringLiteral("Could not retrieve LiveKit audio events");
+
+        if (rtcAudioError) {
+            message = QString::fromUtf8(rtcAudioError);
+            astro_string_free(rtcAudioError);
+        }
+
+        qWarning() << "ASTRO: LiveKit audio event polling failed:" << message;
+    } else {
+        const QString rtcAudioResult = QString::fromUtf8(rtcAudioJson);
+        astro_string_free(rtcAudioJson);
+
+        if (rtcAudioError) {
+            astro_string_free(rtcAudioError);
+        }
+
+        if (rtcAudioResult != QStringLiteral("{\"events\":[]}")) {
+            emit matrixRtcAudioEventsUpdated(rtcAudioResult);
+        }
+    }
+
+    // ---------------------------------------------------------
     // Live Matrix timeline updates
     // ---------------------------------------------------------
 
@@ -586,12 +630,12 @@ void StorageWorker::leaveRtcRoom(const QString &roomId)
     emit matrixRtcActionFinished(roomId, errorMessage);
 }
 
-void StorageWorker::requestRtcLiveKitCredentials(const QString &roomId)
+
+void StorageWorker::startRtcAudio(const QString &roomId)
 {
     if (!m_matrixClient || roomId.isEmpty()) {
-        emit matrixRtcCredentialsReady(
+        emit matrixRtcAudioActionFinished(
             roomId,
-            QString(),
             !m_matrixClient
                 ? QStringLiteral("No active Matrix session")
                 : QStringLiteral("Room ID is empty")
@@ -601,28 +645,420 @@ void StorageWorker::requestRtcLiveKitCredentials(const QString &roomId)
 
     const QByteArray roomIdBytes = roomId.toUtf8();
     char *error = nullptr;
-    char *credentials = astro_matrix_rtc_livekit_credentials_json(
+    const int32_t result = astro_matrix_start_rtc_audio(
+        m_matrixClient, roomIdBytes.constData(), &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+    if (result < 0 && errorMessage.isEmpty())
+        errorMessage = QStringLiteral("Could not start LiveKit audio");
+
+    emit matrixRtcAudioActionFinished(roomId, errorMessage);
+}
+
+// ASTRO_RTC_VIDEO_STAGE3
+class RtcCameraVideoSurface : public QAbstractVideoSurface
+{
+public:
+    RtcCameraVideoSurface(
+        StorageWorker *worker,
+        const QString &roomId,
+        QObject *parent = nullptr
+    )
+        : QAbstractVideoSurface(parent),
+          m_worker(worker),
+          m_roomId(roomId),
+          m_pending(QSharedPointer<QAtomicInt>::create(0))
+    {
+    }
+
+    QList<QVideoFrame::PixelFormat> supportedPixelFormats(
+        QAbstractVideoBuffer::HandleType type =
+            QAbstractVideoBuffer::NoHandle
+    ) const override
+    {
+        if (type != QAbstractVideoBuffer::NoHandle)
+            return {};
+
+        return {
+            QVideoFrame::Format_RGB32,
+            QVideoFrame::Format_ARGB32
+        };
+    }
+
+    bool present(const QVideoFrame &frame) override
+    {
+        if (!frame.isValid())
+            return false;
+
+        if (frame.pixelFormat() != QVideoFrame::Format_RGB32 &&
+            frame.pixelFormat() != QVideoFrame::Format_ARGB32)
+            return false;
+
+        const int width = frame.width();
+        const int height = frame.height();
+
+        if (width < 2 || height < 2 ||
+            width > 1920 || height > 1080 ||
+            (width & 1) || (height & 1))
+            return false;
+
+        QVideoFrame mapped(frame);
+
+        if (!mapped.map(QAbstractVideoBuffer::ReadOnly))
+            return false;
+
+        const int stride = mapped.bytesPerLine();
+
+        if (stride < width * 4) {
+            mapped.unmap();
+            return false;
+        }
+
+        // Keep at most one queued or active submission.
+        if (!m_pending->testAndSetOrdered(0, 1)) {
+            mapped.unmap();
+            return true;
+        }
+
+        const int ySize = width * height;
+        QByteArray i420(ySize + ySize / 2, Qt::Uninitialized);
+
+        uchar *yPlane = reinterpret_cast<uchar *>(i420.data());
+        uchar *uPlane = yPlane + ySize;
+        uchar *vPlane = uPlane + ySize / 4;
+
+        auto clamp = [](int value) -> uchar {
+            return static_cast<uchar>(qBound(0, value, 255));
+        };
+
+        for (int y = 0; y < height; y += 2) {
+            const QRgb *row0 =
+                reinterpret_cast<const QRgb *>(
+                    mapped.bits() + y * stride
+                );
+
+            const QRgb *row1 =
+                reinterpret_cast<const QRgb *>(
+                    mapped.bits() + (y + 1) * stride
+                );
+
+            for (int x = 0; x < width; x += 2) {
+                const QRgb pixels[4] = {
+                    row0[x], row0[x + 1],
+                    row1[x], row1[x + 1]
+                };
+
+                int rSum = 0;
+                int gSum = 0;
+                int bSum = 0;
+
+                for (int p = 0; p < 4; ++p) {
+                    const int r = qRed(pixels[p]);
+                    const int g = qGreen(pixels[p]);
+                    const int b = qBlue(pixels[p]);
+
+                    rSum += r;
+                    gSum += g;
+                    bSum += b;
+
+                    const int index =
+                        (y + p / 2) * width + x + p % 2;
+
+                    yPlane[index] = clamp(
+                        ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16
+                    );
+                }
+
+                const int r = (rSum + 2) / 4;
+                const int g = (gSum + 2) / 4;
+                const int b = (bSum + 2) / 4;
+
+                const int ci =
+                    (y / 2) * (width / 2) + x / 2;
+
+                uPlane[ci] = clamp(
+                    ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128
+                );
+
+                vPlane[ci] = clamp(
+                    ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128
+                );
+            }
+        }
+
+        mapped.unmap();
+
+        if (m_loggedFirstFrame.testAndSetOrdered(0, 1)) {
+            qInfo() << "RTC camera converted first I420 frame:"
+                    << width << "x" << height;
+        }
+
+        StorageWorker *worker = m_worker;
+        const QString roomId = m_roomId;
+        const auto pending = m_pending;
+
+        const bool queued = QMetaObject::invokeMethod(
+            worker,
+            [worker, pending, roomId, i420, width, height]() {
+                worker->pushRtcVideoFrame(
+                    roomId, width, height, i420
+                );
+
+                pending->storeRelease(0);
+            },
+            Qt::QueuedConnection
+        );
+
+        if (!queued)
+            m_pending->storeRelease(0);
+
+        return true;
+    }
+
+private:
+    StorageWorker *m_worker = nullptr;
+    QString m_roomId;
+    QSharedPointer<QAtomicInt> m_pending;
+    QAtomicInt m_loggedFirstFrame{0};
+};
+
+void StorageWorker::startRtcVideo(
+    const QString &roomId,
+    int width,
+    int height
+)
+{
+    stopRtcCamera();
+    if (!m_matrixClient || roomId.isEmpty()) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    if (width < 2 || height < 2) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            QStringLiteral("Invalid camera dimensions")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+
+    const int32_t result = astro_matrix_start_rtc_video(
+        m_matrixClient,
+        roomIdBytes.constData(),
+        static_cast<uint32_t>(width),
+        static_cast<uint32_t>(height),
+        &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+
+    if (result < 0 && errorMessage.isEmpty()) {
+        errorMessage = QStringLiteral("Could not start LiveKit video");
+    }
+
+    if (result >= 0 && errorMessage.isEmpty()) {
+        qInfo() << "RTC available cameras:";
+       const auto cameras = QCameraInfo::availableCameras();
+       for (const QCameraInfo &camera : cameras) {
+           qInfo() << " -" << camera.description()
+                   << "device:" << camera.deviceName();
+       }
+
+       const QCameraInfo defaultCamera = QCameraInfo::defaultCamera();
+       qInfo() << "RTC default camera:"
+               << defaultCamera.description()
+               << "device:" << defaultCamera.deviceName();
+
+       m_rtcCamera = new QCamera(this);
+
+       connect(m_rtcCamera, &QCamera::statusChanged, this,
+               [](QCamera::Status status) {
+           qInfo() << "RTC camera status:" << static_cast<int>(status);
+       });
+
+       connect(m_rtcCamera,
+               QOverload<QCamera::Error>::of(&QCamera::error),
+               this, [this](QCamera::Error error) {
+           qWarning() << "RTC camera error:"
+                      << static_cast<int>(error)
+                      << m_rtcCamera->errorString();
+       });
+
+        if (!m_rtcCamera->isAvailable()) {
+            errorMessage = QStringLiteral(
+                "No available camera device or camera permission denied"
+            );
+        } else {
+            // Configure the camera for video before attaching the probe.
+            m_rtcCamera->setCaptureMode(QCamera::CaptureVideo);
+
+            m_rtcVideoSurface = new RtcCameraVideoSurface(
+                this, roomId, this
+            );
+            m_rtcCamera->setViewfinder(m_rtcVideoSurface);
+            m_rtcCamera->start();
+        }
+
+        if (!errorMessage.isEmpty()) {
+            stopRtcCamera();
+
+            char *stopError = nullptr;
+            astro_matrix_stop_rtc_video(
+                m_matrixClient,
+                roomIdBytes.constData(),
+                &stopError
+            );
+
+            if (stopError) {
+                astro_string_free(stopError);
+            }
+        }
+    }
+
+    emit matrixRtcVideoActionFinished(roomId, errorMessage);
+}
+
+void StorageWorker::pushRtcVideoFrame(
+    const QString &roomId,
+    int width,
+    int height,
+    const QByteArray &i420
+)
+{
+    if (!m_matrixClient || roomId.isEmpty())
+        return;
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+
+    const int32_t result = astro_matrix_push_rtc_video_frame(
+        m_matrixClient,
+        roomIdBytes.constData(),
+        static_cast<uint32_t>(width),
+        static_cast<uint32_t>(height),
+        reinterpret_cast<const uint8_t *>(i420.constData()),
+        static_cast<uint64_t>(i420.size()),
+        &error
+    );
+
+    if (error) {
+        qWarning() << "RTC video frame submission failed:"
+                   << QString::fromUtf8(error);
+        astro_string_free(error);
+    } else if (result < 0) {
+        qWarning() << "RTC video frame submission failed";
+    }
+}
+
+void StorageWorker::stopRtcVideo(const QString &roomId)
+{
+    stopRtcCamera();
+    if (!m_matrixClient || roomId.isEmpty()) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+
+    const int32_t result = astro_matrix_stop_rtc_video(
         m_matrixClient,
         roomIdBytes.constData(),
         &error
     );
 
     QString errorMessage;
-    QString credentialsJson;
-
     if (error) {
         errorMessage = QString::fromUtf8(error);
         astro_string_free(error);
     }
 
-    if (credentials) {
-        credentialsJson = QString::fromUtf8(credentials);
-        astro_string_free(credentials);
-    } else if (errorMessage.isEmpty()) {
-        errorMessage = QStringLiteral("Could not retrieve LiveKit credentials");
+    if (result < 0 && errorMessage.isEmpty()) {
+        errorMessage = QStringLiteral("Could not stop LiveKit video");
     }
 
-    emit matrixRtcCredentialsReady(roomId, credentialsJson, errorMessage);
+    emit matrixRtcVideoActionFinished(roomId, errorMessage);
+}
+
+void StorageWorker::stopRtcAudio(const QString &roomId)
+{
+    stopRtcCamera();
+    if (!m_matrixClient || roomId.isEmpty()) {
+        emit matrixRtcAudioActionFinished(
+            roomId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+    const int32_t result = astro_matrix_stop_rtc_audio(
+        m_matrixClient, roomIdBytes.constData(), &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+    if (result < 0 && errorMessage.isEmpty())
+        errorMessage = QStringLiteral("Could not stop LiveKit audio");
+
+    emit matrixRtcAudioActionFinished(roomId, errorMessage);
+}
+
+void StorageWorker::setRtcAudioMuted(const QString &roomId, bool muted)
+{
+    if (!m_matrixClient || roomId.isEmpty()) {
+        emit matrixRtcAudioActionFinished(
+            roomId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+    const int32_t result = astro_matrix_set_rtc_audio_muted(
+        m_matrixClient, roomIdBytes.constData(), muted ? 1 : 0, &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+    if (result < 0 && errorMessage.isEmpty())
+        errorMessage = QStringLiteral("Could not change LiveKit microphone mute state");
+
+    emit matrixRtcAudioActionFinished(roomId, errorMessage);
 }
 
 void StorageWorker::toggleRoomReaction(
@@ -826,4 +1262,32 @@ void StorageWorker::redactRoomEvent(
     emit matrixMessageActionFinished(
         roomId, eventId, action, errorMessage
     );
+}
+
+
+// =============================================================
+// RTC camera lifecycle
+// =============================================================
+
+void StorageWorker::stopRtcCamera()
+{
+    if (m_rtcCamera) {
+        m_rtcCamera->stop();
+    }
+
+    if (m_rtcCamera) {
+        m_rtcCamera->setViewfinder(
+            static_cast<QAbstractVideoSurface *>(nullptr)
+        );
+    }
+
+    if (m_rtcVideoSurface) {
+        delete m_rtcVideoSurface;
+        m_rtcVideoSurface = nullptr;
+    }
+
+    if (m_rtcCamera) {
+        delete m_rtcCamera;
+        m_rtcCamera = nullptr;
+    }
 }

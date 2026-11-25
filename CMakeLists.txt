@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.0)
-project(astro VERSION 1.1.0 LANGUAGES C CXX)
+project(astro VERSION 1.1.1 LANGUAGES C CXX)
 
 # Automatically create moc files
 set(CMAKE_AUTOMOC ON)
@@ -85,7 +85,7 @@ add_custom_target(${PROJECT_NAME}_FILES ALL SOURCES ${PROJECT_SRC_FILES})
 
 
 # Astro C++ QML backend
-find_package(Qt5 5.12 REQUIRED COMPONENTS Core Gui Qml DBus)
+find_package(Qt5 5.12 REQUIRED COMPONENTS Core Gui Qml DBus Multimedia)
 add_library(AstroBackend MODULE
     backend/QMLBackend/Backend.cpp
     backend/QMLBackend/BackendConnections.cpp
@@ -118,6 +118,7 @@ target_link_libraries(AstroBackend
         Qt5::Qml
         Qt5::DBus
         Qt5::Gui
+        Qt5::Multimedia
 )
 
 install(
