@@ -11,6 +11,7 @@
 #include <QFile>
 #include <QDebug>
 #include <QVideoFrame>
+#include <QImage>
 #include <QUuid>
 #include <QMap>
 #include <QVariantMap>
@@ -253,4 +254,23 @@ void Backend::processRtcCameraFrame(
     // Qt Quick GL context current, and the worker's surface reads the texture
     // before queueing the converted I420 bytes back to the worker thread.
     m_storageWorker->processRtcCameraFrame(frame);
+}
+
+
+void Backend::processRtcCameraImage(
+    const QString &roomId,
+    const QImage &image
+)
+{
+    if (!m_storageWorker || roomId.isEmpty() || image.isNull())
+        return;
+
+    StorageWorker *worker = m_storageWorker;
+    QMetaObject::invokeMethod(
+        worker,
+        [worker, roomId, image]() {
+            worker->processRtcCameraImage(roomId, image);
+        },
+        Qt::QueuedConnection
+    );
 }
