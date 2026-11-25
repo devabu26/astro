@@ -76,7 +76,10 @@ Item {
         }
 
         onMatrixLoginSucceeded: root.refreshAccountProfile()
-        onMatrixSessionRestored: root.refreshAccountProfile()
+        onMatrixSessionRestored: {
+            if (restored)
+                root.refreshAccountProfile()
+        }
         onStorageReadyChanged: {
             if (root.backend && root.backend.storageReady)
                 root.refreshAccountProfile()
