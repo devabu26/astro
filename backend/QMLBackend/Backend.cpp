@@ -380,7 +380,7 @@ bool Backend::refreshLifecycleExemption()
     }
 
     gsize appIdCount = 0;
-    const gchar **appIds = g_variant_get_strv(userValue, &appIdCount);
+    gchar **appIds = g_variant_dup_strv(userValue, &appIdCount);
 
     bool enabled = false;
     for (gsize i = 0; i < appIdCount; ++i) {
@@ -390,7 +390,7 @@ bool Backend::refreshLifecycleExemption()
         }
     }
 
-    g_free(const_cast<gchar **>(appIds));
+    g_strfreev(appIds);
     g_variant_unref(userValue);
     g_object_unref(settings);
 
