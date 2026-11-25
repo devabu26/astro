@@ -11,6 +11,7 @@
 
 class RtcCameraVideoSurface;
 class QVideoFrame;
+class QImage;
 class QOpenGLContext;
 class QOffscreenSurface;
 
@@ -107,6 +108,7 @@ public slots:
     void startRtcVideo(const QString &roomId, int width, int height);
     // Called directly by the Qt Quick video-filter render thread while its GL context is current.
     void processRtcCameraFrame(const QVideoFrame &frame);
+    void processRtcCameraImage(const QString &roomId, const QImage &image);
     void switchRtcCamera(const QString &roomId);
     void pushRtcVideoFrame(
         const QString &roomId,
@@ -465,6 +467,7 @@ private:
     QMutex m_rtcCameraFrameMutex;
     QCamera *m_rtcCamera = nullptr;
     RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
+    QString m_rtcVideoRoomId;
 
     // Retained push notification configuration.
     QByteArray m_pushToken;
