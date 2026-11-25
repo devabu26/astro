@@ -1880,9 +1880,31 @@ void StorageWorker::captureRtcScreenShareFrame()
         return;
     }
 
-    QByteArray rgba(width * height * 4, Qt::Uninitialized);
-    // Mir's buffer-stream screencast is vertically inverted; read bottom-up
-    // to produce the correctly oriented frame.
+    // Mir's buffer-stream screencast is vertically inverted. Compare its
+    // rows directly against the previous top-down frame before allocating or
+    // copying a full RGBA image; static screens are common on mobile calls.
+    const int frameBytes = width * height * 4;
+    bool unchanged = m_rtcScreenShareLastFrame.size() == frameBytes &&
+        m_rtcScreenShareLastFrameSent.isValid() &&
+        m_rtcScreenShareLastFrameSent.elapsed() < 1000;
+    if (unchanged) {
+        for (int row = 0; row < height; ++row) {
+            const int sourceRow = height - 1 - row;
+            if (std::memcmp(
+                    m_rtcScreenShareLastFrame.constData() + row * width * 4,
+                    region.vaddr + sourceRow * region.stride,
+                    static_cast<size_t>(width * 4)) != 0) {
+                unchanged = false;
+                break;
+            }
+        }
+    }
+    if (unchanged) {
+        mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
+        return;
+    }
+
+    QByteArray rgba(frameBytes, Qt::Uninitialized);
     for (int row = 0; row < height; ++row) {
         const int sourceRow = height - 1 - row;
         std::memcpy(rgba.data() + row * width * 4,
@@ -1890,15 +1912,6 @@ void StorageWorker::captureRtcScreenShareFrame()
                     static_cast<size_t>(width * 4));
     }
     mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
-
-    // Static screens do not need a full colour conversion and LiveKit encode
-    // on every 33 ms capture tick. Keep a one-second refresh so late joiners
-    // and keyframe requests still receive a recent frame.
-    if (rgba == m_rtcScreenShareLastFrame &&
-        m_rtcScreenShareLastFrameSent.isValid() &&
-        m_rtcScreenShareLastFrameSent.elapsed() < 1000) {
-        return;
-    }
 
     const QByteArray i420 = rgbaFrameToI420(rgba, width, height);
     const QByteArray roomBytes = roomId.toUtf8();
