@@ -283,8 +283,9 @@ Item {
                         Column {
                             width: parent.width
                             spacing: units.gu(1)
+
                             Text {
-                                text: "LOCAL SECURITY"
+                                text: "BACKGROUND ACTIVITY"
                                 color: root.accentColor
                                 font.pixelSize: units.gu(1.4)
                                 font.bold: true
@@ -292,57 +293,76 @@ Item {
 
                             Rectangle {
                                 width: parent.width
-                                height: units.gu(13)
+                                height: units.gu(18)
                                 radius: units.gu(1.5)
                                 color: root.panelColor
 
                                 Column {
                                     anchors.fill: parent
-                                    anchors.margins: units.gu(1.5)
-                                    spacing: units.gu(0.5)
+                                    anchors.leftMargin: units.gu(2)
+                                    anchors.rightMargin: units.gu(2)
+                                    anchors.topMargin: units.gu(1.5)
+                                    anchors.bottomMargin: units.gu(1.5)
+                                    spacing: units.gu(0.8)
 
-                                    Row {
+                                    Text {
                                         width: parent.width
-                                        spacing: units.gu(1)
-
-                                        Text {
-                                            width: parent.width - lifecycleExemptionSwitch.width - units.gu(1)
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: "Allow Astro to run in the background"
-                                            color: root.primaryText
-                                            font.pixelSize: units.gu(1.7)
-                                            wrapMode: Text.WordWrap
-                                        }
-
-                                        Switch {
-                                            id: lifecycleExemptionSwitch
-                                            checked: root.backend
-                                                     ? root.backend.lifecycleExemptionEnabled
-                                                     : false
-                                            enabled: false
-                                        }
+                                        text: "Allow Astro to run in the background"
+                                        color: root.primaryText
+                                        font.pixelSize: units.gu(1.8)
+                                        font.bold: true
+                                        wrapMode: Text.WordWrap
                                     }
 
                                     Text {
                                         width: parent.width
-                                        text: !root.backend
-                                              ? "Background-running status is unavailable."
-                                              : root.backend.lifecycleExemptionError !== ""
-                                                ? "Could not read the current Ubuntu Touch setting."
-                                                : root.backend.lifecycleExemptionEnabled
-                                                  ? "Astro is currently exempt from automatic suspension."
-                                                  : "Astro may be suspended when it is sent to the background."
+                                        text: "Prevent Ubuntu Touch from suspending Astro when you switch apps or turn off the screen. This may increase battery and data usage."
                                         color: root.secondaryText
                                         font.pixelSize: units.gu(1.35)
                                         wrapMode: Text.WordWrap
                                     }
 
                                     Text {
-                                        text: '<a href="https://open-store.io/app/ut-tweak-tool.sverzegnassi/">Open UT Tweak Tool in OpenStore</a>'
-                                        textFormat: Text.RichText
-                                        color: root.accentColor
-                                        font.pixelSize: units.gu(1.4)
-                                        onLinkActivated: Qt.openUrlExternally(link)
+                                        width: parent.width
+                                        text: !root.backend
+                                              ? "Current status: Unavailable"
+                                              : root.backend.lifecycleExemptionError !== ""
+                                                ? "Current status: Unable to verify"
+                                                : "Current status: " +
+                                                  (root.backend.lifecycleExemptionEnabled
+                                                   ? "Enabled" : "Disabled")
+                                        color: root.backend
+                                               && root.backend.lifecycleExemptionError === ""
+                                               && root.backend.lifecycleExemptionEnabled
+                                               ? "#a8d8ff" : root.secondaryText
+                                        font.pixelSize: units.gu(1.45)
+                                        font.bold: true
+                                    }
+
+                                    Text {
+                                        width: parent.width
+                                        visible: root.backend
+                                                 && root.backend.lifecycleExemptionError !== ""
+                                        text: root.backend
+                                              ? root.backend.lifecycleExemptionError : ""
+                                        color: "#ffb3b3"
+                                        font.pixelSize: units.gu(1.3)
+                                        wrapMode: Text.WordWrap
+                                    }
+
+                                    Text {
+                                        id: utTweaksLink
+                                        text: "Open UT Tweak Tool"
+                                        color: "#8ecbff"
+                                        font.pixelSize: units.gu(1.45)
+                                        font.underline: true
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            onClicked: Qt.openUrlExternally(
+                                                "https://open-store.io/app/ut-tweak-tool.sverzegnassi"
+                                            )
+                                        }
                                     }
                                 }
                             }
