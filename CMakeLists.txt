@@ -4,7 +4,8 @@ project(astro VERSION 1.1.1 LANGUAGES C CXX)
 # Automatically create moc files
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MIR1CLIENT REQUIRED mir1client)
-link_directories(${MIR1CLIENT_LIBRARY_DIRS})
+pkg_check_modules(GIO REQUIRED gio-2.0)
+link_directories(${MIR1CLIENT_LIBRARY_DIRS} ${GIO_LIBRARY_DIRS})
 set(CMAKE_AUTOMOC ON)
 
 execute_process(
@@ -116,6 +117,7 @@ add_library(AstroBackend MODULE
 
 target_include_directories(AstroBackend PRIVATE
     ${MIR1CLIENT_INCLUDE_DIRS}
+    ${GIO_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/backend
     ${CMAKE_CURRENT_SOURCE_DIR}/backend/QMLBackend
 )
@@ -129,6 +131,7 @@ target_link_libraries(AstroBackend
         Qt5::Gui
         Qt5::Multimedia
         ${MIR1CLIENT_LIBRARIES}
+        ${GIO_LIBRARIES}
 )
 
 install(
