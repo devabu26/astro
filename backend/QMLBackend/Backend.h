@@ -41,6 +41,7 @@ public:
     // ---------------------------------------------------------
 
     Q_INVOKABLE QString status() const;
+    Q_INVOKABLE QString rtcRingbackToneUrl() const;
     Q_INVOKABLE bool refreshLifecycleExemption();
     Q_INVOKABLE bool setLifecycleExemption(bool enabled);
 
