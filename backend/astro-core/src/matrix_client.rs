@@ -2690,8 +2690,29 @@ impl MatrixClientManager {
                 return Err(error);
             }
 
+            // Keep LiveKit's async audio submission off the Qt capture thread.
+            // A small bounded queue limits latency and drops stale samples rather
+            // than allowing audio backpressure to stall screen capture.
+            let (audio_sender, mut audio_receiver) =
+                tokio::sync::mpsc::channel::<Vec<i16>>(5);
+            let audio_source_for_task = audio_source.clone();
+            runtime.spawn(async move {
+                while let Some(samples) = audio_receiver.recv().await {
+                    let frame = AudioFrame {
+                        data: std::borrow::Cow::Owned(samples),
+                        sample_rate: 48_000,
+                        num_channels: 2,
+                        samples_per_channel: 480,
+                    };
+                    if let Err(error) = audio_source_for_task.capture_frame(&frame).await {
+                        eprintln!("ASTRO_SCREEN_SHARE_AUDIO: LiveKit submission failed: {error}");
+                    }
+                }
+            });
+
             session.screen_share_audio_source = Some(audio_source);
             session.screen_share_audio_track = Some(audio_track);
+            session.screen_share_audio_sender = Some(audio_sender);
         }
 
         Ok(())
@@ -2939,28 +2960,24 @@ impl MatrixClientManager {
             ));
         }
 
-        let runtime = Arc::clone(&self.runtime);
         let session = self
             .rtc_livekit_audio_sessions
             .get(room_id)
             .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
-        let source = session
-            .screen_share_audio_source
+        let sender = session
+            .screen_share_audio_sender
             .as_ref()
             .ok_or_else(|| "Screen-share audio is not active in this room".to_string())?;
-        let frame = AudioFrame {
-            data: std::borrow::Cow::Borrowed(pcm),
-            sample_rate: 48_000,
-            num_channels: 2,
-            samples_per_channel: 480,
-        };
 
-        runtime.block_on(async {
-            source
-                .capture_frame(&frame)
-                .await
-                .map_err(|error| format!("Could not submit screen-share audio frame: {error}"))
-        })
+        // Never wait for LiveKit on the Qt audio callback. If the bounded
+        // queue is full, discard this 10 ms frame to keep capture responsive.
+        match sender.try_send(pcm.to_vec()) {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err("Screen-share audio sender has stopped".into())
+            }
+        }
     }
 
 
@@ -3012,6 +3029,7 @@ impl MatrixClientManager {
             Ok::<(), String>(())
         })?;
 
+        session.screen_share_audio_sender = None;
         session.screen_share_track = None;
         session.screen_share_source = None;
         session.screen_share_audio_track = None;
