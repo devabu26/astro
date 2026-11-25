@@ -1001,6 +1001,37 @@ impl MatrixClientManager {
         })
     }
 
+    /// Retrieve the current Matrix account's user ID, display name and avatar URI.
+    pub fn account_profile_json(&self) -> Result<String, String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?;
+
+        let user_id = client
+            .user_id()
+            .ok_or_else(|| "Matrix user ID is unavailable".to_string())?
+            .to_string();
+
+        self.runtime.block_on(async {
+            let account = client.account();
+            let display_name = account
+                .get_display_name()
+                .await
+                .map_err(|error| format!("Could not retrieve Matrix display name: {error}"))?;
+            let avatar_url = account
+                .get_avatar_url()
+                .await
+                .map_err(|error| format!("Could not retrieve Matrix avatar: {error}"))?;
+
+            Ok(serde_json::json!({
+                "user_id": user_id,
+                "display_name": display_name,
+                "avatar_url": avatar_url.map(|url| url.to_string())
+            }).to_string())
+        })
+    }
+
     /// Retrieve all registered Matrix sessions and their encryption trust status.
     pub fn devices_json(&self) -> Result<String, String> {
         let client = self
