@@ -394,7 +394,7 @@ Item {
 
                                 MouseArea {
                                     anchors.fill: parent
-                                    enabled: root.backend !== null
+                                    enabled: root.backend !== undefined && root.backend !== null
                                     onClicked: {
                                         root.backend.setLifecycleExemption(
                                             !root.backend.lifecycleExemptionEnabled
