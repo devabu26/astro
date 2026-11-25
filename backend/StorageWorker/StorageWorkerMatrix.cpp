@@ -1688,16 +1688,20 @@ void StorageWorker::startRtcBackgroundCamera(
 
 void StorageWorker::stopRtcBackgroundCamera(const QString &roomId)
 {
-    QMutexLocker locker(&m_rtcCameraFrameMutex);
+    {
+        QMutexLocker locker(&m_rtcCameraFrameMutex);
 
-    if (m_rtcCamera) {
-        m_rtcCamera->stop();
-        m_rtcCamera->setViewfinder(
-            static_cast<QAbstractVideoSurface *>(nullptr)
-        );
-        delete m_rtcCamera;
-        m_rtcCamera = nullptr;
-        qInfo() << "RTC native background capture stopped:" << roomId;
+        // Ignore stale stop requests from a previous call page.
+        if (m_rtcCamera &&
+            (roomId.isEmpty() || roomId == m_rtcVideoRoomId)) {
+            m_rtcCamera->stop();
+            m_rtcCamera->setViewfinder(
+                static_cast<QAbstractVideoSurface *>(nullptr)
+            );
+            delete m_rtcCamera;
+            m_rtcCamera = nullptr;
+            qInfo() << "RTC native background capture stopped:" << roomId;
+        }
     }
 
     emit matrixRtcBackgroundCameraActionFinished(
