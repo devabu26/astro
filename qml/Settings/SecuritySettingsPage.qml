@@ -160,7 +160,16 @@ Item {
     }
 
 
-    Component.onCompleted: refreshDevices()
+    Component.onCompleted: {
+        refreshDevices()
+        if (backend)
+            backend.refreshLifecycleExemption()
+    }
+
+    onVisibleChanged: {
+        if (visible && backend)
+            backend.refreshLifecycleExemption()
+    }
 
     Connections {
         target: root.backend
@@ -279,6 +288,63 @@ Item {
                                 color: root.accentColor
                                 font.pixelSize: units.gu(1.4)
                                 font.bold: true
+                            }
+
+                            Rectangle {
+                                width: parent.width
+                                height: units.gu(13)
+                                radius: units.gu(1.5)
+                                color: root.panelColor
+
+                                Column {
+                                    anchors.fill: parent
+                                    anchors.margins: units.gu(1.5)
+                                    spacing: units.gu(0.5)
+
+                                    Row {
+                                        width: parent.width
+                                        spacing: units.gu(1)
+
+                                        Text {
+                                            width: parent.width - lifecycleExemptionSwitch.width - units.gu(1)
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: "Allow Astro to run in the background"
+                                            color: root.primaryText
+                                            font.pixelSize: units.gu(1.7)
+                                            wrapMode: Text.WordWrap
+                                        }
+
+                                        Switch {
+                                            id: lifecycleExemptionSwitch
+                                            checked: root.backend
+                                                     ? root.backend.lifecycleExemptionEnabled
+                                                     : false
+                                            enabled: false
+                                        }
+                                    }
+
+                                    Text {
+                                        width: parent.width
+                                        text: !root.backend
+                                              ? "Background-running status is unavailable."
+                                              : root.backend.lifecycleExemptionError !== ""
+                                                ? "Could not read the current Ubuntu Touch setting."
+                                                : root.backend.lifecycleExemptionEnabled
+                                                  ? "Astro is currently exempt from automatic suspension."
+                                                  : "Astro may be suspended when it is sent to the background."
+                                        color: root.secondaryText
+                                        font.pixelSize: units.gu(1.35)
+                                        wrapMode: Text.WordWrap
+                                    }
+
+                                    Text {
+                                        text: '<a href="https://open-store.io/app/ut-tweak-tool.sverzegnassi/">Open UT Tweak Tool in OpenStore</a>'
+                                        textFormat: Text.RichText
+                                        color: root.accentColor
+                                        font.pixelSize: units.gu(1.4)
+                                        onLinkActivated: Qt.openUrlExternally(link)
+                                    }
+                                }
                             }
 
                             Rectangle {
