@@ -23,6 +23,15 @@ RtcVideoItem::RtcVideoItem(QQuickItem *parent)
     setOpaquePainting(false);
 }
 
+void RtcVideoItem::setRoomId(const QString &roomId)
+{
+    if (m_roomId == roomId) {
+        return;
+    }
+    m_roomId = roomId;
+    clearFrame();
+}
+
 void RtcVideoItem::setBackend(Backend *backend)
 {
     if (m_backend == backend) {
