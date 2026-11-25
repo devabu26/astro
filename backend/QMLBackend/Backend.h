@@ -126,7 +126,7 @@ public:
         int height
     );
     Q_INVOKABLE void stopRtcVideo(const QString &roomId);
-    Q_INVOKABLE void startRtcScreenShare(const QString &roomId, int width, int height);
+    Q_INVOKABLE void startRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
     Q_INVOKABLE void stopRtcScreenShare(const QString &roomId);
     Q_INVOKABLE void switchRtcCamera(const QString &roomId);
 
@@ -413,7 +413,7 @@ signals:
    // ASTRO_RTC_VIDEO_STAGE3
    void requestStartRtcVideo(const QString &roomId, int width, int height);
    void requestStopRtcVideo(const QString &roomId);
-   void requestStartRtcScreenShare(const QString &roomId, int width, int height);
+   void requestStartRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
    void requestStopRtcScreenShare(const QString &roomId);
    void requestSwitchRtcCamera(const QString &roomId);
 
