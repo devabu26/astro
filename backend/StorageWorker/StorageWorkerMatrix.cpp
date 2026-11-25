@@ -1932,28 +1932,6 @@ bool StorageWorker::startRtcScreenShareAudioCapture(
     QString *error
 )
 {
-    const QList<QAudioDeviceInfo> devices =
-        QAudioDeviceInfo::availableDevices(QAudio::AudioInput);
-    QAudioDeviceInfo monitor;
-    for (const QAudioDeviceInfo &device : devices) {
-        const QString name = device.deviceName();
-        qInfo() << "ASTRO_SCREEN_SHARE_AUDIO: input device:" << name;
-        if (name.contains(QStringLiteral("monitor"), Qt::CaseInsensitive)) {
-            monitor = device;
-            if (name.contains(QStringLiteral("primary_output.monitor"),
-                              Qt::CaseInsensitive))
-                break;
-        }
-    }
-
-    if (monitor.isNull()) {
-        if (error) {
-            *error = QStringLiteral(
-                "Qt could not find a PulseAudio playback monitor input");
-        }
-        return false;
-    }
-
     QAudioFormat format;
     format.setSampleRate(48000);
     format.setChannelCount(2);
@@ -1961,6 +1939,30 @@ bool StorageWorker::startRtcScreenShareAudioCapture(
     format.setCodec(QStringLiteral("audio/pcm"));
     format.setByteOrder(QAudioFormat::LittleEndian);
     format.setSampleType(QAudioFormat::SignedInt);
+
+    const QList<QAudioDeviceInfo> devices =
+        QAudioDeviceInfo::availableDevices(QAudio::AudioInput);
+    QAudioDeviceInfo monitor;
+    for (const QAudioDeviceInfo &device : devices) {
+        const QString name = device.deviceName();
+        qInfo() << "ASTRO_SCREEN_SHARE_AUDIO: input device:" << name;
+        if (!name.contains(QStringLiteral("monitor"), Qt::CaseInsensitive) ||
+            !device.isFormatSupported(format))
+            continue;
+
+        monitor = device;
+        if (name.contains(QStringLiteral("primary_output.monitor"),
+                          Qt::CaseInsensitive))
+            break;
+    }
+
+    if (monitor.isNull()) {
+        if (error) {
+            *error = QStringLiteral(
+                "Qt could not find a 48 kHz stereo PulseAudio playback monitor input");
+        }
+        return false;
+    }
 
     if (!monitor.isFormatSupported(format)) {
         if (error) {
