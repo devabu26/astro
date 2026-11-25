@@ -39,6 +39,15 @@ void RtcVideoItem::setRoomId(const QString &roomId)
     clearFrame();
 }
 
+void RtcVideoItem::setIdentity(const QString &identity)
+{
+    if (m_identity == identity) {
+        return;
+    }
+    m_identity = identity;
+    clearFrame();
+}
+
 void RtcVideoItem::setBackend(Backend *backend)
 {
     if (m_backend == backend) {
