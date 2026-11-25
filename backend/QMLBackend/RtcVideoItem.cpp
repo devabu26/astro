@@ -2,6 +2,7 @@
 #include "Backend.h"
 
 #include <QPainter>
+#include <QDebug>
 #include <QMutexLocker>
 #include <QRectF>
 #include <QtGlobal>
@@ -36,6 +37,7 @@ void RtcVideoItem::setRoomId(const QString &roomId)
         return;
     }
     m_roomId = roomId;
+    m_loggedFirstRemoteFrame = false;
     clearFrame();
 }
 
@@ -45,6 +47,7 @@ void RtcVideoItem::setIdentity(const QString &identity)
         return;
     }
     m_identity = identity;
+    m_loggedFirstRemoteFrame = false;
     clearFrame();
 }
 
@@ -85,6 +88,19 @@ void RtcVideoItem::receiveRemoteFrame(
     }
 
     setI420Frame(i420, width, height);
+
+    if (!m_loggedFirstRemoteFrame) {
+        if (hasFrame()) {
+            qInfo() << "RTC remote frame displayed by RtcVideoItem:"
+                    << identity << width << "x" << height
+                    << "bytes:" << i420.size();
+        } else {
+            qWarning() << "RTC remote frame received but rejected by RtcVideoItem:"
+                       << identity << width << "x" << height
+                       << "bytes:" << i420.size();
+        }
+        m_loggedFirstRemoteFrame = true;
+    }
 }
 
 void RtcVideoItem::setI420Frame(
