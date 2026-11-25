@@ -632,11 +632,13 @@ pub unsafe extern "C" fn astro_matrix_push_rtc_screenshare_frame(
     let result = catch_unwind(AssertUnwindSafe(|| {
         let room_id = read_input(room_id, "Room ID")?;
 
+        let frame_pixels = (width as u64).checked_mul(height as u64);
         if width < 2 || height < 2
-            || width > 1920 || height > 1080
+            || width > 1920 || height > 1920
             || width % 2 != 0 || height % 2 != 0
+            || frame_pixels.is_none_or(|pixels| pixels > 2_073_600)
         {
-            return Err("Invalid video frame dimensions".to_string());
+            return Err("Invalid screen-share frame dimensions".to_string());
         }
 
         let y_size = (width as usize)
