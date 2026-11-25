@@ -2879,6 +2879,12 @@ impl MatrixClientManager {
                         }))
                     }
                     RoomEvent::TrackUnsubscribed { participant, track, .. } => {
+                        let is_camera = matches!(
+                            &track,
+                            RemoteTrack::Video(video_track)
+                                if video_track.source() == TrackSource::Camera
+                        );
+
                         if let RemoteTrack::Video(video_track) = track {
                             let key = format!(
                                 "{room_id}\u{1f}{}\u{1f}{}",
@@ -2890,6 +2896,7 @@ impl MatrixClientManager {
                         Some(serde_json::json!({
                             "room_id": room_id,
                             "type": "track_unsubscribed",
+                            "is_camera": is_camera,
                             "identity": participant.identity().to_string(),
                             "name": participant.name()
                         }))
