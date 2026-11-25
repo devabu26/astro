@@ -85,7 +85,7 @@ add_custom_target(${PROJECT_NAME}_FILES ALL SOURCES ${PROJECT_SRC_FILES})
 
 
 # Astro C++ QML backend
-find_package(Qt5 5.12 REQUIRED COMPONENTS Core Gui Qml DBus Multimedia)
+find_package(Qt5 5.12 REQUIRED COMPONENTS Core Gui Qml Quick DBus Multimedia)
 add_library(AstroBackend MODULE
     backend/QMLBackend/Backend.cpp
     backend/QMLBackend/BackendConnections.cpp
@@ -93,6 +93,8 @@ add_library(AstroBackend MODULE
     backend/QMLBackend/BackendStorage.cpp
     backend/QMLBackend/BackendMatrix.cpp
     backend/QMLBackend/BackendMedia.cpp
+    backend/QMLBackend/RtcVideoItem.cpp
+    backend/QMLBackend/RtcVideoItem.h
     backend/QMLBackend/Backend.h
     backend/notifications/NotificationManager.cpp
     backend/notifications/NotificationManager.h
@@ -116,6 +118,7 @@ target_link_libraries(AstroBackend
     PRIVATE
         Qt5::Core
         Qt5::Qml
+        Qt5::Quick
         Qt5::DBus
         Qt5::Gui
         Qt5::Multimedia
