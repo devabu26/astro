@@ -293,7 +293,12 @@ Backend::Backend(QObject *parent)
         m_storageWorker,
         &StorageWorker::matrixRtcScreenShareActionFinished,
         this,
-        &Backend::matrixRtcScreenShareActionFinished
+        [this](const QString &roomId, const QString &error) {
+            qInfo() << "ASTRO_SCREEN_SHARE_DIAG: backend completion received"
+                    << "room:" << roomId
+                    << "error:" << error;
+            emit matrixRtcScreenShareActionFinished(roomId, error);
+        }
     );
 
     connect(
