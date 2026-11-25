@@ -144,6 +144,7 @@ fn pack_remote_video_frame(buffer: &dyn VideoBuffer) -> Option<Vec<u8>> {
             let i420 = buffer.as_nv12()?.to_i420();
             pack_remote_i420_frame(&i420)
         }
+        _ => None,
     }
 }
 
