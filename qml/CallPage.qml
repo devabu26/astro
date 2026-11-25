@@ -545,8 +545,9 @@ Item {
         fillMode: VideoOutput.PreserveAspectCrop
         orientation: 270
 
-        // Drag the local camera preview anywhere within the call page.
+        // Drag and flick the local camera preview within the call page.
         MouseArea {
+            id: localCameraPreviewDrag
             anchors.fill: parent
             drag.target: localCameraPreview
             drag.axis: Drag.XAndYAxis
@@ -554,6 +555,94 @@ Item {
             drag.maximumX: Math.max(0, root.width - localCameraPreview.width)
             drag.minimumY: 0
             drag.maximumY: Math.max(0, root.height - localCameraPreview.height)
+
+            property real lastPointerX: 0
+            property real lastPointerY: 0
+            property real velocityX: 0
+            property real velocityY: 0
+            property double lastSampleTime: 0
+            property real flickTargetX: localCameraPreview.x
+            property real flickTargetY: localCameraPreview.y
+
+            onPressed: {
+                previewFlick.stop()
+                var point = mapToItem(root, mouse.x, mouse.y)
+                lastPointerX = point.x
+                lastPointerY = point.y
+                lastSampleTime = Date.now()
+                velocityX = 0
+                velocityY = 0
+            }
+
+            onPositionChanged: {
+                if (!pressed)
+                    return
+
+                var point = mapToItem(root, mouse.x, mouse.y)
+                var now = Date.now()
+                var elapsed = now - lastSampleTime
+
+                if (elapsed > 0) {
+                    var sampleX = (point.x - lastPointerX) / elapsed
+                    var sampleY = (point.y - lastPointerY) / elapsed
+
+                    // Smooth noisy touch samples while retaining the flick.
+                    velocityX = velocityX * 0.55 + sampleX * 0.45
+                    velocityY = velocityY * 0.55 + sampleY * 0.45
+                }
+
+                lastPointerX = point.x
+                lastPointerY = point.y
+                lastSampleTime = now
+            }
+
+            onReleased: {
+                var maxVelocity = 2.4
+                var vx = Math.max(-maxVelocity,
+                                  Math.min(maxVelocity, velocityX))
+                var vy = Math.max(-maxVelocity,
+                                  Math.min(maxVelocity, velocityY))
+                var projection = 190
+
+                flickTargetX = Math.max(
+                    0,
+                    Math.min(root.width - localCameraPreview.width,
+                             localCameraPreview.x + vx * projection)
+                )
+                flickTargetY = Math.max(
+                    0,
+                    Math.min(root.height - localCameraPreview.height,
+                             localCameraPreview.y + vy * projection)
+                )
+
+                var distance = Math.sqrt(
+                    Math.pow(flickTargetX - localCameraPreview.x, 2) +
+                    Math.pow(flickTargetY - localCameraPreview.y, 2)
+                )
+
+                if (distance > units.gu(1))
+                    previewFlick.start()
+            }
+
+            ParallelAnimation {
+                id: previewFlick
+
+                NumberAnimation {
+                    target: localCameraPreview
+                    property: "x"
+                    to: localCameraPreviewDrag.flickTargetX
+                    duration: 420
+                    easing.type: Easing.OutCubic
+                }
+
+                NumberAnimation {
+                    target: localCameraPreview
+                    property: "y"
+                    to: localCameraPreviewDrag.flickTargetY
+                    duration: 420
+                    easing.type: Easing.OutCubic
+                }
+            }
         }
     }
 
