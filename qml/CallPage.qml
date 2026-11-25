@@ -161,20 +161,12 @@ Item {
         actionError = ""
         noAnswerTimer.stop()
         ringbackAudio.stop()
+        screenShareChoiceVisible = false
 
-        if (screenShareStarted) {
-            pendingOperation = "stopScreenShareForHangup"
-            backend.stopRtcScreenShare(roomId)
-            return
-        }
-
-        if (videoStarted) {
-            localCamera.stop()
-            pendingOperation = "stopVideoForHangup"
-            backend.stopRtcVideo(roomId)
-            return
-        }
-
+        // Stop local capture immediately, but do not make leaving depend on
+        // separately unpublishing camera or screen-share tracks. Closing the
+        // LiveKit room below tears down every published track in one operation.
+        localCamera.stop()
         stopAudioOrLeave()
     }
 
@@ -183,7 +175,8 @@ Item {
                 pendingOperation.length > 0)
             return
 
-        if (audioStarted || audioState.active === true) {
+        if (audioStarted || audioState.active === true ||
+                screenShareStarted || videoStarted) {
             pendingOperation = "stop"
             backend.stopRtcAudio(roomId)
         } else {
@@ -445,6 +438,16 @@ Item {
 
             if (error && error.length > 0) {
                 root.actionError = error
+                if (operation === "stop") {
+                    // Even if LiveKit shutdown reports an error, withdraw
+                    // MatrixRTC membership so the user is not trapped in the call.
+                    root.audioStarted = false
+                    root.videoStarted = false
+                    root.screenShareStarted = false
+                    root.screenShareAudioRequested = false
+                    root.screenShareRoomId = ""
+                    root.leaveMembership()
+                }
                 return
             }
 
