@@ -341,6 +341,7 @@ signals:
     void matrixRtcBackgroundCameraActionFinished(
         const QString &roomId,
         bool running,
+        const QString &deviceId,
         const QString &error
     );
     void matrixRtcScreenShareActionFinished(const QString &roomId, const QString &error);
