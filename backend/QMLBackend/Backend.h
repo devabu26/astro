@@ -6,6 +6,7 @@
 
 class QThread;
 class QVideoFrame;
+class QImage;
 class StorageWorker;
 class NotificationManager;
 
@@ -129,6 +130,7 @@ public:
 
     // Called directly by the Qt Quick video-filter render thread.
     void processRtcCameraFrame(const QString &roomId, const QVideoFrame &frame);
+    Q_INVOKABLE void processRtcCameraImage(const QString &roomId, const QImage &image);
 
     Q_INVOKABLE void sendRoomAttachment(
         const QString &requestKey,
