@@ -160,16 +160,7 @@ Item {
     }
 
 
-    Component.onCompleted: {
-        refreshDevices()
-        if (backend)
-            backend.refreshLifecycleExemption()
-    }
-
-    onVisibleChanged: {
-        if (visible && backend)
-            backend.refreshLifecycleExemption()
-    }
+    Component.onCompleted: refreshDevices()
 
     Connections {
         target: root.backend
@@ -293,17 +284,18 @@ Item {
 
                             Rectangle {
                                 width: parent.width
-                                height: units.gu(18)
+                                height: backgroundActivityInfo.height +
+                                        units.gu(3)
                                 radius: units.gu(1.5)
                                 color: root.panelColor
 
                                 Column {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: units.gu(2)
-                                    anchors.rightMargin: units.gu(2)
-                                    anchors.topMargin: units.gu(1.5)
-                                    anchors.bottomMargin: units.gu(1.5)
-                                    spacing: units.gu(0.8)
+                                    id: backgroundActivityInfo
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.margins: units.gu(2)
+                                    spacing: units.gu(1)
 
                                     Text {
                                         width: parent.width
@@ -324,29 +316,9 @@ Item {
 
                                     Text {
                                         width: parent.width
-                                        text: !root.backend
-                                              ? "Current status: Unavailable"
-                                              : root.backend.lifecycleExemptionError !== ""
-                                                ? "Current status: Unable to verify"
-                                                : "Current status: " +
-                                                  (root.backend.lifecycleExemptionEnabled
-                                                   ? "Enabled" : "Disabled")
-                                        color: root.backend
-                                               && root.backend.lifecycleExemptionError === ""
-                                               && root.backend.lifecycleExemptionEnabled
-                                               ? "#a8d8ff" : root.secondaryText
-                                        font.pixelSize: units.gu(1.45)
-                                        font.bold: true
-                                    }
-
-                                    Text {
-                                        width: parent.width
-                                        visible: root.backend
-                                                 && root.backend.lifecycleExemptionError !== ""
-                                        text: root.backend
-                                              ? root.backend.lifecycleExemptionError : ""
-                                        color: "#ffb3b3"
-                                        font.pixelSize: units.gu(1.3)
+                                        text: "Background permission is managed by Ubuntu Touch. Check its current state in UT Tweak Tool."
+                                        color: root.secondaryText
+                                        font.pixelSize: units.gu(1.4)
                                         wrapMode: Text.WordWrap
                                     }
 
