@@ -1792,6 +1792,9 @@ void StorageWorker::startRtcScreenShare(
         }
     );
 
+    m_rtcScreenShareStartPending = true;
+    m_rtcScreenShareErrorOutput.clear();
+
     process->start(
         QStringLiteral("mirscreencast"),
         QStringList{
@@ -1818,9 +1821,6 @@ void StorageWorker::startRtcScreenShare(
         emit matrixRtcScreenShareActionFinished(roomId, errorMessage);
         return;
     }
-
-    m_rtcScreenShareStartPending = true;
-    m_rtcScreenShareErrorOutput.clear();
 
     qInfo() << "RTC screen-share process started; waiting for first frame:"
             << width << "x" << height;
@@ -1921,6 +1921,8 @@ void StorageWorker::stopRtcScreenShareCapture()
 
     m_rtcScreenShareBuffer.clear();
     m_rtcScreenShareRoomId.clear();
+    m_rtcScreenShareStartPending = false;
+    m_rtcScreenShareErrorOutput.clear();
     m_stoppingRtcScreenShare = false;
 }
 
