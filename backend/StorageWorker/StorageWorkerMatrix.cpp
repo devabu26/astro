@@ -1287,59 +1287,13 @@ void StorageWorker::startRtcVideo(
     if (result < 0 && errorMessage.isEmpty())
         errorMessage = QStringLiteral("Could not start LiveKit video");
 
-    if (result >= 0 && errorMessage.isEmpty() &&
-        m_rtcCameraOpenGLContext &&
-        !makeRtcCameraOpenGLContextCurrent()) {
-        errorMessage = QStringLiteral(
-            "Could not activate the camera OpenGL context"
-        );
-    }
-
     if (result >= 0 && errorMessage.isEmpty()) {
-        const QList<QCameraInfo> cameras = QCameraInfo::availableCameras();
-        qInfo() << "RTC available cameras:" << cameras.size();
-        for (const QCameraInfo &camera : cameras) {
-            qInfo() << " -" << camera.description()
-                    << "device:" << camera.deviceName()
-                    << "position:" << camera.position();
-        }
-
-        QCameraInfo selected = QCameraInfo::defaultCamera();
-        if (selected.deviceName().isEmpty() && !cameras.isEmpty())
-            selected = cameras.first();
-
-        if (selected.deviceName().isEmpty()) {
-            errorMessage = QStringLiteral("No camera device is available");
-        } else {
-            m_rtcCamera = new QCamera(selected, this);
-            connect(
-                m_rtcCamera, &QCamera::statusChanged, this,
-                [](QCamera::Status status) {
-                    qInfo() << "RTC camera status:" << static_cast<int>(status);
-                }
-            );
-            connect(
-                m_rtcCamera,
-                QOverload<QCamera::Error>::of(&QCamera::error),
-                this,
-                [this](QCamera::Error cameraError) {
-                    qWarning() << "RTC camera error:"
-                               << static_cast<int>(cameraError)
-                               << m_rtcCamera->errorString();
-                }
-            );
-
-            m_rtcCamera->setCaptureMode(QCamera::CaptureVideo);
-            m_rtcVideoSurface = new RtcCameraVideoSurface(
-                this, roomId, this
-            );
-            m_rtcCamera->setViewfinder(m_rtcVideoSurface);
-            m_rtcCamera->start();
-
-            if (!m_rtcCamera->isAvailable())
-                errorMessage = QStringLiteral("Selected camera is unavailable");
-        }
-
+        // The camera itself is owned by QML Camera + VideoOutput. This surface
+        // is only the I420 conversion bridge invoked by RtcCameraVideoFilter.
+        m_rtcVideoSurface = new RtcCameraVideoSurface(
+            this, roomId, this
+        );
+        qInfo() << "RTC camera frame bridge ready for Qt Quick VideoOutput";
     }
 
     if (result >= 0 && !errorMessage.isEmpty()) {
@@ -1353,6 +1307,14 @@ void StorageWorker::startRtcVideo(
     }
 
     emit matrixRtcVideoActionFinished(roomId, errorMessage);
+}
+
+void StorageWorker::processRtcCameraFrame(const QVideoFrame &frame)
+{
+    // RtcCameraVideoFilter calls this directly from the Qt Quick render
+    // thread, where the camera's GL texture context is current.
+    if (m_rtcVideoSurface && frame.isValid())
+        m_rtcVideoSurface->present(frame);
 }
 
 void StorageWorker::switchRtcCamera(const QString &roomId)
