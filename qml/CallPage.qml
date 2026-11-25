@@ -176,10 +176,15 @@ Item {
                    pendingOperation.length === 0) {
             audioStarted = false
             videoStarted = false
+            for (var i = 0; i < participants.length; ++i)
+                remoteVideoCleared(participants[i].identity)
         }
     }
 
     onRoomIdChanged: {
+        for (var i = 0; i < participants.length; ++i)
+            remoteVideoCleared(participants[i].identity)
+
         actionError = ""
         pendingOperation = ""
 
