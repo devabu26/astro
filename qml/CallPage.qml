@@ -22,6 +22,8 @@ Item {
     property bool videoStarted: false
     property bool screenShareStarted: false
     property string screenShareRoomId: ""
+    property bool screenShareChoiceVisible: false
+    property bool screenShareAudioRequested: false
     property bool cameraFrameGrabPending: false
 
     signal backRequested()
@@ -102,10 +104,19 @@ Item {
             pendingOperation = "stopScreenShare"
             backend.stopRtcScreenShare(roomId)
         } else {
-            screenShareRoomId = roomId
-            pendingOperation = "startScreenShare"
-            backend.startRtcScreenShare(roomId, 480, 854)
+            screenShareChoiceVisible = true
         }
+    }
+
+    function beginScreenShare(includeDeviceAudio) {
+        if (!backend || !roomId || pendingOperation.length > 0)
+            return
+
+        screenShareChoiceVisible = false
+        screenShareRoomId = roomId
+        screenShareAudioRequested = includeDeviceAudio
+        pendingOperation = "startScreenShare"
+        backend.startRtcScreenShare(roomId, 480, 854, includeDeviceAudio)
     }
 
     function switchCamera() {
@@ -362,6 +373,7 @@ Item {
                 root.audioStarted = false
                 root.videoStarted = false
                 root.screenShareStarted = false
+                root.screenShareAudioRequested = false
                 root.screenShareRoomId = ""
                 root.muted = false
                 root.actionError = ""
@@ -442,6 +454,7 @@ Item {
                 root.actionError = error
                 if (operation === "startScreenShare") {
                     root.screenShareStarted = false
+                    root.screenShareAudioRequested = false
                     root.screenShareRoomId = ""
                 } else if (operation === "stopScreenShare" ||
                            operation === "stopScreenShareForHangup") {
@@ -459,6 +472,7 @@ Item {
                 root.screenShareStarted = true
             } else if (operation === "stopScreenShare") {
                 root.screenShareStarted = false
+                root.screenShareAudioRequested = false
                 root.screenShareRoomId = ""
             } else if (operation === "stopScreenShareForHangup") {
                 root.screenShareStarted = false
@@ -1082,7 +1096,9 @@ Item {
                     text: root.muted
                           ? "Your microphone is muted"
                           : root.screenShareStarted
-                            ? "Screen sharing and audio connected"
+                            ? (root.screenShareAudioRequested
+                               ? "Screen sharing with device audio connected"
+                               : "Screen sharing connected")
                             : root.videoStarted
                               ? "Audio and camera connected"
                               : root.callActive
@@ -1095,4 +1111,77 @@ Item {
             }
         }
     }
+    // Ask before starting display capture so device playback is never shared implicitly.
+    Item {
+        anchors.fill: parent
+        visible: root.screenShareChoiceVisible
+        z: 2000
+
+        Rectangle {
+            anchors.fill: parent
+            color: "#99000000"
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: {}
+            }
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - units.gu(4), units.gu(42))
+            height: choiceColumn.height + units.gu(4)
+            radius: units.gu(1)
+            color: "#1b2935"
+
+            Column {
+                id: choiceColumn
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    top: parent.top
+                    margins: units.gu(2)
+                }
+                spacing: units.gu(1.5)
+
+                Text {
+                    width: parent.width
+                    text: "Share your screen"
+                    color: "white"
+                    font.pixelSize: units.gu(2.3)
+                    font.bold: true
+                    horizontalAlignment: Text.AlignHCenter
+                }
+
+                Text {
+                    width: parent.width
+                    text: "Would you also like to share audio playing on this device? Your microphone setting is unchanged."
+                    color: "#b8c7d3"
+                    font.pixelSize: units.gu(1.5)
+                    wrapMode: Text.Wrap
+                    horizontalAlignment: Text.AlignHCenter
+                }
+
+                Button {
+                    width: parent.width
+                    text: "Share screen only"
+                    onClicked: root.beginScreenShare(false)
+                }
+
+                Button {
+                    width: parent.width
+                    text: "Share screen + device audio"
+                    color: "#287a55"
+                    onClicked: root.beginScreenShare(true)
+                }
+
+                Button {
+                    width: parent.width
+                    text: "Cancel"
+                    onClicked: root.screenShareChoiceVisible = false
+                }
+            }
+        }
+    }
+
 }
