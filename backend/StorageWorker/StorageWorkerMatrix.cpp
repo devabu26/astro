@@ -1817,6 +1817,8 @@ void StorageWorker::startRtcScreenShare(
     m_rtcScreenShareRoomId = roomId;
     m_rtcScreenShareWidth = width;
     m_rtcScreenShareHeight = height;
+    m_rtcScreenShareLastFrame.clear();
+    m_rtcScreenShareLastFrameSent.invalidate();
     m_rtcScreenShareStartPending = true;
     m_rtcScreenShareTimer = new QTimer(this);
     m_rtcScreenShareTimer->setInterval(33);
@@ -1883,6 +1885,15 @@ void StorageWorker::captureRtcScreenShareFrame()
     }
     mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
 
+    // Static screens do not need a full colour conversion and LiveKit encode
+    // on every 33 ms capture tick. Keep a one-second refresh so late joiners
+    // and keyframe requests still receive a recent frame.
+    if (rgba == m_rtcScreenShareLastFrame &&
+        m_rtcScreenShareLastFrameSent.isValid() &&
+        m_rtcScreenShareLastFrameSent.elapsed() < 1000) {
+        return;
+    }
+
     const QByteArray i420 = rgbaFrameToI420(rgba, width, height);
     const QByteArray roomBytes = roomId.toUtf8();
     if (i420.isEmpty()) {
@@ -1916,6 +1927,9 @@ void StorageWorker::captureRtcScreenShareFrame()
         emit matrixRtcScreenShareActionFinished(roomId, failure);
         return;
     }
+
+    m_rtcScreenShareLastFrame = rgba;
+    m_rtcScreenShareLastFrameSent.restart();
 
     if (m_rtcScreenShareStartPending) {
         m_rtcScreenShareStartPending = false;
@@ -2121,6 +2135,8 @@ void StorageWorker::stopRtcScreenShareCapture()
     m_rtcScreenShareRoomId.clear();
     m_rtcScreenShareWidth = 0;
     m_rtcScreenShareHeight = 0;
+    m_rtcScreenShareLastFrame.clear();
+    m_rtcScreenShareLastFrameSent.invalidate();
     m_rtcScreenShareStartPending = false;
 }
 
