@@ -114,6 +114,129 @@ QByteArray rgbaFrameToI420(
     return output;
 }
 
+QByteArray transformI420Frame(
+    const QByteArray &source,
+    int sourceWidth,
+    int sourceHeight,
+    int targetWidth,
+    int targetHeight,
+    bool rotate270
+)
+{
+    if (sourceWidth < 2 || sourceHeight < 2 ||
+        targetWidth < 2 || targetHeight < 2 ||
+        (sourceWidth & 1) || (sourceHeight & 1) ||
+        (targetWidth & 1) || (targetHeight & 1) ||
+        source.size() != sourceWidth * sourceHeight * 3 / 2) {
+        return QByteArray();
+    }
+
+    if (!rotate270 &&
+        sourceWidth == targetWidth &&
+        sourceHeight == targetHeight) {
+        return source;
+    }
+
+    const int rotatedWidth = rotate270 ? sourceHeight : sourceWidth;
+    const int rotatedHeight = rotate270 ? sourceWidth : sourceHeight;
+
+    int cropWidth = rotatedWidth;
+    int cropHeight = rotatedHeight;
+    int cropX = 0;
+    int cropY = 0;
+
+    // Match VideoOutput.PreserveAspectCrop: fill the portrait target and
+    // crop the excess from the centre rather than stretching the camera.
+    if (static_cast<qint64>(rotatedWidth) * targetHeight >
+        static_cast<qint64>(rotatedHeight) * targetWidth) {
+        cropWidth = (rotatedHeight * targetWidth / targetHeight) & ~1;
+        cropX = ((rotatedWidth - cropWidth) / 2) & ~1;
+    } else {
+        cropHeight = (rotatedWidth * targetHeight / targetWidth) & ~1;
+        cropY = ((rotatedHeight - cropHeight) / 2) & ~1;
+    }
+
+    const int sourceYSize = sourceWidth * sourceHeight;
+    const int sourceChromaSize = sourceYSize / 4;
+    const int targetYSize = targetWidth * targetHeight;
+    const int targetChromaSize = targetYSize / 4;
+    QByteArray output(
+        targetYSize + targetChromaSize * 2,
+        Qt::Uninitialized
+    );
+
+    auto transformPlane = [rotate270](
+        const uchar *input,
+        int inputWidth,
+        int inputHeight,
+        uchar *outputPlane,
+        int outputWidth,
+        int outputHeight,
+        int left,
+        int top,
+        int width,
+        int height
+    ) {
+        const int rotatedWidth = rotate270 ? inputHeight : inputWidth;
+        const int rotatedHeight = rotate270 ? inputWidth : inputHeight;
+        QByteArray rotated(
+            rotatedWidth * rotatedHeight,
+            Qt::Uninitialized
+        );
+        uchar *rotatedData = reinterpret_cast<uchar *>(rotated.data());
+
+        for (int y = 0; y < inputHeight; ++y) {
+            for (int x = 0; x < inputWidth; ++x) {
+                const int destinationX = rotate270 ? y : x;
+                const int destinationY = rotate270
+                    ? inputWidth - 1 - x
+                    : y;
+                rotatedData[destinationY * rotatedWidth + destinationX] =
+                    input[y * inputWidth + x];
+            }
+        }
+
+        for (int y = 0; y < outputHeight; ++y) {
+            const int sourceY = top +
+                std::min(height - 1, y * height / outputHeight);
+            const uchar *sourceRow =
+                rotatedData + sourceY * rotatedWidth + left;
+            uchar *destinationRow = outputPlane + y * outputWidth;
+
+            for (int x = 0; x < outputWidth; ++x) {
+                const int sourceX =
+                    std::min(width - 1, x * width / outputWidth);
+                destinationRow[x] = sourceRow[sourceX];
+            }
+        }
+    };
+
+    const uchar *sourceY = reinterpret_cast<const uchar *>(source.constData());
+    const uchar *sourceU = sourceY + sourceYSize;
+    const uchar *sourceV = sourceU + sourceChromaSize;
+    uchar *targetY = reinterpret_cast<uchar *>(output.data());
+    uchar *targetU = targetY + targetYSize;
+    uchar *targetV = targetU + targetChromaSize;
+
+    transformPlane(
+        sourceY, sourceWidth, sourceHeight,
+        targetY, targetWidth, targetHeight,
+        cropX, cropY, cropWidth, cropHeight
+    );
+    transformPlane(
+        sourceU, sourceWidth / 2, sourceHeight / 2,
+        targetU, targetWidth / 2, targetHeight / 2,
+        cropX / 2, cropY / 2, cropWidth / 2, cropHeight / 2
+    );
+    transformPlane(
+        sourceV, sourceWidth / 2, sourceHeight / 2,
+        targetV, targetWidth / 2, targetHeight / 2,
+        cropX / 2, cropY / 2, cropWidth / 2, cropHeight / 2
+    );
+
+    return output;
+}
+
 }
 
 // =============================================================
@@ -956,11 +1079,15 @@ public:
     RtcCameraVideoSurface(
         StorageWorker *worker,
         const QString &roomId,
+        int targetWidth,
+        int targetHeight,
         QObject *parent = nullptr
     )
         : QAbstractVideoSurface(parent),
           m_worker(worker),
           m_roomId(roomId),
+          m_targetWidth(targetWidth),
+          m_targetHeight(targetHeight),
           m_pending(QSharedPointer<QAtomicInt>::create(0))
     {
     }
@@ -1317,20 +1444,42 @@ public:
             return false;
         }
 
+        const bool rotate270 =
+            (width > height && m_targetWidth < m_targetHeight) ||
+            (width < height && m_targetWidth > m_targetHeight);
+        const QByteArray outputFrame = transformI420Frame(
+            i420,
+            width,
+            height,
+            m_targetWidth,
+            m_targetHeight,
+            rotate270
+        );
+        if (outputFrame.isEmpty()) {
+            m_pending->storeRelease(0);
+            return false;
+        }
+
         if (m_loggedFirstFrame.testAndSetOrdered(0, 1)) {
             qInfo() << "RTC camera submitted first I420 frame:"
-                    << width << "x" << height
-                    << "source format:" << format;
+                    << m_targetWidth << "x" << m_targetHeight
+                    << "source:" << width << "x" << height
+                    << "format:" << format
+                    << "rotated 270:" << rotate270;
         }
 
         StorageWorker *worker = m_worker;
         const QString roomId = m_roomId;
         const auto pending = m_pending;
+        const int outputWidth = m_targetWidth;
+        const int outputHeight = m_targetHeight;
 
         const bool queued = QMetaObject::invokeMethod(
             worker,
-            [worker, pending, roomId, i420, width, height]() {
-                worker->pushRtcVideoFrame(roomId, width, height, i420);
+            [worker, pending, roomId, outputFrame, outputWidth, outputHeight]() {
+                worker->pushRtcVideoFrame(
+                    roomId, outputWidth, outputHeight, outputFrame
+                );
                 pending->storeRelease(0);
             },
             Qt::QueuedConnection
@@ -1348,6 +1497,8 @@ public:
 private:
     StorageWorker *m_worker = nullptr;
     QString m_roomId;
+    int m_targetWidth = 360;
+    int m_targetHeight = 480;
     QSharedPointer<QAtomicInt> m_pending;
     QAtomicInt m_loggedFrameCount{0};
     QAtomicInt m_loggedInvalidFrame{0};
@@ -1405,8 +1556,10 @@ void StorageWorker::startRtcVideo(
     if (result >= 0 && errorMessage.isEmpty()) {
         // The camera itself is owned by QML Camera + VideoOutput. This surface
         // is only the I420 conversion bridge invoked by RtcCameraVideoFilter.
+        m_rtcVideoWidth = width;
+        m_rtcVideoHeight = height;
         m_rtcVideoSurface = new RtcCameraVideoSurface(
-            this, roomId, this
+            this, roomId, width, height, this
         );
         m_rtcVideoRoomId = roomId;
         qInfo() << "RTC camera CPU frame bridge ready for Qt Quick VideoOutput";
@@ -1714,7 +1867,10 @@ void StorageWorker::switchRtcCamera(const QString &roomId)
     );
 
     m_rtcCamera->setCaptureMode(QCamera::CaptureVideo);
-    m_rtcVideoSurface = new RtcCameraVideoSurface(this, roomId, this);
+    m_rtcVideoSurface = new RtcCameraVideoSurface(
+        this, roomId, m_rtcVideoWidth, m_rtcVideoHeight, this
+    );
+    m_rtcVideoRoomId = roomId;
     m_rtcCamera->setViewfinder(m_rtcVideoSurface);
     m_rtcCamera->start();
 
