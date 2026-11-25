@@ -86,6 +86,7 @@ public slots:
     // Matrix devices, rooms and timelines
     // ---------------------------------------------------------
 
+    void fetchMatrixAccountProfile();
     void fetchMatrixDevices();
     void requestDeviceVerification(const QString &deviceId);
     void renameMatrixDevice(
@@ -268,6 +269,7 @@ signals:
     // Matrix device and room results
     // ---------------------------------------------------------
 
+    void matrixAccountProfileUpdated(const QString &json, const QString &error);
     void matrixDevicesUpdated(const QString &json, const QString &error);
 
     /*
