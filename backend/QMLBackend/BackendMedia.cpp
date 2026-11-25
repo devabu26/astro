@@ -13,6 +13,7 @@
 #include <QVideoFrame>
 #include <QVideoProbe>
 #include <QMediaObject>
+#include <QCamera>
 #include <QImage>
 #include <QUuid>
 #include <QMap>
@@ -259,26 +260,11 @@ void Backend::processRtcCameraFrame(
 }
 
 
-bool Backend::setRtcCameraProbe(QObject *mediaObject)
+bool Backend::setRtcCameraProbe(QObject *qmlCamera)
 {
-    if (!m_rtcCameraProbe)
+    if (!m_rtcCameraProbe) {
         m_rtcCameraProbe = new QVideoProbe(this);
-
-    m_rtcCameraProbe->setSource(nullptr);
-    m_rtcCameraProbeFrames = 0;
-
-    if (!mediaObject) {
-        qInfo() << "ASTRO_BACKGROUND_CAMERA: QVideoProbe detached";
-        return true;
-    }
-
-    QMediaObject *source = qobject_cast<QMediaObject *>(mediaObject);
-    if (!source) {
-        qWarning() << "ASTRO_BACKGROUND_CAMERA: QVideoProbe source is not a QMediaObject";
-        return false;
-    }
-
-    if (!connect(
+        connect(
             m_rtcCameraProbe,
             &QVideoProbe::videoFrameProbed,
             this,
@@ -291,19 +277,32 @@ bool Backend::setRtcCameraProbe(QObject *mediaObject)
                             << "format:" << frame.pixelFormat()
                             << "valid:" << frame.isValid();
                 }
-            },
-            Qt::UniqueConnection)) {
-        // A lambda connection is not reliably deduplicated by Qt::UniqueConnection;
-        // an existing connection is harmlessly avoided by connecting only once below.
+            }
+        );
     }
 
-    const bool attached = m_rtcCameraProbe->setSource(source);
+    if (!qmlCamera) {
+        m_rtcCameraProbe->setSource(static_cast<QMediaObject *>(nullptr));
+        qInfo() << "ASTRO_BACKGROUND_CAMERA: QVideoProbe detached";
+        return true;
+    }
+
+    // Camera.mediaObject is deliberately hidden from QML, but Qt exposes it
+    // as a QCamera* QVariant on the native QML Camera object.
+    const QVariant nativeObject = qmlCamera->property("mediaObject");
+    QCamera *camera = qvariant_cast<QCamera *>(nativeObject);
+    if (!camera) {
+        qWarning() << "ASTRO_BACKGROUND_CAMERA: QVideoProbe could not obtain native QCamera";
+        return false;
+    }
+
+    m_rtcCameraProbeFrames = 0;
+    const bool attached = m_rtcCameraProbe->setSource(camera);
     qInfo() << "ASTRO_BACKGROUND_CAMERA: QVideoProbe attach"
             << attached
             << "active:" << m_rtcCameraProbe->isActive();
     return attached;
 }
-
 
 void Backend::processRtcCameraImage(
     const QString &roomId,
