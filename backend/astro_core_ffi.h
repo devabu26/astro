@@ -249,6 +249,14 @@ int32_t astro_matrix_start_rtc_screenshare(
     const char *room_id,
     uint32_t width,
     uint32_t height,
+    int32_t include_device_audio,
+    char **error_out
+);
+int32_t astro_matrix_push_rtc_screenshare_audio_frame(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    const int16_t *pcm_data,
+    uint64_t pcm_samples,
     char **error_out
 );
 int32_t astro_matrix_push_rtc_screenshare_frame(
