@@ -76,7 +76,7 @@ fn pack_remote_i420_frame(buffer: &I420Buffer) -> Option<Vec<u8>> {
     let width = buffer.width() as usize;
     let height = buffer.height() as usize;
 
-    if width < 2 || height < 2
+    if width < 2 || height < 2 || width % 2 != 0 || height % 2 != 0
         || width > RTC_VIDEO_MAX_WIDTH as usize
         || height > RTC_VIDEO_MAX_HEIGHT as usize
     {
@@ -2799,43 +2799,43 @@ impl MatrixClientManager {
                     RoomEvent::TrackSubscribed { participant, track, .. } => {
                         if let RemoteTrack::Video(video_track) = track {
                             if video_track.source() == TrackSource::Camera {
-                            let identity = participant.identity().to_string();
-                            let track_sid = video_track.sid().to_string();
-                            let key = format!("{room_id}\u{1f}{identity}\u{1f}{track_sid}");
-                            let task_key = key.clone();
-                            let task_room_id = room_id.clone();
-                            let task_identity = identity.clone();
-                            let mut stream = NativeVideoStream::new(video_track.rtc_track());
-                            let task = runtime.spawn(async move {
-                                while let Some(frame) = stream.next().await {
-                                    let i420 = frame.buffer.to_i420();
-                                    let Some(data) = pack_remote_i420_frame(&i420) else {
-                                        continue;
-                                    };
-                                    let next_frame = RtcRemoteVideoFrame {
-                                        key: task_key.clone(),
-                                        room_id: task_room_id.clone(),
-                                        identity: task_identity.clone(),
-                                        width: i420.width(),
-                                        height: i420.height(),
-                                        data,
-                                    };
+                                let identity = participant.identity().to_string();
+                                let track_sid = video_track.sid().to_string();
+                                let key = format!("{room_id}\u{1f}{identity}\u{1f}{track_sid}");
+                                let task_key = key.clone();
+                                let task_room_id = room_id.clone();
+                                let task_identity = identity.clone();
+                                let mut stream = NativeVideoStream::new(video_track.rtc_track());
+                                let task = runtime.spawn(async move {
+                                    while let Some(frame) = stream.next().await {
+                                        let i420 = frame.buffer.to_i420();
+                                        let Some(data) = pack_remote_i420_frame(&i420) else {
+                                            continue;
+                                        };
+                                        let next_frame = RtcRemoteVideoFrame {
+                                            key: task_key.clone(),
+                                            room_id: task_room_id.clone(),
+                                            identity: task_identity.clone(),
+                                            width: i420.width(),
+                                            height: i420.height(),
+                                            data,
+                                        };
 
-                                    if let Ok(mut frames) = frame_queue.lock() {
-                                        if let Some(existing) = frames.iter_mut()
-                                            .find(|queued| queued.key == task_key)
-                                        {
-                                            *existing = next_frame;
-                                        } else {
-                                            if frames.len() >= RTC_VIDEO_FRAME_QUEUE_LIMIT {
-                                                frames.pop_front();
+                                        if let Ok(mut frames) = frame_queue.lock() {
+                                            if let Some(existing) = frames.iter_mut()
+                                                .find(|queued| queued.key == task_key)
+                                            {
+                                                *existing = next_frame;
+                                            } else {
+                                                if frames.len() >= RTC_VIDEO_FRAME_QUEUE_LIMIT {
+                                                    frames.pop_front();
+                                                }
+                                                frames.push_back(next_frame);
                                             }
-                                            frames.push_back(next_frame);
                                         }
                                     }
-                                }
-                            });
-                            tasks_to_add.push((key, task.abort_handle()));
+                                });
+                                tasks_to_add.push((key, task.abort_handle()));
                             }
                         }
 
