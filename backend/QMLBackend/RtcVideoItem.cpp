@@ -2,6 +2,7 @@
 #include "Backend.h"
 
 #include <QPainter>
+#include <QMutexLocker>
 #include <QRectF>
 #include <QtGlobal>
 
@@ -21,6 +22,12 @@ RtcVideoItem::RtcVideoItem(QQuickItem *parent)
 {
     setAntialiasing(false);
     setOpaquePainting(false);
+}
+
+bool RtcVideoItem::hasFrame() const
+{
+    QMutexLocker locker(&m_imageMutex);
+    return !m_image.isNull();
 }
 
 void RtcVideoItem::setRoomId(const QString &roomId)
@@ -127,29 +134,40 @@ void RtcVideoItem::setI420Frame(
         }
     }
 
-    m_image = next;
+    {
+        QMutexLocker locker(&m_imageMutex);
+        m_image = next;
+    }
     emit frameChanged();
     update();
 }
 
 void RtcVideoItem::clearFrame()
 {
-    if (m_image.isNull()) {
-        return;
+    {
+        QMutexLocker locker(&m_imageMutex);
+        if (m_image.isNull()) {
+            return;
+        }
+        m_image = QImage();
     }
-
-    m_image = QImage();
     emit frameChanged();
     update();
 }
 
 void RtcVideoItem::paint(QPainter *painter)
 {
-    if (m_image.isNull()) {
+    QImage image;
+    {
+        QMutexLocker locker(&m_imageMutex);
+        image = m_image;
+    }
+
+    if (image.isNull()) {
         return;
     }
 
-    const QSizeF sourceSize = m_image.size();
+    const QSizeF sourceSize = image.size();
     const QSizeF targetSize = boundingRect().size();
     if (sourceSize.isEmpty() || targetSize.isEmpty()) {
         return;
@@ -166,5 +184,5 @@ void RtcVideoItem::paint(QPainter *painter)
     );
 
     painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
-    painter->drawImage(target, m_image);
+    painter->drawImage(target, image);
 }
