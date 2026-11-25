@@ -1149,7 +1149,7 @@ void StorageWorker::switchRtcCamera(const QString &roomId)
 
     const QString currentDevice = QCameraInfo(*m_rtcCamera).deviceName();
     const QCamera::Position currentPosition =
-        QCameraInfo(m_rtcCamera).position();
+        QCameraInfo(*m_rtcCamera).position();
 
     QCameraInfo selected;
     // Prefer the opposite physical facing (front <-> back).
