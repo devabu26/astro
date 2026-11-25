@@ -1,6 +1,7 @@
 #include "plugin.h"
 #include "Backend.h"
 #include "RtcVideoItem.h"
+#include "RtcCameraVideoFilter.h"
 
 #include <QtQml/qqml.h>
 #include <QtCore/QtGlobal>
@@ -21,5 +22,12 @@ void AstroBackendPlugin::registerTypes(const char *uri)
         1,
         0,
         "RtcVideoItem"
+    );
+
+    qmlRegisterType<RtcCameraVideoFilter>(
+        uri,
+        1,
+        0,
+        "RtcCameraVideoFilter"
     );
 }
