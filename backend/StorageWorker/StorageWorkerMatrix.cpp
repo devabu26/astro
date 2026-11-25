@@ -1312,7 +1312,9 @@ void StorageWorker::startRtcVideo(
 void StorageWorker::processRtcCameraFrame(const QVideoFrame &frame)
 {
     // RtcCameraVideoFilter calls this directly from the Qt Quick render
-    // thread, where the camera's GL texture context is current.
+    // thread, where the camera's GL texture context is current. Serialize
+    // against stopRtcCamera() so the surface cannot be deleted mid-frame.
+    QMutexLocker locker(&m_rtcCameraFrameMutex);
     if (m_rtcVideoSurface && frame.isValid())
         m_rtcVideoSurface->present(frame);
 }
@@ -1773,6 +1775,8 @@ void StorageWorker::redactRoomEvent(
 
 void StorageWorker::stopRtcCamera()
 {
+    QMutexLocker frameLocker(&m_rtcCameraFrameMutex);
+
     if (m_rtcCamera) {
         m_rtcCamera->stop();
     }
