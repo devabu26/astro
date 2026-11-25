@@ -20,10 +20,11 @@ Item {
     property bool muted: false
     property bool pendingMuted: false
     property bool videoStarted: false
+    property bool screenShareStarted: false
     property bool cameraFrameGrabPending: false
 
     signal backRequested()
-    signal remoteVideoCleared(string identity)
+    signal remoteVideoCleared(string identity, string source)
 
     readonly property var participants:
         audioState.participants || []
@@ -90,6 +91,21 @@ Item {
         }
     }
 
+    function toggleScreenShare() {
+        if (!backend || !roomId ||
+                pendingOperation.length > 0 || !callActive)
+            return
+
+        actionError = ""
+        if (screenShareStarted) {
+            pendingOperation = "stopScreenShare"
+            backend.stopRtcScreenShare(roomId)
+        } else {
+            pendingOperation = "startScreenShare"
+            backend.startRtcScreenShare(roomId, 480, 854)
+        }
+    }
+
     function switchCamera() {
         if (!videoStarted || pendingOperation.length > 0)
             return
@@ -126,6 +142,12 @@ Item {
             return
 
         actionError = ""
+
+        if (screenShareStarted) {
+            pendingOperation = "stopScreenShareForHangup"
+            backend.stopRtcScreenShare(roomId)
+            return
+        }
 
         if (videoStarted) {
             localCamera.stop()
@@ -173,6 +195,15 @@ Item {
 
         if (pendingOperation === "startVideo")
             return "Starting camera..."
+
+        if (pendingOperation === "startScreenShare")
+            return "Starting screen share..."
+
+        if (pendingOperation === "stopScreenShare")
+            return "Stopping screen share..."
+
+        if (pendingOperation === "stopScreenShareForHangup")
+            return "Stopping screen share before leaving..."
 
         if (pendingOperation === "stopVideo")
             return "Stopping camera..."
@@ -255,20 +286,26 @@ Item {
             audioStarted = false
             membershipJoined = false
             videoStarted = false
+            screenShareStarted = false
             muted = false
-            for (var i = 0; i < participants.length; ++i)
-                remoteVideoCleared(participants[i].identity)
+            for (var i = 0; i < participants.length; ++i) {
+                remoteVideoCleared(participants[i].identity, "camera")
+                remoteVideoCleared(participants[i].identity, "screenshare")
+            }
         }
     }
 
     onRoomIdChanged: {
-        for (var i = 0; i < participants.length; ++i)
-            remoteVideoCleared(participants[i].identity)
+        for (var i = 0; i < participants.length; ++i) {
+            remoteVideoCleared(participants[i].identity, "camera")
+            remoteVideoCleared(participants[i].identity, "screenshare")
+        }
 
         actionError = ""
         pendingOperation = ""
 
         videoStarted = false
+        screenShareStarted = false
 
         if (audioState.active === true) {
             audioStarted = true
@@ -310,6 +347,7 @@ Item {
                 root.membershipJoined = false
                 root.audioStarted = false
                 root.videoStarted = false
+                root.screenShareStarted = false
                 root.muted = false
                 root.actionError = ""
                 root.backRequested()
@@ -378,6 +416,39 @@ Item {
         target: root.backend
         ignoreUnknownSignals: true
 
+        onMatrixRtcScreenShareActionFinished: {
+            if (roomId !== root.roomId)
+                return
+
+            var operation = root.pendingOperation
+            root.pendingOperation = ""
+
+            if (error && error.length > 0) {
+                root.actionError = error
+                if (operation === "startScreenShare" ||
+                        operation === "stopScreenShareForHangup")
+                    root.screenShareStarted = false
+                return
+            }
+
+            root.actionError = ""
+
+            if (operation === "startScreenShare") {
+                root.screenShareStarted = true
+            } else if (operation === "stopScreenShare") {
+                root.screenShareStarted = false
+            } else if (operation === "stopScreenShareForHangup") {
+                root.screenShareStarted = false
+                if (root.videoStarted) {
+                    localCamera.stop()
+                    root.pendingOperation = "stopVideoForHangup"
+                    root.backend.stopRtcVideo(root.roomId)
+                } else {
+                    root.stopAudioOrLeave()
+                }
+            }
+        }
+
         onMatrixRtcAudioEventsUpdated: {
             try {
                 var payload = JSON.parse(json)
@@ -387,10 +458,14 @@ Item {
                     if (event.room_id !== root.roomId)
                         continue
 
-                    if ((event.type === "track_unsubscribed" &&
-                         event.is_camera === true) ||
-                            event.type === "participant_disconnected") {
-                        root.remoteVideoCleared(event.identity)
+                    if (event.type === "track_unsubscribed") {
+                        if (event.is_camera === true)
+                            root.remoteVideoCleared(event.identity, "camera")
+                        if (event.is_screenshare === true)
+                            root.remoteVideoCleared(event.identity, "screenshare")
+                    } else if (event.type === "participant_disconnected") {
+                        root.remoteVideoCleared(event.identity, "camera")
+                        root.remoteVideoCleared(event.identity, "screenshare")
                     }
                 }
             } catch (error) {
@@ -610,7 +685,8 @@ Item {
 
                         height: root.participants.length === 1
                                 ? parent.height
-                                : (remoteVideo.hasFrame
+                                : (remoteVideo.hasFrame ||
+                                   remoteScreenVideo.hasFrame
                                 ? width * 9 / 16
                                 : units.gu(10))
 
@@ -628,11 +704,33 @@ Item {
                         border.color: "#65d69b"
 
                         RtcVideoItem {
-                            id: remoteVideo
+                            id: remoteScreenVideo
                             anchors.fill: parent
+                            z: 1
                             backend: root.backend
                             roomId: root.roomId
                             identity: modelData.identity || ""
+                            source: "screenshare"
+                            visible: hasFrame
+                        }
+
+                        RtcVideoItem {
+                            id: remoteVideo
+                            anchors.fill: remoteScreenVideo.hasFrame ? null : parent
+                            anchors.right: remoteScreenVideo.hasFrame
+                                           ? parent.right : undefined
+                            anchors.top: remoteScreenVideo.hasFrame
+                                         ? parent.top : undefined
+                            anchors.margins: units.gu(1)
+                            width: remoteScreenVideo.hasFrame
+                                   ? units.gu(18) : parent.width
+                            height: remoteScreenVideo.hasFrame
+                                    ? width * 4 / 3 : parent.height
+                            z: 2
+                            backend: root.backend
+                            roomId: root.roomId
+                            identity: modelData.identity || ""
+                            source: "camera"
                             visible: hasFrame
                         }
 
@@ -640,8 +738,12 @@ Item {
                             target: root
 
                             onRemoteVideoCleared: {
-                                if (identity === modelData.identity)
+                                if (identity !== modelData.identity)
+                                    return
+                                if (source === "camera")
                                     remoteVideo.clearFrame()
+                                else if (source === "screenshare")
+                                    remoteScreenVideo.clearFrame()
                             }
                         }
 
@@ -649,10 +751,13 @@ Item {
                             anchors.left: parent.left
                             anchors.bottom: parent.bottom
                             anchors.margins: units.gu(2)
-                            visible: remoteVideo.hasFrame
-                            text: modelData.name ||
-                                modelData.identity ||
-                                "Participant"
+                            visible: remoteVideo.hasFrame ||
+                                     remoteScreenVideo.hasFrame
+                            text: remoteScreenVideo.hasFrame
+                                  ? "Screen shared by " + (modelData.name || modelData.identity || "Participant")
+                                  : (modelData.name ||
+                                     modelData.identity ||
+                                     "Participant")
                             color: "white"
                             font.pixelSize: units.gu(1.8)
                             style: Text.Outline
@@ -663,7 +768,8 @@ Item {
                         Row {
                             anchors.centerIn: parent
                             spacing: units.gu(1)
-                            visible: !remoteVideo.hasFrame
+                            visible: !remoteVideo.hasFrame &&
+                                     !remoteScreenVideo.hasFrame
 
                             Rectangle {
                                 anchors.verticalCenter: parent.verticalCenter
@@ -728,7 +834,7 @@ Item {
 
                     // Microphone
                     Rectangle {
-                        width: (parent.width - units.gu(4)) / 5
+                        width: (parent.width - units.gu(5)) / 6
                         height: units.gu(7)
                         radius: units.gu(1)
                         color: root.muted ? "#8a5555" : "#294c43"
@@ -763,7 +869,7 @@ Item {
 
                     // Camera
                     Rectangle {
-                        width: (parent.width - units.gu(4)) / 5
+                        width: (parent.width - units.gu(5)) / 6
                         height: units.gu(7)
                         radius: units.gu(1)
                         color: root.videoStarted ? "#294c43" : "#263b4a"
@@ -796,9 +902,44 @@ Item {
                         }
                     }
 
+                    // Share the Ubuntu Touch display
+                    Rectangle {
+                        width: (parent.width - units.gu(5)) / 6
+                        height: units.gu(7)
+                        radius: units.gu(1)
+                        color: root.screenShareStarted ? "#294c43" : "#263b4a"
+                        opacity: root.callActive ? 1 : 0.4
+
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: units.gu(0.4)
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: root.screenShareStarted ? "●" : "▣"
+                                color: "white"
+                                font.pixelSize: units.gu(2.5)
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: root.screenShareStarted ? "Sharing" : "Share"
+                                color: "white"
+                                font.pixelSize: units.gu(1.2)
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: root.callActive &&
+                                     root.pendingOperation.length === 0
+                            onClicked: root.toggleScreenShare()
+                        }
+                    }
+
                     // Switch between available camera devices
                     Rectangle {
-                        width: (parent.width - units.gu(4)) / 5
+                        width: (parent.width - units.gu(5)) / 6
                         height: units.gu(7)
                         radius: units.gu(1)
                         color: "#263b4a"
@@ -833,7 +974,7 @@ Item {
 
                     // Start audio when not connected
                     Rectangle {
-                        width: (parent.width - units.gu(4)) / 5
+                        width: (parent.width - units.gu(5)) / 6
                         height: units.gu(7)
                         radius: units.gu(1)
                         color: "#315d48"
@@ -868,7 +1009,7 @@ Item {
 
                     // Hang up
                     Rectangle {
-                        width: (parent.width - units.gu(4)) / 5
+                        width: (parent.width - units.gu(5)) / 6
                         height: units.gu(7)
                         radius: units.gu(1)
                         color: "#853f43"
@@ -906,11 +1047,13 @@ Item {
                     width: parent.width
                     text: root.muted
                           ? "Your microphone is muted"
-                          : root.videoStarted
-                            ? "Audio and camera connected"
-                            : root.callActive
-                              ? "Audio connected"
-                              : "Not in a call"
+                          : root.screenShareStarted
+                            ? "Screen sharing and audio connected"
+                            : root.videoStarted
+                              ? "Audio and camera connected"
+                              : root.callActive
+                                ? "Audio connected"
+                                : "Not in a call"
                     color: "#91a4b5"
                     font.pixelSize: units.gu(1.3)
                     horizontalAlignment: Text.AlignHCenter

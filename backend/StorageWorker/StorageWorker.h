@@ -331,6 +331,7 @@ signals:
     void matrixRtcRemoteVideoFrame(
         const QString &roomId,
         const QString &identity,
+        const QString &source,
         int width,
         int height,
         const QByteArray &i420
