@@ -94,6 +94,7 @@ public slots:
 
     // ASTRO_RTC_VIDEO_STAGE3
     void startRtcVideo(const QString &roomId, int width, int height);
+    void switchRtcCamera(const QString &roomId);
     void pushRtcVideoFrame(
         const QString &roomId,
         int width,
