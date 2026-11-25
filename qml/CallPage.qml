@@ -88,7 +88,7 @@ Item {
             }
 
             pendingOperation = "startVideo"
-            backend.startRtcVideo(roomId, 480, 640)
+            backend.startRtcVideo(roomId, 360, 480)
         }
     }
 
@@ -265,7 +265,7 @@ Item {
                         root.roomId,
                         result.image
                     )
-            }, Qt.size(480, 640))
+            }, Qt.size(360, 480))
 
             if (!accepted)
                 root.cameraFrameGrabPending = false
