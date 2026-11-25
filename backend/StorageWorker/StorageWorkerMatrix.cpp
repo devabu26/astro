@@ -21,6 +21,7 @@
 #include <QAtomicInt>
 #include <QMetaObject>
 #include <QThread>
+#include <QVector>
 #include <QSharedPointer>
 #include <limits>
 #include <unistd.h>
@@ -1634,7 +1635,8 @@ void StorageWorker::pushRtcVideoFrame(
 void StorageWorker::startRtcScreenShare(
     const QString &roomId,
     int width,
-    int height
+    int height,
+    bool includeDeviceAudio
 )
 {
     qInfo() << "ASTRO_SCREEN_SHARE: worker request received"
@@ -1664,7 +1666,8 @@ void StorageWorker::startRtcScreenShare(
     qInfo() << "ASTRO_SCREEN_SHARE: publishing LiveKit screen-share track";
     const int32_t publishResult = astro_matrix_start_rtc_screenshare(
         m_matrixClient, roomIdBytes.constData(),
-        static_cast<uint32_t>(width), static_cast<uint32_t>(height), &error);
+        static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+        includeDeviceAudio ? 1 : 0, &error);
     QString errorMessage;
     if (error) {
         errorMessage = QString::fromUtf8(error);
@@ -1687,6 +1690,16 @@ void StorageWorker::startRtcScreenShare(
         }
         emit matrixRtcScreenShareActionFinished(roomId, message);
     };
+
+    if (includeDeviceAudio) {
+        QString audioError;
+        if (!startRtcScreenShareAudioCapture(roomId, &audioError)) {
+            failStart(audioError.isEmpty()
+                ? QStringLiteral("Could not start device audio capture")
+                : audioError);
+            return;
+        }
+    }
 
     // Lomiri exposes the app-facing Mir socket under the user's runtime
     // directory. The system socket at /run/mir_socket is not accessible to
@@ -1914,8 +1927,148 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
     emit matrixRtcScreenShareActionFinished(roomId, errorMessage);
 }
 
+bool StorageWorker::startRtcScreenShareAudioCapture(
+    const QString &roomId,
+    QString *error
+)
+{
+    const QList<QAudioDeviceInfo> devices =
+        QAudioDeviceInfo::availableDevices(QAudio::AudioInput);
+    QAudioDeviceInfo monitor;
+    for (const QAudioDeviceInfo &device : devices) {
+        const QString name = device.deviceName();
+        qInfo() << "ASTRO_SCREEN_SHARE_AUDIO: input device:" << name;
+        if (name.contains(QStringLiteral("monitor"), Qt::CaseInsensitive)) {
+            monitor = device;
+            if (name.contains(QStringLiteral("primary_output.monitor"),
+                              Qt::CaseInsensitive))
+                break;
+        }
+    }
+
+    if (monitor.isNull()) {
+        if (error) {
+            *error = QStringLiteral(
+                "Qt could not find a PulseAudio playback monitor input");
+        }
+        return false;
+    }
+
+    QAudioFormat format;
+    format.setSampleRate(48000);
+    format.setChannelCount(2);
+    format.setSampleSize(16);
+    format.setCodec(QStringLiteral("audio/pcm"));
+    format.setByteOrder(QAudioFormat::LittleEndian);
+    format.setSampleType(QAudioFormat::SignedInt);
+
+    if (!monitor.isFormatSupported(format)) {
+        if (error) {
+            *error = QStringLiteral(
+                "The playback monitor does not support 48 kHz stereo 16-bit PCM");
+        }
+        return false;
+    }
+
+    m_rtcScreenShareAudioInput = new QAudioInput(monitor, format, this);
+    m_rtcScreenShareAudioInput->setBufferSize(3840);
+    m_rtcScreenShareAudioRoomId = roomId;
+    m_rtcScreenShareAudioBuffer.clear();
+    m_rtcScreenShareAudioDevice = m_rtcScreenShareAudioInput->start();
+
+    if (!m_rtcScreenShareAudioDevice ||
+        m_rtcScreenShareAudioInput->error() != QAudio::NoError ||
+        m_rtcScreenShareAudioInput->state() != QAudio::ActiveState) {
+        if (error) {
+            *error = QStringLiteral("PulseAudio playback monitor could not be opened: %1")
+                .arg(monitor.deviceName());
+        }
+        if (m_rtcScreenShareAudioInput) {
+            m_rtcScreenShareAudioInput->stop();
+            m_rtcScreenShareAudioInput->deleteLater();
+            m_rtcScreenShareAudioInput = nullptr;
+        }
+        m_rtcScreenShareAudioDevice = nullptr;
+        m_rtcScreenShareAudioRoomId.clear();
+        return false;
+    }
+
+    connect(
+        m_rtcScreenShareAudioDevice,
+        &QIODevice::readyRead,
+        this,
+        &StorageWorker::captureRtcScreenShareAudio
+    );
+
+    qInfo() << "ASTRO_SCREEN_SHARE_AUDIO: capturing playback monitor:"
+            << monitor.deviceName();
+    return true;
+}
+
+void StorageWorker::captureRtcScreenShareAudio()
+{
+    if (!m_rtcScreenShareAudioDevice || !m_matrixClient ||
+        m_rtcScreenShareAudioRoomId.isEmpty())
+        return;
+
+    m_rtcScreenShareAudioBuffer.append(
+        m_rtcScreenShareAudioDevice->readAll()
+    );
+
+    // 10 ms at 48 kHz stereo, signed 16-bit little-endian PCM.
+    constexpr int sampleCount = 960;
+    constexpr int frameBytes = sampleCount * static_cast<int>(sizeof(qint16));
+    while (m_rtcScreenShareAudioBuffer.size() >= frameBytes) {
+        QVector<qint16> samples(sampleCount);
+        std::memcpy(
+            samples.data(),
+            m_rtcScreenShareAudioBuffer.constData(),
+            static_cast<size_t>(frameBytes)
+        );
+        m_rtcScreenShareAudioBuffer.remove(0, frameBytes);
+
+        const QByteArray roomBytes = m_rtcScreenShareAudioRoomId.toUtf8();
+        char *error = nullptr;
+        const int32_t result = astro_matrix_push_rtc_screenshare_audio_frame(
+            m_matrixClient,
+            roomBytes.constData(),
+            reinterpret_cast<const int16_t *>(samples.constData()),
+            static_cast<uint64_t>(samples.size()),
+            &error
+        );
+
+        if (error || result < 0) {
+            const QString message = error
+                ? QString::fromUtf8(error)
+                : QStringLiteral("LiveKit rejected a screen-share audio frame");
+            if (error)
+                astro_string_free(error);
+            qWarning() << "ASTRO_SCREEN_SHARE_AUDIO: capture stopped:" << message;
+            if (m_rtcScreenShareAudioInput) {
+                m_rtcScreenShareAudioInput->stop();
+                m_rtcScreenShareAudioInput->deleteLater();
+                m_rtcScreenShareAudioInput = nullptr;
+            }
+            m_rtcScreenShareAudioDevice = nullptr;
+            m_rtcScreenShareAudioBuffer.clear();
+            m_rtcScreenShareAudioRoomId.clear();
+            return;
+        }
+    }
+}
+
+
 void StorageWorker::stopRtcScreenShareCapture()
 {
+    if (m_rtcScreenShareAudioInput) {
+        m_rtcScreenShareAudioInput->stop();
+        m_rtcScreenShareAudioInput->deleteLater();
+        m_rtcScreenShareAudioInput = nullptr;
+    }
+    m_rtcScreenShareAudioDevice = nullptr;
+    m_rtcScreenShareAudioBuffer.clear();
+    m_rtcScreenShareAudioRoomId.clear();
+
     if (m_rtcScreenShareTimer) {
         m_rtcScreenShareTimer->stop();
         m_rtcScreenShareTimer->deleteLater();
