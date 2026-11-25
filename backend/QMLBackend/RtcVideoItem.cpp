@@ -1,4 +1,5 @@
 #include "RtcVideoItem.h"
+#include "Backend.h"
 
 #include <QPainter>
 #include <QRectF>
@@ -20,6 +21,45 @@ RtcVideoItem::RtcVideoItem(QQuickItem *parent)
 {
     setAntialiasing(false);
     setOpaquePainting(false);
+}
+
+void RtcVideoItem::setBackend(Backend *backend)
+{
+    if (m_backend == backend) {
+        return;
+    }
+
+    if (m_frameConnection) {
+        disconnect(m_frameConnection);
+    }
+
+    m_backend = backend;
+
+    if (m_backend) {
+        m_frameConnection = connect(
+            m_backend,
+            &Backend::matrixRtcRemoteVideoFrame,
+            this,
+            &RtcVideoItem::receiveRemoteFrame
+        );
+    }
+
+    emit backendChanged();
+}
+
+void RtcVideoItem::receiveRemoteFrame(
+    const QString &roomId,
+    const QString &identity,
+    int width,
+    int height,
+    const QByteArray &i420
+)
+{
+    if (roomId != m_roomId || identity != m_identity) {
+        return;
+    }
+
+    setI420Frame(i420, width, height);
 }
 
 void RtcVideoItem::setI420Frame(
