@@ -1736,19 +1736,12 @@ void StorageWorker::startRtcScreenShare(
                 qWarning() << frameFailure;
             }
 
-            if (m_rtcScreenShareStartPending) {
-                if (frameFailure.isEmpty()) {
-                    m_rtcScreenShareStartPending = false;
-                    m_rtcScreenShareErrorOutput.clear();
-                    emit matrixRtcScreenShareActionFinished(
-                        m_rtcScreenShareRoomId, QString()
-                    );
-                } else {
-                    m_rtcScreenShareStartPending = false;
-                    emit matrixRtcScreenShareActionFinished(
-                        m_rtcScreenShareRoomId, frameFailure
-                    );
-                }
+            if (m_rtcScreenShareStartPending && frameFailure.isEmpty()) {
+                m_rtcScreenShareStartPending = false;
+                m_rtcScreenShareErrorOutput.clear();
+                emit matrixRtcScreenShareActionFinished(
+                    m_rtcScreenShareRoomId, QString()
+                );
             }
         }
     );
