@@ -78,6 +78,12 @@ Item {
             pendingOperation = "stopVideo"
             backend.stopRtcVideo(roomId)
         } else {
+            if (!QtMultimedia.availableCameras ||
+                    QtMultimedia.availableCameras.length === 0) {
+                actionError = "No camera is available"
+                return
+            }
+
             pendingOperation = "startVideo"
             backend.startRtcVideo(roomId, 640, 480)
         }
@@ -104,7 +110,9 @@ Item {
         var nextIndex = (currentIndex + 1) % cameras.length
         localCamera.stop()
         localCamera.deviceId = cameras[nextIndex].deviceId
-        localCamera.start()
+        Qt.callLater(function() {
+            localCamera.start()
+        })
         actionError = ""
     }
 
@@ -361,6 +369,7 @@ Item {
 
     Camera {
         id: localCamera
+        deviceId: QtMultimedia.defaultCamera.deviceId
         captureMode: Camera.CaptureVideo
 
         onError: {
