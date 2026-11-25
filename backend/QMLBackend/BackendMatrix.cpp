@@ -524,6 +524,8 @@ void Backend::startRtcScreenShare(
 
 void Backend::stopRtcScreenShare(const QString &roomId)
 {
+    qInfo() << "ASTRO_SCREEN_SHARE_DIAG: backend stop received"
+            << "room:" << roomId;
     if (!m_storageReady || roomId.isEmpty()) {
         emit matrixRtcScreenShareActionFinished(
             roomId,
