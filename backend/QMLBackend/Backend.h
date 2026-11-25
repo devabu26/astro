@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QByteArray>
 
 class QThread;
 class StorageWorker;
