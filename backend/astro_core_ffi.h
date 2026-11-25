@@ -259,6 +259,21 @@ char *astro_matrix_poll_rtc_audio_events_json(
     AstroMatrixClient *handle,
     char **error_out
 );
+
+typedef struct AstroRtcVideoFrame {
+    char *room_id;
+    char *identity;
+    uint32_t width;
+    uint32_t height;
+    uint8_t *data;
+    uintptr_t len;
+} AstroRtcVideoFrame;
+
+AstroRtcVideoFrame *astro_matrix_take_rtc_video_frame(
+    AstroMatrixClient *handle,
+    char **error_out
+);
+void astro_matrix_rtc_video_frame_free(AstroRtcVideoFrame *frame);
 char *astro_matrix_poll_rtc_memberships_json(
     AstroMatrixClient *handle,
     char **error_out
