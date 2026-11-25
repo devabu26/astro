@@ -170,6 +170,11 @@ int32_t astro_matrix_mismatch_verification(
     char **error_out
 );
 
+char *astro_matrix_get_account_profile_json(
+    AstroMatrixClient *handle,
+    char **error_out
+);
+
 char *astro_matrix_get_devices_json(
     AstroMatrixClient *handle,
     char **error_out
