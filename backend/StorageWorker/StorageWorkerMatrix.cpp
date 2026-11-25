@@ -748,7 +748,9 @@ public:
             QVideoFrame::Format_YUV420P,
             QVideoFrame::Format_YV12,
             QVideoFrame::Format_NV12,
-            QVideoFrame::Format_NV21
+            QVideoFrame::Format_NV21,
+            QVideoFrame::Format_YUYV,
+            QVideoFrame::Format_UYVY
         };
     }
 
@@ -790,6 +792,7 @@ public:
         uchar *uOut = yOut + ySize;
         uchar *vOut = uOut + chromaSize;
         bool converted = false;
+        const int sourcePlaneCount = mapped.planeCount();
 
         if (format == QVideoFrame::Format_YUV420P ||
             format == QVideoFrame::Format_YV12) {
@@ -806,7 +809,7 @@ public:
                     cStride1 >= width / 2 &&
                     cStride2 >= width / 2) {
                     for (int row = 0; row < height; ++row)
-                        memcpy(yOut + row * width, yIn + row * yStride, width);
+                        std::memcpy(yOut + row * width, yIn + row * yStride, width);
 
                     const uchar *uIn =
                         format == QVideoFrame::Format_YUV420P
@@ -860,7 +863,50 @@ public:
                     converted = true;
                 }
             }
-        } else {
+        } else if (format == QVideoFrame::Format_YUYV ||
+                   format == QVideoFrame::Format_UYVY) {
+            const int stride = mapped.bytesPerLine(0);
+            const uchar *packed = mapped.bits(0);
+            if (packed && stride >= width * 2) {
+                for (int row = 0; row < height; row += 2) {
+                    const uchar *src0 = packed + row * stride;
+                    const uchar *src1 = packed + (row + 1) * stride;
+                    for (int col = 0; col < width; col += 2) {
+                        const int offset = col * 2;
+                        int y00, y01, y10, y11;
+                        int u0, v0, u1, v1;
+                        if (format == QVideoFrame::Format_YUYV) {
+                            y00 = src0[offset];
+                            u0 = src0[offset + 1];
+                            y01 = src0[offset + 2];
+                            v0 = src0[offset + 3];
+                            y10 = src1[offset];
+                            u1 = src1[offset + 1];
+                            y11 = src1[offset + 2];
+                            v1 = src1[offset + 3];
+                        } else {
+                            u0 = src0[offset];
+                            y00 = src0[offset + 1];
+                            v0 = src0[offset + 2];
+                            y01 = src0[offset + 3];
+                            u1 = src1[offset];
+                            y10 = src1[offset + 1];
+                            v1 = src1[offset + 2];
+                            y11 = src1[offset + 3];
+                        }
+                        yOut[row * width + col] = static_cast<uchar>(y00);
+                        yOut[row * width + col + 1] = static_cast<uchar>(y01);
+                        yOut[(row + 1) * width + col] = static_cast<uchar>(y10);
+                        yOut[(row + 1) * width + col + 1] = static_cast<uchar>(y11);
+                        const int chromaIndex =
+                            (row / 2) * (width / 2) + col / 2;
+                        uOut[chromaIndex] = static_cast<uchar>((u0 + u1 + 1) / 2);
+                        vOut[chromaIndex] = static_cast<uchar>((v0 + v1 + 1) / 2);
+                    }
+                }
+                converted = true;
+            }
+
             const QImage::Format imageFormat =
                 QVideoFrame::imageFormatFromPixelFormat(format);
             if (imageFormat != QImage::Format_Invalid &&
@@ -936,7 +982,7 @@ public:
             if (m_loggedUnsupportedFormat.testAndSetOrdered(0, 1)) {
                 qWarning() << "RTC camera frame format is not convertible:"
                            << format
-                           << "planes:" << mapped.planeCount();
+                           << "planes:" << sourcePlaneCount;
             }
             m_pending->storeRelease(0);
             return false;
