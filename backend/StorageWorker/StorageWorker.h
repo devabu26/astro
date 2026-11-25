@@ -7,6 +7,10 @@
 #include <QTimer>
 #include <QMutex>
 #include <QCamera>
+#include <QAudioInput>
+#include <QAudioDeviceInfo>
+#include <QAudioFormat>
+#include <QIODevice>
 #include <cstdint>
 
 class RtcCameraVideoSurface;
@@ -110,7 +114,7 @@ public slots:
 
     // ASTRO_RTC_VIDEO_STAGE3
     void startRtcVideo(const QString &roomId, int width, int height);
-    void startRtcScreenShare(const QString &roomId, int width, int height);
+    void startRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
     void stopRtcScreenShare(const QString &roomId);
     // Called directly by the Qt Quick video-filter render thread while its GL context is current.
     void processRtcCameraFrame(const QVideoFrame &frame);
@@ -439,6 +443,8 @@ signals:
 private:
     void stopRtcCamera();
     void stopRtcScreenShareCapture();
+    bool startRtcScreenShareAudioCapture(const QString &roomId, QString *error);
+    void captureRtcScreenShareAudio();
     void captureRtcScreenShareFrame();
 
     /*
@@ -486,6 +492,10 @@ private:
     int m_rtcScreenShareWidth = 0;
     int m_rtcScreenShareHeight = 0;
     bool m_rtcScreenShareStartPending = false;
+    QAudioInput *m_rtcScreenShareAudioInput = nullptr;
+    QIODevice *m_rtcScreenShareAudioDevice = nullptr;
+    QByteArray m_rtcScreenShareAudioBuffer;
+    QString m_rtcScreenShareAudioRoomId;
 
     // Retained push notification configuration.
     QByteArray m_pushToken;
