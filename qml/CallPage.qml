@@ -81,6 +81,16 @@ Item {
         }
     }
 
+    function switchCamera() {
+        if (!backend || !roomId || !videoStarted ||
+                pendingOperation.length > 0)
+            return
+
+        actionError = ""
+        pendingOperation = "switchCamera"
+        backend.switchRtcCamera(roomId)
+    }
+
     function hangUp() {
         if (!backend || !roomId ||
                 pendingOperation.length > 0)
@@ -136,6 +146,9 @@ Item {
 
         if (pendingOperation === "stopVideo")
             return "Stopping camera..."
+
+        if (pendingOperation === "switchCamera")
+            return "Switching camera..."
 
         if (pendingOperation === "stopVideoForHangup")
             return "Stopping camera before leaving..."
@@ -283,6 +296,9 @@ Item {
 
             } else if (operation === "stopVideo") {
                 root.videoStarted = false
+
+            } else if (operation === "switchCamera") {
+                root.videoStarted = true
 
             } else if (operation === "stopVideoForHangup") {
                 root.videoStarted = false
@@ -600,7 +616,7 @@ Item {
 
                     // Microphone
                     Rectangle {
-                        width: (parent.width - units.gu(3)) / 4
+                        width: (parent.width - units.gu(4)) / 5
                         height: units.gu(7)
                         radius: units.gu(1)
                         color: root.muted ? "#8a5555" : "#294c43"
@@ -635,7 +651,7 @@ Item {
 
                     // Camera
                     Rectangle {
-                        width: (parent.width - units.gu(3)) / 4
+                        width: (parent.width - units.gu(4)) / 5
                         height: units.gu(7)
                         radius: units.gu(1)
                         color: root.videoStarted ? "#294c43" : "#263b4a"
@@ -668,9 +684,45 @@ Item {
                         }
                     }
 
+                    // Switch between available camera devices
+                    Rectangle {
+                        width: (parent.width - units.gu(4)) / 5
+                        height: units.gu(7)
+                        radius: units.gu(1)
+                        color: "#263b4a"
+                        visible: root.videoStarted
+                        opacity: root.callActive ? 1 : 0.4
+
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: units.gu(0.4)
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "↔"
+                                color: "white"
+                                font.pixelSize: units.gu(2.5)
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "Flip"
+                                color: "white"
+                                font.pixelSize: units.gu(1.2)
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: root.videoStarted &&
+                                     root.pendingOperation.length === 0
+                            onClicked: root.switchCamera()
+                        }
+                    }
+
                     // Start audio when not connected
                     Rectangle {
-                        width: (parent.width - units.gu(3)) / 4
+                        width: (parent.width - units.gu(4)) / 5
                         height: units.gu(7)
                         radius: units.gu(1)
                         color: "#315d48"
@@ -704,7 +756,7 @@ Item {
 
                     // Hang up
                     Rectangle {
-                        width: (parent.width - units.gu(3)) / 4
+                        width: (parent.width - units.gu(4)) / 5
                         height: units.gu(7)
                         radius: units.gu(1)
                         color: "#853f43"
