@@ -124,6 +124,7 @@ public:
         int height
     );
     Q_INVOKABLE void stopRtcVideo(const QString &roomId);
+    Q_INVOKABLE void switchRtcCamera(const QString &roomId);
 
     Q_INVOKABLE void sendRoomAttachment(
         const QString &requestKey,
@@ -399,6 +400,7 @@ signals:
    // ASTRO_RTC_VIDEO_STAGE3
    void requestStartRtcVideo(const QString &roomId, int width, int height);
    void requestStopRtcVideo(const QString &roomId);
+   void requestSwitchRtcCamera(const QString &roomId);
 
     void requestSendRoomAttachment(
         const QString &requestKey,
