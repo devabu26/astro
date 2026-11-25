@@ -20,6 +20,7 @@
 #include <QByteArray>
 #include <QAtomicInt>
 #include <QMetaObject>
+#include <QThread>
 #include <QSharedPointer>
 #include <limits>
 
@@ -1687,10 +1688,18 @@ void StorageWorker::startRtcScreenShare(
     };
 
     // Use Mir directly: confined apps cannot exec /usr/bin/mirscreencast.
-    qInfo() << "ASTRO_SCREEN_SHARE: connecting to Mir";
+    QThread *currentThread = QThread::currentThread();
+    qInfo() << "ASTRO_SCREEN_SHARE: connecting to Mir"
+            << "threadName:" << currentThread->objectName()
+            << "threadId:" << quintptr(QThread::currentThreadId());
     m_rtcScreenShareConnection = mir_connect_sync("/run/mir_socket", "Astro");
-    if (!m_rtcScreenShareConnection ||
-        !mir_connection_is_valid(m_rtcScreenShareConnection)) {
+    const bool mirConnectionValid =
+        m_rtcScreenShareConnection &&
+        mir_connection_is_valid(m_rtcScreenShareConnection);
+    qInfo() << "ASTRO_SCREEN_SHARE: Mir connect returned"
+            << "connection:" << static_cast<const void *>(m_rtcScreenShareConnection)
+            << "valid:" << mirConnectionValid;
+    if (!mirConnectionValid) {
         const QString message = m_rtcScreenShareConnection
             ? QString::fromLocal8Bit(mir_connection_get_error_message(m_rtcScreenShareConnection))
             : QStringLiteral("Could not connect to the Mir display server");
