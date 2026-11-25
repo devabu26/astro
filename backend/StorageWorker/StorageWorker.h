@@ -5,6 +5,7 @@
 #include <QString>
 #include <QByteArray>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QMutex>
 #include <QCamera>
 #include <QAudioInput>
@@ -492,6 +493,8 @@ private:
     int m_rtcScreenShareWidth = 0;
     int m_rtcScreenShareHeight = 0;
     bool m_rtcScreenShareStartPending = false;
+    QByteArray m_rtcScreenShareLastFrame;
+    QElapsedTimer m_rtcScreenShareLastFrameSent;
     QAudioInput *m_rtcScreenShareAudioInput = nullptr;
     QIODevice *m_rtcScreenShareAudioDevice = nullptr;
     QByteArray m_rtcScreenShareAudioBuffer;
