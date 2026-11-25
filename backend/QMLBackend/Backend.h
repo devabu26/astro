@@ -445,6 +445,11 @@ signals:
    // ASTRO_RTC_VIDEO_STAGE3
    void requestStartRtcVideo(const QString &roomId, int width, int height);
    void requestStopRtcVideo(const QString &roomId);
+   void requestStartRtcBackgroundCamera(
+       const QString &roomId,
+       const QString &deviceId
+   );
+   void requestStopRtcBackgroundCamera(const QString &roomId);
    void requestStartRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
    void requestStopRtcScreenShare(const QString &roomId);
    void requestSwitchRtcCamera(const QString &roomId);
