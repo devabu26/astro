@@ -51,14 +51,19 @@ Backend::Backend(QObject *parent)
     m_notificationManager = new NotificationManager(this);
 
     if (qGuiApp) {
+        m_applicationActive =
+            qGuiApp->applicationState() == Qt::ApplicationActive;
         connect(
             qGuiApp,
             &QGuiApplication::applicationStateChanged,
             this,
             [this](Qt::ApplicationState state) {
-                emit applicationActiveChanged(
-                    state == Qt::ApplicationActive
-                );
+                const bool active = state == Qt::ApplicationActive;
+                if (m_applicationActive == active)
+                    return;
+
+                m_applicationActive = active;
+                emit applicationActiveChanged(active);
             }
         );
     }
