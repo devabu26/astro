@@ -1711,6 +1711,8 @@ void StorageWorker::stopRtcBackgroundCamera(const QString &roomId)
 void StorageWorker::stopRtcVideo(const QString &roomId)
 {
     stopRtcCamera();
+    m_rtcVideoWidth = 0;
+    m_rtcVideoHeight = 0;
     if (!m_matrixClient || roomId.isEmpty()) {
         emit matrixRtcVideoActionFinished(
             roomId,
