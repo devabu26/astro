@@ -1661,7 +1661,7 @@ void StorageWorker::startRtcScreenShare(
         return;
     }
 
-    MirDisplayConfiguration *displayConfig =
+    MirDisplayConfig *displayConfig =
         mir_connection_create_display_configuration(m_rtcScreenShareConnection);
     if (!displayConfig || mir_display_config_get_num_outputs(displayConfig) == 0) {
         if (displayConfig) mir_display_config_release(displayConfig);
