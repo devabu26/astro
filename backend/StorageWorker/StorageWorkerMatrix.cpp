@@ -1293,7 +1293,8 @@ void StorageWorker::startRtcVideo(
         m_rtcVideoSurface = new RtcCameraVideoSurface(
             this, roomId, this
         );
-        qInfo() << "RTC camera frame bridge ready for Qt Quick VideoOutput";
+        m_rtcVideoRoomId = roomId;
+        qInfo() << "RTC camera CPU frame bridge ready for Qt Quick VideoOutput";
     }
 
     if (result >= 0 && !errorMessage.isEmpty()) {
@@ -1316,6 +1317,25 @@ void StorageWorker::processRtcCameraFrame(const QVideoFrame &frame)
     // against stopRtcCamera() so the surface cannot be deleted mid-frame.
     QMutexLocker locker(&m_rtcCameraFrameMutex);
     if (m_rtcVideoSurface && frame.isValid())
+        m_rtcVideoSurface->present(frame);
+}
+
+void StorageWorker::processRtcCameraImage(
+    const QString &roomId,
+    const QImage &image
+)
+{
+    if (image.isNull() || roomId.isEmpty())
+        return;
+
+    QMutexLocker locker(&m_rtcCameraFrameMutex);
+    if (!m_rtcVideoSurface || roomId != m_rtcVideoRoomId)
+        return;
+
+    // QML's VideoOutput grab supplies a CPU-backed QImage. This avoids
+    // trying to attach Ubuntu Touch's camera GL texture to a 2D framebuffer.
+    const QVideoFrame frame(image);
+    if (frame.isValid())
         m_rtcVideoSurface->present(frame);
 }
 
@@ -1791,6 +1811,7 @@ void StorageWorker::stopRtcCamera()
         delete m_rtcVideoSurface;
         m_rtcVideoSurface = nullptr;
     }
+    m_rtcVideoRoomId.clear();
 
     if (m_rtcCamera) {
         delete m_rtcCamera;
