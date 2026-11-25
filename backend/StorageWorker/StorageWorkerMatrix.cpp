@@ -1703,6 +1703,8 @@ void StorageWorker::startRtcScreenShare(
         const QString message = m_rtcScreenShareConnection
             ? QString::fromLocal8Bit(mir_connection_get_error_message(m_rtcScreenShareConnection))
             : QStringLiteral("Could not connect to the Mir display server");
+        qWarning() << "ASTRO_SCREEN_SHARE: Mir connection failed"
+                   << "error:" << message;
         failStart(message.isEmpty()
             ? QStringLiteral("Could not connect to the Mir display server") : message);
         return;
