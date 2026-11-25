@@ -283,6 +283,43 @@ void StorageWorker::fetchMatrixRooms()
     emit matrixRoomsUpdated(result, false);
 }
 
+void StorageWorker::fetchMatrixAccountProfile()
+{
+    if (!m_matrixClient) {
+        emit matrixAccountProfileUpdated(
+            QString(),
+            QStringLiteral("No active Matrix session")
+        );
+        return;
+    }
+
+    char *error = nullptr;
+    char *json = astro_matrix_get_account_profile_json(
+        m_matrixClient,
+        &error
+    );
+
+    if (!json) {
+        const QString message = error
+            ? QString::fromUtf8(error)
+            : QStringLiteral("Could not retrieve Matrix account profile");
+
+        if (error)
+            astro_string_free(error);
+
+        emit matrixAccountProfileUpdated(QString(), message);
+        return;
+    }
+
+    const QString result = QString::fromUtf8(json);
+    astro_string_free(json);
+
+    if (error)
+        astro_string_free(error);
+
+    emit matrixAccountProfileUpdated(result, QString());
+}
+
 void StorageWorker::fetchMatrixDevices()
 {
     if (!m_matrixClient) {
