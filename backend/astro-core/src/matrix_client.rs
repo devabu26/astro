@@ -496,6 +496,7 @@ struct LiveKitAudioSession {
     screen_share_track: Option<LocalVideoTrack>,
     screen_share_audio_source: Option<NativeAudioSource>,
     screen_share_audio_track: Option<LocalAudioTrack>,
+    screen_share_audio_sender: Option<tokio::sync::mpsc::Sender<Vec<i16>>>,
 }
 
 fn create_new_store(database_path: &Path) -> Result<(String, PathBuf), String> {
@@ -2511,6 +2512,7 @@ impl MatrixClientManager {
                 screen_share_track: None,
                 screen_share_audio_source: None,
                 screen_share_audio_track: None,
+                screen_share_audio_sender: None,
             })
         })?;
 
