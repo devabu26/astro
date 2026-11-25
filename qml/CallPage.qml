@@ -26,9 +26,9 @@ Item {
     property bool screenShareChoiceVisible: false
     property bool screenShareAudioRequested: false
     property bool cameraFrameGrabPending: false
-    property int cameraFrameGrabAttempts: 0
-    property int cameraFrameGrabSuccesses: 0
-    property int cameraFrameGrabFailures: 0
+    property bool applicationActive: Qt.application.state === Qt.ApplicationActive
+    property bool waitingForForegroundCamera: false
+    property bool nativeBackgroundCameraRunning: false
     property bool remoteAnswered: false
     property string ringbackSource: ""
 
@@ -288,53 +288,27 @@ Item {
         running: root.videoStarted
 
         onTriggered: {
-            if (root.cameraFrameGrabPending ||
+            if (!root.applicationActive ||
+                    root.cameraFrameGrabPending ||
                     !localCameraPreview.visible ||
                     !root.backend ||
                     !root.roomId)
                 return
 
-            root.cameraFrameGrabAttempts++
             root.cameraFrameGrabPending = true
             var accepted = localCameraPreview.grabToImage(function(result) {
                 root.cameraFrameGrabPending = false
                 if (result && root.videoStarted && root.backend) {
-                    root.cameraFrameGrabSuccesses++
                     root.backend.processRtcCameraImage(
                         root.roomId,
                         result.image
                     )
-                } else {
-                    root.cameraFrameGrabFailures++
                 }
             }, Qt.size(360, 480))
 
             if (!accepted) {
                 root.cameraFrameGrabPending = false
-                root.cameraFrameGrabFailures++
             }
-        }
-    }
-
-    // This timer runs on the application event loop rather than the
-    // Qt Quick render loop. Comparing its heartbeat with frame-grab counts
-    // shows whether backgrounding stops the app or only camera rendering.
-    Timer {
-        interval: 5000
-        repeat: true
-        running: root.videoStarted
-
-        onTriggered: {
-            console.info(
-                "ASTRO_BACKGROUND_CAMERA: heartbeat",
-                "appState:", Qt.application.state,
-                "cameraStatus:", localCamera.cameraStatus,
-                "cameraState:", localCamera.cameraState,
-                "visible:", localCameraPreview.visible,
-                "grabAttempts:", root.cameraFrameGrabAttempts,
-                "grabSuccesses:", root.cameraFrameGrabSuccesses,
-                "grabFailures:", root.cameraFrameGrabFailures
-            )
         }
     }
 
@@ -365,15 +339,40 @@ Item {
             ringbackSource = backend.rtcRingbackToneUrl()
     }
 
+    function updateCameraForApplicationState(active) {
+        applicationActive = active
+        if (!videoStarted || !backend || !roomId)
+            return
+
+        cameraFrameGrabPending = false
+        if (active) {
+            waitingForForegroundCamera = true
+            localCamera.stop()
+            backend.stopRtcBackgroundCamera(roomId)
+        } else {
+            waitingForForegroundCamera = false
+            localCamera.stop()
+            backend.startRtcBackgroundCamera(roomId, localCamera.deviceId)
+        }
+    }
+
     onVideoStartedChanged: {
         if (videoStarted) {
-            localCamera.start()
-            if (backend)
-                backend.setRtcCameraProbe(localCamera)
+            if (applicationActive) {
+                localCamera.start()
+            } else if (backend && roomId) {
+                localCamera.stop()
+                backend.startRtcBackgroundCamera(
+                    roomId,
+                    localCamera.deviceId
+                )
+            }
         } else {
-            if (backend)
-                backend.setRtcCameraProbe(null)
+            waitingForForegroundCamera = false
+            nativeBackgroundCameraRunning = false
             localCamera.stop()
+            if (backend && roomId)
+                backend.stopRtcBackgroundCamera(roomId)
         }
     }
 
@@ -441,6 +440,35 @@ Item {
             audioStarted = false
             membershipJoined = false
             muted = false
+        }
+    }
+
+    Connections {
+        target: root.backend
+        ignoreUnknownSignals: true
+
+        onApplicationActiveChanged: {
+            root.updateCameraForApplicationState(active)
+        }
+
+        onMatrixRtcBackgroundCameraActionFinished: {
+            if (roomId !== root.roomId)
+                return
+
+            root.nativeBackgroundCameraRunning = running
+            if (error && error.length > 0)
+                root.actionError = error
+
+            if (running && root.applicationActive) {
+                root.waitingForForegroundCamera = true
+                root.backend.stopRtcBackgroundCamera(root.roomId)
+            } else if (!running &&
+                       root.applicationActive &&
+                       root.videoStarted &&
+                       root.waitingForForegroundCamera) {
+                root.waitingForForegroundCamera = false
+                localCamera.start()
+            }
         }
     }
 
