@@ -115,6 +115,8 @@ public slots:
 
     // ASTRO_RTC_VIDEO_STAGE3
     void startRtcVideo(const QString &roomId, int width, int height);
+    void startRtcBackgroundCamera(const QString &roomId, const QString &deviceId);
+    void stopRtcBackgroundCamera(const QString &roomId);
     void startRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
     void stopRtcScreenShare(const QString &roomId);
     // Called directly by the Qt Quick video-filter render thread while its GL context is current.
@@ -336,6 +338,11 @@ signals:
     void matrixRtcAudioEventsUpdated(const QString &json);
     void matrixRtcAudioActionFinished(const QString &roomId, const QString &error);
     void matrixRtcVideoActionFinished(const QString &roomId, const QString &error);
+    void matrixRtcBackgroundCameraActionFinished(
+        const QString &roomId,
+        bool running,
+        const QString &error
+    );
     void matrixRtcScreenShareActionFinished(const QString &roomId, const QString &error);
     void matrixRtcRemoteVideoFrame(
         const QString &roomId,
