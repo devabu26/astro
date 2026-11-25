@@ -307,6 +307,8 @@ Item {
             membershipJoined = false
             videoStarted = false
             screenShareStarted = false
+            screenShareAudioRequested = false
+            screenShareChoiceVisible = false
             screenShareRoomId = ""
             muted = false
             for (var i = 0; i < participants.length; ++i) {
@@ -320,6 +322,8 @@ Item {
         if (backend && screenShareRoomId.length > 0)
             backend.stopRtcScreenShare(screenShareRoomId)
         screenShareRoomId = ""
+        screenShareAudioRequested = false
+        screenShareChoiceVisible = false
 
         for (var i = 0; i < participants.length; ++i) {
             remoteVideoCleared(participants[i].identity, "camera")
@@ -461,6 +465,7 @@ Item {
                     root.screenShareStarted = true
                 } else {
                     root.screenShareStarted = false
+                    root.screenShareAudioRequested = false
                     root.screenShareRoomId = ""
                 }
                 return
@@ -476,6 +481,7 @@ Item {
                 root.screenShareRoomId = ""
             } else if (operation === "stopScreenShareForHangup") {
                 root.screenShareStarted = false
+                root.screenShareAudioRequested = false
                 root.screenShareRoomId = ""
                 if (root.videoStarted) {
                     localCamera.stop()
