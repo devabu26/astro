@@ -104,6 +104,20 @@ void Backend::loginMatrix(
 // =============================================================
 
 
+void Backend::refreshMatrixAccountProfile()
+{
+    if (!m_storageReady) {
+        emit matrixAccountProfileRetrieved(
+            QString(),
+            QStringLiteral("Unlock encrypted storage to view your Matrix account.")
+        );
+        return;
+    }
+
+    emit requestFetchMatrixAccountProfile();
+}
+
+
 void Backend::refreshMatrixDevices()
 {
     if (!m_storageReady) {
