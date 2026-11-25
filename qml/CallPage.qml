@@ -352,7 +352,7 @@ Item {
         if (videoStarted) {
             localCamera.start()
             if (backend)
-                backend.setRtcCameraProbe(localCamera.mediaObject)
+                backend.setRtcCameraProbe(localCamera)
         } else {
             if (backend)
                 backend.setRtcCameraProbe(null)
