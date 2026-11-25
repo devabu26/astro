@@ -2806,6 +2806,14 @@ impl MatrixClientManager {
             &bytes[y_size + chroma_size..expected_size]
         );
 
+        let source_resolution = source.video_resolution();
+        if source_resolution.width != width || source_resolution.height != height {
+            return Err(format!(
+                "Screen-share frame size {}x{} does not match LiveKit source size {}x{}",
+                width, height, source_resolution.width, source_resolution.height
+            ));
+        }
+
         let frame = VideoFrame::new(VideoRotation::VideoRotation0, buffer);
 
         let captured = {
@@ -2814,7 +2822,10 @@ impl MatrixClientManager {
         };
 
         if !captured {
-            return Err("LiveKit rejected the screen-share video frame".into());
+            return Err(format!(
+                "LiveKit rejected screen-share frame {}x{} (source {}x{})",
+                width, height, source_resolution.width, source_resolution.height
+            ));
         }
 
         Ok(())
