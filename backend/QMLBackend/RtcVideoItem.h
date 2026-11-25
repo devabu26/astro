@@ -2,6 +2,8 @@
 
 #include <QByteArray>
 #include <QImage>
+#include <QMutex>
+#include <QMetaObject>
 #include <QQuickPaintedItem>
 #include <QString>
 
@@ -19,7 +21,7 @@ class RtcVideoItem : public QQuickPaintedItem
 public:
     explicit RtcVideoItem(QQuickItem *parent = nullptr);
 
-    bool hasFrame() const { return !m_image.isNull(); }
+    bool hasFrame() const;
     Backend *backend() const { return m_backend; }
     QString roomId() const { return m_roomId; }
     QString identity() const { return m_identity; }
@@ -55,5 +57,6 @@ private:
     QString m_roomId;
     QString m_identity;
     QMetaObject::Connection m_frameConnection;
+    mutable QMutex m_imageMutex;
     QImage m_image;
 };
