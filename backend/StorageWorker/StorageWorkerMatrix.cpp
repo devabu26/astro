@@ -1779,6 +1779,15 @@ void StorageWorker::startRtcScreenShare(
 
 void StorageWorker::stopRtcScreenShare(const QString &roomId)
 {
+    if (m_rtcScreenShareProcess &&
+        m_rtcScreenShareRoomId != roomId) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId,
+            QStringLiteral("Screen sharing is active in another room")
+        );
+        return;
+    }
+
     stopRtcScreenShareCapture();
 
     if (!m_matrixClient || roomId.isEmpty()) {
@@ -1872,7 +1881,10 @@ void StorageWorker::stopRtcVideo(const QString &roomId)
 
 void StorageWorker::stopRtcAudio(const QString &roomId)
 {
-    stopRtcScreenShareCapture();
+    if (m_rtcScreenShareProcess &&
+        m_rtcScreenShareRoomId == roomId) {
+        stopRtcScreenShareCapture();
+    }
     stopRtcCamera();
     if (!m_matrixClient || roomId.isEmpty()) {
         emit matrixRtcAudioActionFinished(
