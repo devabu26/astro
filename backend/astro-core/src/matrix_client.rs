@@ -29,7 +29,6 @@ use livekit::prelude::{LocalAudioTrack, LocalVideoTrack, LocalTrack, PlatformAud
 use livekit::webrtc::video_stream::native::NativeVideoStream;
 use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
 use livekit::webrtc::video_frame::VideoBuffer;
-use livekit::webrtc::video_frame::VideoBuffer;
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::video_frame::{
