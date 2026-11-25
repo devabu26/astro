@@ -2832,6 +2832,12 @@ impl MatrixClientManager {
                             if video_track.source() == TrackSource::Camera {
                                 let identity = participant.identity().to_string();
                                 let track_sid = video_track.sid().to_string();
+                                tracing::info!(
+                                    room_id = %room_id,
+                                    participant = %identity,
+                                    track_sid = %track_sid,
+                                    "LiveKit camera track subscribed"
+                                );
                                 let key = format!("{room_id}\u{1f}{identity}\u{1f}{track_sid}");
                                 let task_key = key.clone();
                                 let task_room_id = room_id.clone();
@@ -2839,18 +2845,45 @@ impl MatrixClientManager {
                                 let mut stream = NativeVideoStream::new(video_track.rtc_track());
                                 let task_frame_queue = Arc::clone(&frame_queue);
                                 let task = runtime.spawn(async move {
+                                    let mut logged_first_frame = false;
+                                    let mut logged_pack_failure = false;
                                     while let Some(frame) = stream.next().await {
-                                        let Some(data) =
-                                            pack_remote_video_frame(frame.buffer.as_ref())
-                                        else {
-                                            continue;
+                                        let width = frame.buffer.width();
+                                        let height = frame.buffer.height();
+                                        let data = match pack_remote_video_frame(frame.buffer.as_ref()) {
+                                            Some(data) => data,
+                                            None => {
+                                                if !logged_pack_failure {
+                                                    tracing::warn!(
+                                                        room_id = %task_room_id,
+                                                        participant = %task_identity,
+                                                        width,
+                                                        height,
+                                                        "Could not pack decoded LiveKit camera frame as I420"
+                                                    );
+                                                    logged_pack_failure = true;
+                                                }
+                                                continue;
+                                            }
                                         };
+
+                                        if !logged_first_frame {
+                                            tracing::info!(
+                                                room_id = %task_room_id,
+                                                participant = %task_identity,
+                                                width,
+                                                height,
+                                                "First decoded LiveKit camera frame received"
+                                            );
+                                            logged_first_frame = true;
+                                        }
+
                                         let next_frame = RtcRemoteVideoFrame {
                                             key: task_key.clone(),
                                             room_id: task_room_id.clone(),
                                             identity: task_identity.clone(),
-                                            width: frame.buffer.width(),
-                                            height: frame.buffer.height(),
+                                            width,
+                                            height,
                                             data,
                                         };
 
