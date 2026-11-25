@@ -1135,6 +1135,14 @@ public:
                 // storage when converting the QML-captured image to I420.
                 const QImage rgba = source.convertToFormat(QImage::Format_RGBA8888);
 
+                if (m_loggedRgbFormat.testAndSetOrdered(0, 1)) {
+                    qInfo() << "RTC camera RGB conversion formats:"
+                            << "frame:" << format
+                            << "source QImage:" << source.format()
+                            << "RGBA output:" << rgba.format()
+                            << "size:" << width << "x" << height;
+                }
+
                 if (!rgba.isNull()) {
                     auto clamp = [](int value) -> uchar {
                         return static_cast<uchar>(qBound(0, value, 255));
@@ -1243,6 +1251,7 @@ private:
     QAtomicInt m_loggedInvalidDimensions{0};
     QAtomicInt m_loggedMapFailure{0};
     QAtomicInt m_loggedFirstFrame{0};
+    QAtomicInt m_loggedRgbFormat{0};
     QAtomicInt m_loggedUnsupportedFormat{0};
     QAtomicInt m_loggedQueueFailure{0};
 };
