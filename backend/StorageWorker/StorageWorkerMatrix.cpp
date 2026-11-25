@@ -1578,12 +1578,18 @@ void StorageWorker::pushRtcVideoFrame(
         &error
     );
 
+    static QAtomicInt loggedCameraSubmissionError{0};
     if (error) {
-        qWarning() << "RTC video frame submission failed:"
-                   << QString::fromUtf8(error);
+        if (loggedCameraSubmissionError.testAndSetOrdered(0, 1)) {
+            qWarning() << "RTC video frame submission failed:"
+                       << QString::fromUtf8(error)
+                       << "frame:" << width << "x" << height;
+        }
         astro_string_free(error);
-    } else if (result < 0) {
-        qWarning() << "RTC video frame submission failed";
+    } else if (result < 0 &&
+               loggedCameraSubmissionError.testAndSetOrdered(0, 1)) {
+        qWarning() << "RTC video frame submission failed"
+                   << "frame:" << width << "x" << height;
     }
 }
 
