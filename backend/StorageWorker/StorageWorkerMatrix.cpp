@@ -424,9 +424,50 @@ void StorageWorker::pollRoomTimelineUpdates()
     }
 
     // ---------------------------------------------------------
-    // LiveKit remote video frames
+    // Live Matrix timeline updates
     // ---------------------------------------------------------
 
+    char *error = nullptr;
+
+    char *json = astro_matrix_poll_room_timeline_updates_json(
+        m_matrixClient,
+        &error
+    );
+
+    if (!json) {
+        QString message =
+            QStringLiteral("Could not retrieve live timeline updates");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+            astro_string_free(error);
+        }
+
+        qWarning() << "ASTRO: Live timeline polling failed:" << message;
+        return;
+    }
+
+    const QString result = QString::fromUtf8(json);
+    astro_string_free(json);
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    // Suppress empty results rather than emitting them every timer tick.
+    if (result != QStringLiteral("{\"updates\":[]}")) {
+        emit matrixLiveTimelineUpdated(result);
+    }
+}
+
+void StorageWorker::pollRtcRemoteVideoFrames()
+{
+    if (!m_matrixClient) {
+        return;
+    }
+
+    // The Rust queue retains only the latest frame per subscribed camera.
+    // Drain a bounded number so several participants can update each tick.
     for (int frameIndex = 0; frameIndex < 12; ++frameIndex) {
         char *frameError = nullptr;
         AstroRtcVideoFrame *frame = astro_matrix_take_rtc_video_frame(
@@ -466,42 +507,6 @@ void StorageWorker::pollRoomTimelineUpdates()
         }
 
         astro_matrix_rtc_video_frame_free(frame);
-    }
-
-    // ---------------------------------------------------------
-    // Live Matrix timeline updates
-    // ---------------------------------------------------------
-
-    char *error = nullptr;
-
-    char *json = astro_matrix_poll_room_timeline_updates_json(
-        m_matrixClient,
-        &error
-    );
-
-    if (!json) {
-        QString message =
-            QStringLiteral("Could not retrieve live timeline updates");
-
-        if (error) {
-            message = QString::fromUtf8(error);
-            astro_string_free(error);
-        }
-
-        qWarning() << "ASTRO: Live timeline polling failed:" << message;
-        return;
-    }
-
-    const QString result = QString::fromUtf8(json);
-    astro_string_free(json);
-
-    if (error) {
-        astro_string_free(error);
-    }
-
-    // Suppress empty results rather than emitting them every timer tick.
-    if (result != QStringLiteral("{\"updates\":[]}")) {
-        emit matrixLiveTimelineUpdated(result);
     }
 }
 
