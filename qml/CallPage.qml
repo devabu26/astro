@@ -681,15 +681,6 @@ Item {
         captureMode: Camera.CaptureVideo
         viewfinder.maximumFrameRate: 30
 
-        onCameraStatusChanged: {
-            console.info(
-                "ASTRO_BACKGROUND_CAMERA: camera status",
-                cameraStatus,
-                "state:", cameraState,
-                "application:", Qt.application.state
-            )
-        }
-
         onError: {
             root.actionError = errorString
             console.warn("ASTRO RTC camera error:", errorString)
