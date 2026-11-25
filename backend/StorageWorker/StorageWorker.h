@@ -19,7 +19,7 @@ class QOffscreenSurface;
 
 #include <mir_toolkit/mir_client_library.h>
 #include <mir_toolkit/mir_screencast.h>
-#include <mir_toolkit/mir_buffer.h>
+#include <mir_toolkit/mir_buffer_stream.h>
 
 /*
  * Background worker responsible for encrypted storage, Matrix operations,
@@ -481,7 +481,7 @@ private:
     QString m_rtcScreenShareRoomId;
     MirConnection *m_rtcScreenShareConnection = nullptr;
     MirScreencast *m_rtcScreenCast = nullptr;
-    MirBuffer *m_rtcScreenShareBuffer = nullptr;
+    MirBufferStream *m_rtcScreenShareStream = nullptr;
     QTimer *m_rtcScreenShareTimer = nullptr;
     int m_rtcScreenShareWidth = 0;
     int m_rtcScreenShareHeight = 0;
