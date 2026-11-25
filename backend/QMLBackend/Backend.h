@@ -538,6 +538,7 @@ private:
     // ---------------------------------------------------------
 
     bool m_storageReady = false;
+    bool m_applicationActive = true;
     bool m_lifecycleExemptionEnabled = false;
     QString m_lifecycleExemptionError;
     bool m_storageOperationInProgress = false;
