@@ -2807,11 +2807,13 @@ impl MatrixClientManager {
 
         let runtime = Arc::clone(&self.runtime);
 
+        let frame_pixels = (width as u64).checked_mul(height as u64);
         if width < 2 || height < 2
-            || width > 1920 || height > 1080
+            || width > 1920 || height > 1920
             || width % 2 != 0 || height % 2 != 0
+            || frame_pixels.is_none_or(|pixels| pixels > 2_073_600)
         {
-            return Err("Video frame dimensions must be even and no larger than 1920x1080".into());
+            return Err("Screen-share frame dimensions must be even, no larger than 1920 pixels per side, and within a 1080p pixel budget".into());
         }
 
         let y_size = (width as usize)
