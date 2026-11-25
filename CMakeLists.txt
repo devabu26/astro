@@ -95,6 +95,8 @@ add_library(AstroBackend MODULE
     backend/QMLBackend/BackendMedia.cpp
     backend/QMLBackend/RtcVideoItem.cpp
     backend/QMLBackend/RtcVideoItem.h
+    backend/QMLBackend/RtcCameraVideoFilter.cpp
+    backend/QMLBackend/RtcCameraVideoFilter.h
     backend/QMLBackend/Backend.h
     backend/notifications/NotificationManager.cpp
     backend/notifications/NotificationManager.h
