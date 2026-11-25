@@ -1,5 +1,6 @@
 #include "plugin.h"
 #include "Backend.h"
+#include "RtcVideoItem.h"
 
 #include <QtQml/qqml.h>
 #include <QtCore/QtGlobal>
@@ -13,5 +14,12 @@ void AstroBackendPlugin::registerTypes(const char *uri)
         1,
         0,
         "Backend"
+    );
+
+    qmlRegisterType<RtcVideoItem>(
+        uri,
+        1,
+        0,
+        "RtcVideoItem"
     );
 }
