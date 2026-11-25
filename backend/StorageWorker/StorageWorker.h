@@ -477,7 +477,9 @@ private:
     QProcess *m_rtcScreenShareProcess = nullptr;
     QString m_rtcScreenShareRoomId;
     QByteArray m_rtcScreenShareBuffer;
+    QByteArray m_rtcScreenShareErrorOutput;
     bool m_stoppingRtcScreenShare = false;
+    bool m_rtcScreenShareStartPending = false;
 
     // Retained push notification configuration.
     QByteArray m_pushToken;
