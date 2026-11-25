@@ -10,7 +10,11 @@
 #include <QImage>
 #include <QVideoSurfaceFormat>
 #include <QOpenGLContext>
+#include <QOffscreenSurface>
 #include <QOpenGLFunctions>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <cstring>
 
 #include <QByteArray>
@@ -725,8 +729,46 @@ void StorageWorker::startRtcAudio(const QString &roomId)
     emit matrixRtcAudioActionFinished(roomId, errorMessage);
 }
 
-// Read back Qt's GLTextureHandle camera frames while their producer context is current.
-// QVideoFrame::map() is not available for GL-backed buffers.
+void StorageWorker::setRtcCameraOpenGLContext(
+    QOpenGLContext *context,
+    QOffscreenSurface *surface
+)
+{
+    m_rtcCameraOpenGLContext = context;
+    m_rtcCameraOffscreenSurface = surface;
+}
+
+bool StorageWorker::makeRtcCameraOpenGLContextCurrent()
+{
+    if (!m_rtcCameraOpenGLContext ||
+        !m_rtcCameraOffscreenSurface ||
+        !m_rtcCameraOpenGLContext->isValid() ||
+        !m_rtcCameraOffscreenSurface->isValid()) {
+        return false;
+    }
+
+    if (QOpenGLContext::currentContext() == m_rtcCameraOpenGLContext)
+        return true;
+
+    if (QOpenGLContext *current = QOpenGLContext::currentContext())
+        current->doneCurrent();
+
+    return m_rtcCameraOpenGLContext->makeCurrent(
+        m_rtcCameraOffscreenSurface
+    );
+}
+
+void StorageWorker::releaseRtcCameraOpenGLContext()
+{
+    if (m_rtcCameraOpenGLContext &&
+        QOpenGLContext::currentContext() == m_rtcCameraOpenGLContext) {
+        m_rtcCameraOpenGLContext->doneCurrent();
+    }
+}
+
+// Read back Qt's GLTextureHandle camera frames while the camera worker's
+// shared OpenGL context is current. QVideoFrame::map() cannot map these
+// GL-backed buffers on Ubuntu Touch without a current context.
 static bool readGlCameraFrame(const QVideoFrame &frame, QImage *image)
 {
     if (!image || frame.handleType() != QAbstractVideoBuffer::GLTextureHandle ||
@@ -1234,6 +1276,14 @@ void StorageWorker::startRtcVideo(
     if (result < 0 && errorMessage.isEmpty())
         errorMessage = QStringLiteral("Could not start LiveKit video");
 
+    if (result >= 0 && errorMessage.isEmpty() &&
+        m_rtcCameraOpenGLContext &&
+        !makeRtcCameraOpenGLContextCurrent()) {
+        errorMessage = QStringLiteral(
+            "Could not activate the camera OpenGL context"
+        );
+    }
+
     if (result >= 0 && errorMessage.isEmpty()) {
         const QList<QCameraInfo> cameras = QCameraInfo::availableCameras();
         qInfo() << "RTC available cameras:" << cameras.size();
@@ -1279,15 +1329,16 @@ void StorageWorker::startRtcVideo(
                 errorMessage = QStringLiteral("Selected camera is unavailable");
         }
 
-        if (!errorMessage.isEmpty()) {
-            stopRtcCamera();
-            char *stopError = nullptr;
-            astro_matrix_stop_rtc_video(
-                m_matrixClient, roomIdBytes.constData(), &stopError
-            );
-            if (stopError)
-                astro_string_free(stopError);
-        }
+    }
+
+    if (result >= 0 && !errorMessage.isEmpty()) {
+        stopRtcCamera();
+        char *stopError = nullptr;
+        astro_matrix_stop_rtc_video(
+            m_matrixClient, roomIdBytes.constData(), &stopError
+        );
+        if (stopError)
+            astro_string_free(stopError);
     }
 
     emit matrixRtcVideoActionFinished(roomId, errorMessage);
@@ -1353,6 +1404,15 @@ void StorageWorker::switchRtcCamera(const QString &roomId)
     }
 
     stopRtcCamera();
+    if (m_rtcCameraOpenGLContext &&
+        !makeRtcCameraOpenGLContextCurrent()) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            QStringLiteral("Could not activate the camera OpenGL context")
+        );
+        return;
+    }
+
     m_rtcCamera = new QCamera(selected, this);
     connect(
         m_rtcCamera, &QCamera::statusChanged, this,
@@ -1482,6 +1542,21 @@ void StorageWorker::stopRtcAudio(const QString &roomId)
     }
     if (result < 0 && errorMessage.isEmpty())
         errorMessage = QStringLiteral("Could not stop LiveKit audio");
+
+    if (result >= 0 && errorMessage.isEmpty()) {
+        const QJsonObject disconnectedEvent{
+            { QStringLiteral("room_id"), roomId },
+            { QStringLiteral("type"), QStringLiteral("disconnected") }
+        };
+        const QJsonObject payload{
+            { QStringLiteral("events"), QJsonArray{disconnectedEvent} }
+        };
+        emit matrixRtcAudioEventsUpdated(
+            QString::fromUtf8(
+                QJsonDocument(payload).toJson(QJsonDocument::Compact)
+            )
+        );
+    }
 
     emit matrixRtcAudioActionFinished(roomId, errorMessage);
 }
@@ -1744,4 +1819,6 @@ void StorageWorker::stopRtcCamera()
         delete m_rtcCamera;
         m_rtcCamera = nullptr;
     }
+
+    releaseRtcCameraOpenGLContext();
 }

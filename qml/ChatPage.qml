@@ -41,6 +41,31 @@ Item {
     property bool roomsLoading: false
     property bool moreMenuVisible: false
 
+    function rtcParticipantDisplayName(name, identity) {
+        var displayName = String(name || "").trim()
+        var matrixIdentity = String(identity || "").trim()
+
+        if (displayName && displayName.charAt(0) !== "@")
+            return displayName
+
+        var source = displayName.charAt(0) === "@"
+                ? displayName : matrixIdentity
+
+        if (source.charAt(0) === "@") {
+            var separator = source.indexOf(":")
+            var localpart = separator > 1
+                    ? source.substring(1, separator)
+                    : source.substring(1)
+
+            if (localpart.length > 0) {
+                return localpart.charAt(0).toUpperCase() +
+                       localpart.substring(1)
+            }
+        }
+
+        return displayName || matrixIdentity || "Participant"
+    }
+
     // Dismiss the search keyboard without clearing the search.
     function dismissSearchKeyboard() {
         chatSearchField.focus = false
@@ -461,7 +486,9 @@ function loadRooms(json, finished) {
                             event.type === "participant_active") {
                         var participant = {
                             identity: event.identity || "",
-                            name: event.name || event.identity || "Participant",
+                            name: root.rtcParticipantDisplayName(
+                                event.name, event.identity
+                            ),
                             speaking: event.speaking === true,
                             audioLevel: Number(event.audio_level || 0),
                             hasTrack: participantIndex >= 0 &&
@@ -485,7 +512,9 @@ function loadRooms(json, finished) {
                             // of a participant. Do not depend on event ordering.
                             participants.push({
                                 identity: event.identity,
-                                name: event.name || event.identity,
+                                name: root.rtcParticipantDisplayName(
+                                    event.name, event.identity
+                                ),
                                 speaking: false,
                                 audioLevel: 0,
                                 hasTrack: true

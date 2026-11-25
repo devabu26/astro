@@ -188,7 +188,9 @@ Item {
         } else if (audioState.connectionState === "Disconnected" &&
                    pendingOperation.length === 0) {
             audioStarted = false
+            membershipJoined = false
             videoStarted = false
+            muted = false
             for (var i = 0; i < participants.length; ++i)
                 remoteVideoCleared(participants[i].identity)
         }
@@ -369,7 +371,18 @@ Item {
 
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: root.backRequested()
+                        onClicked: {
+                            if (root.pendingOperation.length > 0)
+                                return
+
+                            if (root.callActive ||
+                                root.membershipJoined ||
+                                root.videoStarted) {
+                                root.hangUp()
+                            } else {
+                                root.backRequested()
+                            }
+                        }
                     }
                 }
 

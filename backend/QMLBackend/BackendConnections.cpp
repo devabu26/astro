@@ -5,6 +5,10 @@
 #include "notifications/NotificationManager.h"
 
 #include <QCoreApplication>
+#include <QGuiApplication>
+#include <QOpenGLContext>
+#include <QOffscreenSurface>
+#include <QSurfaceFormat>
 #include <QStandardPaths>
 #include <QDir>
 #include <QFileInfo>
@@ -52,6 +56,44 @@ Backend::Backend(QObject *parent)
     m_storageThread = new QThread(this);
     m_storageWorker = new StorageWorker();
 
+    // QtUbuntu's camera backend supplies GLTextureHandle frames. Give the
+    // camera worker its own context, created on the GUI thread and shared
+    // with Qt Quick where a global share context is available.
+    QOpenGLContext *cameraContext = new QOpenGLContext(m_storageWorker);
+    QOpenGLContext *shareContext = QOpenGLContext::globalShareContext();
+    if (shareContext)
+        cameraContext->setShareContext(shareContext);
+
+    cameraContext->setScreen(QGuiApplication::primaryScreen());
+    cameraContext->setFormat(
+        shareContext ? shareContext->format() : QSurfaceFormat::defaultFormat()
+    );
+
+    if (cameraContext->create()) {
+        QOffscreenSurface *cameraSurface = new QOffscreenSurface(
+            QGuiApplication::primaryScreen(), this
+        );
+        cameraSurface->setFormat(cameraContext->format());
+        cameraSurface->create();
+
+        if (cameraSurface->isValid()) {
+            m_storageWorker->setRtcCameraOpenGLContext(
+                cameraContext, cameraSurface
+            );
+            qInfo() << "RTC camera OpenGL context initialised;"
+                    << "shared:" << (shareContext != nullptr);
+        } else {
+            qWarning() << "RTC camera offscreen OpenGL surface unavailable";
+            delete cameraSurface;
+            delete cameraContext;
+        }
+    } else {
+        qWarning() << "RTC camera OpenGL context could not be created";
+        delete cameraContext;
+    }
+
+    // Moving the worker also moves its child OpenGL context. The offscreen
+    // surface remains GUI-thread-owned, as required by Qt.
     m_storageWorker->moveToThread(m_storageThread);
 
     connect(

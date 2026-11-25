@@ -9,6 +9,8 @@
 #include <cstdint>
 
 class RtcCameraVideoSurface;
+class QOpenGLContext;
+class QOffscreenSurface;
 
 #include "../astro_core_ffi.h"
 
@@ -29,6 +31,13 @@ class StorageWorker : public QObject
 public:
     explicit StorageWorker(QObject *parent = nullptr);
     ~StorageWorker() override;
+
+    void setRtcCameraOpenGLContext(
+        QOpenGLContext *context,
+        QOffscreenSurface *surface
+    );
+    bool makeRtcCameraOpenGLContextCurrent();
+    void releaseRtcCameraOpenGLContext();
 
 public slots:
 
@@ -447,6 +456,8 @@ private:
 
     // Rust Matrix client; its lifecycle is managed through the FFI.
     AstroMatrixClient *m_matrixClient = nullptr;
+    QOpenGLContext *m_rtcCameraOpenGLContext = nullptr;
+    QOffscreenSurface *m_rtcCameraOffscreenSurface = nullptr;
     QCamera *m_rtcCamera = nullptr;
     RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
 
