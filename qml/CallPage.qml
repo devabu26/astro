@@ -10,6 +10,7 @@ Item {
     property var backend
     property string roomId: ""
     property string roomName: ""
+    property bool directCall: false
     property var audioState: ({})
 
     property string pendingOperation: ""
@@ -25,6 +26,8 @@ Item {
     property bool screenShareChoiceVisible: false
     property bool screenShareAudioRequested: false
     property bool cameraFrameGrabPending: false
+    property bool remoteAnswered: false
+    property string ringbackSource: ""
 
     signal backRequested()
     signal remoteVideoCleared(string identity, string source)
@@ -47,6 +50,7 @@ Item {
             return
         }
 
+        remoteAnswered = false
         pendingOperation = "join"
         backend.joinRtcRoom(roomId)
     }
@@ -155,6 +159,8 @@ Item {
             return
 
         actionError = ""
+        noAnswerTimer.stop()
+        ringbackAudio.stop()
 
         if (screenShareStarted) {
             pendingOperation = "stopScreenShareForHangup"
@@ -255,6 +261,30 @@ Item {
                 : "P"
     }
 
+    Audio {
+        id: ringbackAudio
+        source: root.ringbackSource
+        loops: Audio.Infinite
+        volume: 0.45
+    }
+
+    Timer {
+        id: noAnswerTimer
+        interval: 30000
+        repeat: false
+        onTriggered: {
+            if (!root.directCall || root.remoteAnswered)
+                return
+            ringbackAudio.stop()
+            if (root.pendingOperation.length > 0) {
+                restart()
+                return
+            }
+            root.actionError = "No answer"
+            root.hangUp()
+        }
+    }
+
     Timer {
         id: cameraFrameGrabTimer
         interval: 33
@@ -283,6 +313,16 @@ Item {
         }
     }
 
+    Component.onCompleted: {
+        if (backend && directCall)
+            ringbackSource = backend.rtcRingbackToneUrl()
+    }
+
+    onDirectCallChanged: {
+        if (directCall && backend && ringbackSource.length === 0)
+            ringbackSource = backend.rtcRingbackToneUrl()
+    }
+
     onVideoStartedChanged: {
         if (videoStarted)
             localCamera.start()
@@ -291,11 +331,19 @@ Item {
     }
 
     Component.onDestruction: {
+        noAnswerTimer.stop()
+        ringbackAudio.stop()
         if (backend && screenShareRoomId.length > 0)
             backend.stopRtcScreenShare(screenShareRoomId)
     }
 
     onAudioStateChanged: {
+        if (participants.length > 0) {
+            remoteAnswered = true
+            noAnswerTimer.stop()
+            ringbackAudio.stop()
+        }
+
         if (audioState.active === true) {
             audioStarted = true
             membershipJoined = true
@@ -319,6 +367,9 @@ Item {
     }
 
     onRoomIdChanged: {
+        noAnswerTimer.stop()
+        ringbackAudio.stop()
+        remoteAnswered = false
         if (backend && screenShareRoomId.length > 0)
             backend.stopRtcScreenShare(screenShareRoomId)
         screenShareRoomId = ""
@@ -402,6 +453,11 @@ Item {
             if (operation === "start") {
                 root.audioStarted = true
                 root.muted = false
+                if (root.directCall && !root.remoteAnswered) {
+                    if (root.ringbackSource.length > 0)
+                        ringbackAudio.play()
+                    noAnswerTimer.restart()
+                }
 
             } else if (operation === "mute") {
                 root.muted = root.pendingMuted
@@ -501,6 +557,13 @@ Item {
                     var event = events[i]
                     if (event.room_id !== root.roomId)
                         continue
+
+                    if (event.type === "participant_connected" ||
+                            event.type === "participant_active") {
+                        root.remoteAnswered = true
+                        noAnswerTimer.stop()
+                        ringbackAudio.stop()
+                    }
 
                     if (event.type === "track_unsubscribed") {
                         if (event.is_camera === true)
