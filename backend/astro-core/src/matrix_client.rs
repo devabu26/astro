@@ -25,7 +25,10 @@ use matrix_sdk::{
     config::SyncSettings, ruma::room::RoomType, store::RoomLoadSettings, Client, LoopCtrl,
     Room, RoomMemberships, SqliteStoreConfig, TransmissionProgress,
 };
-use livekit::prelude::{LocalAudioTrack, LocalVideoTrack, LocalTrack, PlatformAudio, Room as LiveKitRoom, RoomEvent, RoomOptions, TrackPublishOptions, TrackSource};
+use livekit::prelude::{LocalAudioTrack, LocalVideoTrack, LocalTrack, PlatformAudio, RemoteTrack, Room as LiveKitRoom, RoomEvent, RoomOptions, TrackPublishOptions, TrackSource};
+use livekit::webrtc::video_stream::native::NativeVideoStream;
+use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
+use livekit::webrtc::video_frame::VideoBuffer;
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::video_frame::{
@@ -38,7 +41,7 @@ use matrix_sdk_ui::timeline::{
     MembershipChange, Timeline, TimelineBuilder, TimelineEventItemId,
     TimelineItem, TimelineItemContent,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::c_void;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -55,6 +58,64 @@ use crate::notifications::{register_notification_handler, NotificationQueue};
 use crate::session_storage::{delete_session, load_session, save_session};
 
 static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+const RTC_VIDEO_FRAME_QUEUE_LIMIT: usize = 12;
+const RTC_VIDEO_MAX_WIDTH: u32 = 1920;
+const RTC_VIDEO_MAX_HEIGHT: u32 = 1080;
+
+struct RtcRemoteVideoFrame {
+    key: String,
+    room_id: String,
+    identity: String,
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+fn pack_remote_i420_frame(buffer: &I420Buffer) -> Option<Vec<u8>> {
+    let width = buffer.width() as usize;
+    let height = buffer.height() as usize;
+
+    if width < 2 || height < 2
+        || width > RTC_VIDEO_MAX_WIDTH as usize
+        || height > RTC_VIDEO_MAX_HEIGHT as usize
+    {
+        return None;
+    }
+
+    let chroma_width = (width + 1) / 2;
+    let chroma_height = (height + 1) / 2;
+    let (stride_y, stride_u, stride_v) = buffer.strides();
+    let (plane_y, plane_u, plane_v) = buffer.data();
+
+    let capacity = width.checked_mul(height)?
+        .checked_add(chroma_width.checked_mul(chroma_height)?.checked_mul(2)?)?;
+    let mut packed = Vec::with_capacity(capacity);
+
+    fn append_plane(
+        output: &mut Vec<u8>,
+        source: &[u8],
+        stride: usize,
+        row_width: usize,
+        rows: usize,
+    ) -> Option<()> {
+        if stride < row_width {
+            return None;
+        }
+        for row in 0..rows {
+            let start = row.checked_mul(stride)?;
+            let end = start.checked_add(row_width)?;
+            output.extend_from_slice(source.get(start..end)?);
+        }
+        Some(())
+    }
+
+    append_plane(&mut packed, plane_y, stride_y as usize, width, height)?;
+    append_plane(&mut packed, plane_u, stride_u as usize, chroma_width, chroma_height)?;
+    append_plane(&mut packed, plane_v, stride_v as usize, chroma_width, chroma_height)?;
+
+    (packed.len() == capacity).then_some(packed)
+}
 
 type TimelineUpdateStream = Pin<Box<dyn Stream<Item = Vec<VectorDiff<Arc<TimelineItem>>>>>>;
 
@@ -363,6 +424,8 @@ async fn discover_livekit_service_url(client: &Client) -> Result<String, String>
 pub struct MatrixClientManager {
     client: Option<Client>,
     rtc_livekit_audio_sessions: HashMap<String, LiveKitAudioSession>,
+    rtc_remote_video_frames: Arc<Mutex<VecDeque<RtcRemoteVideoFrame>>>,
+    rtc_remote_video_tasks: HashMap<String, tokio::task::AbortHandle>,
     rtc_participant_profiles: HashMap<(String, String), RtcParticipantProfile>,
     rtc_last_snapshots: HashMap<String, serde_json::Value>,
     rtc_local_memberships: HashMap<String, String>,
@@ -541,6 +604,8 @@ impl MatrixClientManager {
             last_verification_states: HashMap::new(),
             client: Some(client),
             rtc_livekit_audio_sessions: HashMap::new(),
+            rtc_remote_video_frames: Arc::new(Mutex::new(VecDeque::new())),
+            rtc_remote_video_tasks: HashMap::new(),
             rtc_participant_profiles: HashMap::new(),
             rtc_last_snapshots: HashMap::new(),
             rtc_local_memberships: HashMap::new(),
@@ -2615,6 +2680,22 @@ impl MatrixClientManager {
         }
 
         self.rtc_livekit_audio_sessions.remove(room_id);
+
+        let room_prefix = format!("{room_id}\u{1f}");
+        let task_keys: Vec<String> = self.rtc_remote_video_tasks
+            .keys()
+            .filter(|key| key.starts_with(&room_prefix))
+            .cloned()
+            .collect();
+        for key in task_keys {
+            if let Some(task) = self.rtc_remote_video_tasks.remove(&key) {
+                task.abort();
+            }
+        }
+        if let Ok(mut frames) = self.rtc_remote_video_frames.lock() {
+            frames.retain(|frame| !frame.key.starts_with(&room_prefix));
+        }
+
         Ok(())
     }
 
@@ -2660,6 +2741,11 @@ impl MatrixClientManager {
     /// This is intended to be called by StorageWorker's existing polling timer.
     pub fn poll_rtc_audio_events_json(&mut self) -> String {
         let mut updates = Vec::new();
+        let runtime = Arc::clone(&self.runtime);
+        let frame_queue = Arc::clone(&self.rtc_remote_video_frames);
+        let mut tasks_to_add = Vec::new();
+        let mut cancelled_keys = HashSet::new();
+        let mut cancelled_prefixes = HashSet::new();
 
         for (room_id, session) in self.rtc_livekit_audio_sessions.iter_mut() {
             // Bound work per room so a large event burst cannot monopolise the worker.
@@ -2693,6 +2779,8 @@ impl MatrixClientManager {
                         }))
                     }
                     RoomEvent::ParticipantDisconnected(participant) => {
+                        let prefix = format!("{room_id}\u{1f}{}\u{1f}", participant.identity());
+                        cancelled_prefixes.insert(prefix);
                         Some(serde_json::json!({
                             "room_id": room_id,
                             "type": "participant_disconnected",
@@ -2700,7 +2788,47 @@ impl MatrixClientManager {
                             "name": participant.name()
                         }))
                     }
-                    RoomEvent::TrackSubscribed { participant, .. } => {
+                    RoomEvent::TrackSubscribed { participant, track, .. } => {
+                        if let RemoteTrack::Video(video_track) = track {
+                            let identity = participant.identity().to_string();
+                            let track_sid = video_track.sid().to_string();
+                            let key = format!("{room_id}\u{1f}{identity}\u{1f}{track_sid}");
+                            let task_key = key.clone();
+                            let task_room_id = room_id.clone();
+                            let task_identity = identity.clone();
+                            let mut stream = NativeVideoStream::new(video_track.rtc_track());
+                            let task = runtime.spawn(async move {
+                                while let Some(frame) = stream.next().await {
+                                    let i420 = frame.buffer.to_i420();
+                                    let Some(data) = pack_remote_i420_frame(&i420) else {
+                                        continue;
+                                    };
+                                    let next_frame = RtcRemoteVideoFrame {
+                                        key: task_key.clone(),
+                                        room_id: task_room_id.clone(),
+                                        identity: task_identity.clone(),
+                                        width: i420.width(),
+                                        height: i420.height(),
+                                        data,
+                                    };
+
+                                    if let Ok(mut frames) = frame_queue.lock() {
+                                        if let Some(existing) = frames.iter_mut()
+                                            .find(|queued| queued.key == task_key)
+                                        {
+                                            *existing = next_frame;
+                                        } else {
+                                            if frames.len() >= RTC_VIDEO_FRAME_QUEUE_LIMIT {
+                                                frames.pop_front();
+                                            }
+                                            frames.push_back(next_frame);
+                                        }
+                                    }
+                                }
+                            });
+                            tasks_to_add.push((key, task.abort_handle()));
+                        }
+
                         Some(serde_json::json!({
                             "room_id": room_id,
                             "type": "track_subscribed",
@@ -2708,7 +2836,15 @@ impl MatrixClientManager {
                             "name": participant.name()
                         }))
                     }
-                    RoomEvent::TrackUnsubscribed { participant, .. } => {
+                    RoomEvent::TrackUnsubscribed { participant, track, .. } => {
+                        if let RemoteTrack::Video(video_track) = track {
+                            let key = format!(
+                                "{room_id}\u{1f}{}\u{1f}{}",
+                                participant.identity(),
+                                video_track.sid()
+                            );
+                            cancelled_keys.insert(key);
+                        }
                         Some(serde_json::json!({
                             "room_id": room_id,
                             "type": "track_unsubscribed",
@@ -2736,6 +2872,7 @@ impl MatrixClientManager {
                         }))
                     }
                     RoomEvent::Disconnected { reason } => {
+                        cancelled_prefixes.insert(format!("{room_id}\u{1f}"));
                         Some(serde_json::json!({
                             "room_id": room_id,
                             "type": "disconnected",
@@ -2751,7 +2888,43 @@ impl MatrixClientManager {
             }
         }
 
+        for (key, task) in tasks_to_add {
+            if let Some(previous) = self.rtc_remote_video_tasks.insert(key, task) {
+                previous.abort();
+            }
+        }
+
+        if !cancelled_keys.is_empty() || !cancelled_prefixes.is_empty() {
+            let task_keys: Vec<String> = self.rtc_remote_video_tasks.keys()
+                .filter(|key| {
+                    cancelled_keys.contains(*key)
+                        || cancelled_prefixes.iter().any(|prefix| key.starts_with(prefix))
+                })
+                .cloned()
+                .collect();
+
+            for key in task_keys {
+                if let Some(task) = self.rtc_remote_video_tasks.remove(&key) {
+                    task.abort();
+                }
+            }
+
+            if let Ok(mut frames) = self.rtc_remote_video_frames.lock() {
+                frames.retain(|frame| {
+                    !cancelled_keys.contains(&frame.key)
+                        && !cancelled_prefixes.iter().any(|prefix| frame.key.starts_with(prefix))
+                });
+            }
+        }
+
         serde_json::json!({ "events": updates }).to_string()
+    }
+
+    pub fn take_rtc_video_frame(
+        &mut self,
+    ) -> Option<(String, String, u32, u32, Vec<u8>)> {
+        let frame = self.rtc_remote_video_frames.lock().ok()?.pop_front()?;
+        Some((frame.room_id, frame.identity, frame.width, frame.height, frame.data))
     }
 
     /// Withdraw Astro's own compatibility-mode MatrixRTC membership.
