@@ -1750,7 +1750,7 @@ void StorageWorker::startRtcScreenShare(
         QStringList{
             QStringLiteral("-m"), QStringLiteral("/run/mir_socket"),
             QStringLiteral("--stdout"),
-            QStringLiteral("--cap-interval"), QStringLiteral("5"),
+            QStringLiteral("--cap-interval"), QStringLiteral("2"),
             QStringLiteral("-s"),
             QString::number(width), QString::number(height)
         }
@@ -1773,7 +1773,7 @@ void StorageWorker::startRtcScreenShare(
     }
 
     qInfo() << "RTC screen-share capture started:"
-            << width << "x" << height << "at approximately 12 FPS";
+            << width << "x" << height << "at up to 30 FPS (every second display refresh)";
     emit matrixRtcScreenShareActionFinished(roomId, QString());
 }
 
