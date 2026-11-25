@@ -524,7 +524,7 @@ Item {
         visible: root.videoStarted
         source: localCamera
         fillMode: VideoOutput.PreserveAspectCrop
-        orientation: 90
+        orientation: 270
 
     }
 
