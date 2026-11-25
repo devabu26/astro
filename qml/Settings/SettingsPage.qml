@@ -337,68 +337,61 @@ Item {
 
                             Rectangle {
                                 width: parent.width
-                                height: units.gu(15)
+                                height: units.gu(18)
                                 radius: units.gu(1.5)
                                 color: root.panelColor
 
-                                Row {
+                                Column {
                                     anchors.fill: parent
                                     anchors.leftMargin: units.gu(2)
                                     anchors.rightMargin: units.gu(2)
-                                    spacing: units.gu(2)
+                                    anchors.topMargin: units.gu(1.5)
+                                    anchors.bottomMargin: units.gu(1.5)
+                                    spacing: units.gu(0.8)
 
-                                    Column {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        width: parent.width - units.gu(14)
-                                        spacing: units.gu(0.7)
-
-                                        Text {
-                                            width: parent.width
-                                            text: "Allow Astro to run in the background"
-                                            color: root.primaryText
-                                            font.pixelSize: units.gu(1.8)
-                                            font.bold: true
-                                            wrapMode: Text.WordWrap
-                                        }
-
-                                        Text {
-                                            width: parent.width
-                                            text: "Prevent Ubuntu Touch from suspending Astro when you switch apps or turn off the screen. This may increase battery and data usage."
-                                            color: root.secondaryText
-                                            font.pixelSize: units.gu(1.35)
-                                            wrapMode: Text.WordWrap
-                                        }
+                                    Text {
+                                        width: parent.width
+                                        text: "Allow Astro to run in the background"
+                                        color: root.primaryText
+                                        font.pixelSize: units.gu(1.8)
+                                        font.bold: true
+                                        wrapMode: Text.WordWrap
                                     }
 
-                                    Rectangle {
-                                        width: units.gu(11)
-                                        height: units.gu(4.5)
-                                        radius: units.gu(2.25)
-                                        anchors.verticalCenter: parent.verticalCenter
+                                    Text {
+                                        width: parent.width
+                                        text: "Prevent Ubuntu Touch from suspending Astro when you switch apps or turn off the screen. This may increase battery and data usage."
+                                        color: root.secondaryText
+                                        font.pixelSize: units.gu(1.35)
+                                        wrapMode: Text.WordWrap
+                                    }
+
+                                    Text {
+                                        width: parent.width
+                                        text: "Current status: " +
+                                              (root.backend
+                                               && root.backend.lifecycleExemptionEnabled
+                                               ? "Enabled" : "Disabled")
                                         color: root.backend
                                                && root.backend.lifecycleExemptionEnabled
-                                               ? root.accentColor : root.raisedColor
-                                        opacity: root.backend ? 1.0 : 0.45
-
-                                        Text {
-                                            anchors.centerIn: parent
-                                            text: root.backend
-                                                  && root.backend.lifecycleExemptionEnabled
-                                                  ? "Enabled" : "Disabled"
-                                            color: root.primaryText
-                                            font.pixelSize: units.gu(1.4)
-                                            font.bold: true
-                                        }
+                                               ? "#a8d8ff" : root.secondaryText
+                                        font.pixelSize: units.gu(1.45)
+                                        font.bold: true
                                     }
-                                }
 
-                                MouseArea {
-                                    anchors.fill: parent
-                                    enabled: root.backend !== undefined && root.backend !== null
-                                    onClicked: {
-                                        root.backend.setLifecycleExemption(
-                                            !root.backend.lifecycleExemptionEnabled
-                                        )
+                                    Text {
+                                        id: utTweaksLink
+                                        text: "Open UT Tweak Tool"
+                                        color: "#8ecbff"
+                                        font.pixelSize: units.gu(1.45)
+                                        font.underline: true
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            onClicked: Qt.openUrlExternally(
+                                                "https://open-store.io/app/ut-tweak-tool.sverzegnassi"
+                                            )
+                                        }
                                     }
                                 }
                             }
