@@ -6,7 +6,6 @@
 
 #include <QCoreApplication>
 #include <QGuiApplication>
-#include <QGuiApplication>
 #include <QOpenGLContext>
 #include <QOffscreenSurface>
 #include <QSurfaceFormat>
