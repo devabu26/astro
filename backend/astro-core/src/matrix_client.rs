@@ -26,6 +26,9 @@ use matrix_sdk::{
     Room, RoomMemberships, SqliteStoreConfig, TransmissionProgress,
 };
 use livekit::prelude::{LocalAudioTrack, LocalVideoTrack, LocalTrack, PlatformAudio, RemoteTrack, Room as LiveKitRoom, RoomEvent, RoomOptions, TrackPublishOptions, TrackSource};
+use livekit::webrtc::audio_frame::AudioFrame;
+use livekit::webrtc::audio_source::native::NativeAudioSource;
+use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::video_stream::native::NativeVideoStream;
 use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
 use livekit::webrtc::video_frame::{VideoBuffer, VideoBufferType};
@@ -491,6 +494,8 @@ struct LiveKitAudioSession {
     video_track: Option<LocalVideoTrack>,
     screen_share_source: Option<NativeVideoSource>,
     screen_share_track: Option<LocalVideoTrack>,
+    screen_share_audio_source: Option<NativeAudioSource>,
+    screen_share_audio_track: Option<LocalAudioTrack>,
 }
 
 fn create_new_store(database_path: &Path) -> Result<(String, PathBuf), String> {
@@ -2584,6 +2589,7 @@ impl MatrixClientManager {
         room_id: &str,
         width: u32,
         height: u32,
+        include_device_audio: bool,
     ) -> Result<(), String> {
         let room_id = room_id.trim();
 
@@ -2639,6 +2645,50 @@ impl MatrixClientManager {
 
         session.screen_share_source = Some(source);
         session.screen_share_track = Some(track);
+
+        if include_device_audio {
+            let (audio_source, audio_track) = {
+                let _runtime_guard = runtime.enter();
+                let source = NativeAudioSource::new(
+                    AudioSourceOptions::default(),
+                    48_000,
+                    2,
+                    100,
+                );
+                let track = LocalAudioTrack::create_audio_track(
+                    "screen_share_audio",
+                    RtcAudioSource::Native(source.clone()),
+                );
+                (source, track)
+            };
+
+            let audio_options = TrackPublishOptions {
+                source: TrackSource::ScreenshareAudio,
+                ..Default::default()
+            };
+
+            if let Err(error) = runtime.block_on(async {
+                session
+                    .room
+                    .local_participant()
+                    .publish_track(LocalTrack::Audio(audio_track.clone()), audio_options)
+                    .await
+                    .map_err(|error| {
+                        format!("Could not publish LiveKit screen-share audio track: {error}")
+                    })
+            }) {
+                let video_sid = LocalTrack::Video(track.clone()).sid();
+                let _ = runtime.block_on(async {
+                    session.room.local_participant().unpublish_track(&video_sid).await
+                });
+                session.screen_share_source = None;
+                session.screen_share_track = None;
+                return Err(error);
+            }
+
+            session.screen_share_audio_source = Some(audio_source);
+            session.screen_share_audio_track = Some(audio_track);
+        }
 
         Ok(())
     }
@@ -2867,6 +2917,42 @@ impl MatrixClientManager {
         Ok(())
     }
 
+    pub fn push_rtc_screenshare_audio_frame(
+        &mut self,
+        room_id: &str,
+        pcm: &[i16],
+    ) -> Result<(), String> {
+        let room_id = room_id.trim();
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+        if pcm.len() != 960 {
+            return Err(format!(
+                "Invalid screen-share audio frame: expected 960 samples, received {}",
+                pcm.len()
+            ));
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+        let source = session
+            .screen_share_audio_source
+            .as_ref()
+            .ok_or_else(|| "Screen-share audio is not active in this room".to_string())?;
+        let frame = AudioFrame::new(pcm, 48_000, 2);
+
+        runtime.block_on(async {
+            source
+                .capture_frame(&frame)
+                .await
+                .map_err(|error| format!("Could not submit screen-share audio frame: {error}"))
+        })
+    }
+
+
     /// Unpublish the screen share track without stopping the microphone.
     pub fn stop_rtc_screenshare(&mut self, room_id: &str) -> Result<(), String> {
         let room_id = room_id.trim();
@@ -2881,25 +2967,44 @@ impl MatrixClientManager {
             .get_mut(room_id)
             .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
 
-        let Some(track) = session.screen_share_track.as_ref() else {
+        let video_track = session.screen_share_track.clone();
+        let audio_track = session.screen_share_audio_track.clone();
+        if video_track.is_none() && audio_track.is_none() {
             return Ok(());
-        };
-
-        let track_sid = LocalTrack::Video(track.clone()).sid();
+        }
 
         runtime.block_on(async {
-            session
-                .room
-                .local_participant()
-                .unpublish_track(&track_sid)
-                .await
-                .map_err(|error| {
-                    format!("Could not unpublish LiveKit screen share track: {error}")
-                })
+            if let Some(track) = video_track {
+                let track_sid = LocalTrack::Video(track).sid();
+                session
+                    .room
+                    .local_participant()
+                    .unpublish_track(&track_sid)
+                    .await
+                    .map_err(|error| {
+                        format!("Could not unpublish LiveKit screen share track: {error}")
+                    })?;
+            }
+
+            if let Some(track) = audio_track {
+                let track_sid = LocalTrack::Audio(track).sid();
+                session
+                    .room
+                    .local_participant()
+                    .unpublish_track(&track_sid)
+                    .await
+                    .map_err(|error| {
+                        format!("Could not unpublish LiveKit screen-share audio track: {error}")
+                    })?;
+            }
+
+            Ok::<(), String>(())
         })?;
 
         session.screen_share_track = None;
         session.screen_share_source = None;
+        session.screen_share_audio_track = None;
+        session.screen_share_audio_source = None;
 
         Ok(())
     }
