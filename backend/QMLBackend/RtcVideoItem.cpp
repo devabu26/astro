@@ -1,0 +1,121 @@
+#include "RtcVideoItem.h"
+
+#include <QPainter>
+#include <QRectF>
+#include <QtGlobal>
+
+#include <limits>
+
+namespace {
+
+inline int clampByte(int value)
+{
+    return qBound(0, value, 255);
+}
+
+}
+
+RtcVideoItem::RtcVideoItem(QQuickItem *parent)
+    : QQuickPaintedItem(parent)
+{
+    setAntialiasing(false);
+    setOpaquePainting(false);
+}
+
+void RtcVideoItem::setI420Frame(
+    const QByteArray &data,
+    int width,
+    int height
+)
+{
+    if (width < 2 || height < 2 ||
+        width > 1920 || height > 1080 ||
+        (width & 1) || (height & 1)) {
+        return;
+    }
+
+    const qint64 ySize = qint64(width) * height;
+    const qint64 chromaSize = ySize / 4;
+    const qint64 expected = ySize + chromaSize * 2;
+
+    if (expected <= 0 ||
+        expected > std::numeric_limits<int>::max() ||
+        data.size() != expected) {
+        return;
+    }
+
+    const uchar *yPlane =
+        reinterpret_cast<const uchar *>(data.constData());
+    const uchar *uPlane = yPlane + ySize;
+    const uchar *vPlane = uPlane + chromaSize;
+
+    QImage next(width, height, QImage::Format_RGB32);
+    if (next.isNull()) {
+        return;
+    }
+
+    for (int y = 0; y < height; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(next.scanLine(y));
+        const int chromaRow = (y / 2) * (width / 2);
+        const int yRow = y * width;
+
+        for (int x = 0; x < width; ++x) {
+            const int yy = qMax(0, int(yPlane[yRow + x]) - 16);
+            const int uv = chromaRow + (x / 2);
+            const int u = int(uPlane[uv]) - 128;
+            const int v = int(vPlane[uv]) - 128;
+
+            const int c = 298 * yy;
+            const int red = (c + 409 * v + 128) >> 8;
+            const int green = (c - 100 * u - 208 * v + 128) >> 8;
+            const int blue = (c + 516 * u + 128) >> 8;
+
+            line[x] = qRgb(
+                clampByte(red),
+                clampByte(green),
+                clampByte(blue)
+            );
+        }
+    }
+
+    m_image = next;
+    emit frameChanged();
+    update();
+}
+
+void RtcVideoItem::clearFrame()
+{
+    if (m_image.isNull()) {
+        return;
+    }
+
+    m_image = QImage();
+    emit frameChanged();
+    update();
+}
+
+void RtcVideoItem::paint(QPainter *painter)
+{
+    if (m_image.isNull()) {
+        return;
+    }
+
+    const QSizeF sourceSize = m_image.size();
+    const QSizeF targetSize = boundingRect().size();
+    if (sourceSize.isEmpty() || targetSize.isEmpty()) {
+        return;
+    }
+
+    QSizeF fitted = sourceSize;
+    fitted.scale(targetSize, Qt::KeepAspectRatio);
+
+    const QRectF target(
+        (targetSize.width() - fitted.width()) / 2.0,
+        (targetSize.height() - fitted.height()) / 2.0,
+        fitted.width(),
+        fitted.height()
+    );
+
+    painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter->drawImage(target, m_image);
+}
