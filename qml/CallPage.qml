@@ -505,6 +505,17 @@ Item {
                  : (QtMultimedia.availableCameras.length > 0
                     ? QtMultimedia.availableCameras[0].deviceId : "")
         captureMode: Camera.CaptureVideo
+        viewfinder.maximumFrameRate: 30
+
+        onStatusChanged: {
+            if (cameraState === Camera.ActiveState) {
+                console.info("ASTRO RTC camera active:",
+                             "device:", deviceId,
+                             "position:", position,
+                             "sensor orientation:", orientation,
+                             "maximum FPS:", viewfinder.maximumFrameRate)
+            }
+        }
 
         onError: {
             root.actionError = errorString
