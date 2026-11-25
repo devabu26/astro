@@ -1494,7 +1494,14 @@ void StorageWorker::startRtcBackgroundCamera(
                                    << static_cast<int>(cameraError)
                                    << message;
                         stopRtcBackgroundCamera(roomId);
-                    }
+                        emit matrixRtcBackgroundCameraActionFinished(
+                            roomId,
+                            false,
+                            QString(),
+                            message
+                        );
+                    },
+                    Qt::QueuedConnection
                 );
 
                 m_rtcCamera->start();
