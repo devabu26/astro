@@ -1958,12 +1958,18 @@ void StorageWorker::captureRtcScreenShareFrame()
 
 void StorageWorker::stopRtcScreenShare(const QString &roomId)
 {
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: worker received request"
+            << "thread:" << quintptr(QThread::currentThreadId())
+            << "timerActive:" << (m_rtcScreenShareTimer != nullptr)
+            << "mirCastActive:" << (m_rtcScreenCast != nullptr);
     if (m_rtcScreenShareTimer && m_rtcScreenShareRoomId != roomId) {
         emit matrixRtcScreenShareActionFinished(roomId,
             QStringLiteral("Screen sharing is active in another room"));
         return;
     }
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: releasing local capture";
     stopRtcScreenShareCapture();
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: local capture released";
     if (!m_matrixClient || roomId.isEmpty()) {
         emit matrixRtcScreenShareActionFinished(roomId,
             !m_matrixClient ? QStringLiteral("No active Matrix session")
@@ -1972,8 +1978,11 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
     }
     const QByteArray roomIdBytes = roomId.toUtf8();
     char *error = nullptr;
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: unpublishing LiveKit tracks";
     const int32_t result = astro_matrix_stop_rtc_screenshare(
         m_matrixClient, roomIdBytes.constData(), &error);
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: LiveKit stop returned"
+            << "result:" << result;
     QString errorMessage;
     if (error) {
         errorMessage = QString::fromUtf8(error);
@@ -2140,16 +2149,21 @@ void StorageWorker::stopRtcScreenShareCapture()
         m_rtcScreenShareTimer->stop();
         m_rtcScreenShareTimer->deleteLater();
         m_rtcScreenShareTimer = nullptr;
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: capture timer stopped";
     }
     if (m_rtcScreenCast) {
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: Mir screencast release begin";
         mir_screencast_release_sync(m_rtcScreenCast);
         m_rtcScreenCast = nullptr;
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: Mir screencast release complete";
     }
     // The stream is owned by MirScreencast and is released with it.
     m_rtcScreenShareStream = nullptr;
     if (m_rtcScreenShareConnection) {
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: Mir connection release begin";
         mir_connection_release(m_rtcScreenShareConnection);
         m_rtcScreenShareConnection = nullptr;
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: Mir connection release complete";
     }
     m_rtcScreenShareRoomId.clear();
     m_rtcScreenShareWidth = 0;
