@@ -338,6 +338,23 @@ Item {
         }
     }
 
+    // Keep an application-thread heartbeat while screen sharing or stopping it.
+    // If this stops during teardown, the QML event loop is being starved or blocked.
+    Timer {
+        interval: 2000
+        repeat: true
+        running: root.screenShareStarted ||
+                 root.pendingOperation === "startScreenShare" ||
+                 root.pendingOperation === "stopScreenShare"
+        onTriggered: console.info(
+            "ASTRO_SCREEN_SHARE_DIAG: QML heartbeat",
+            "operation:", root.pendingOperation,
+            "active:", root.screenShareStarted,
+            "visible:", root.visible,
+            "appState:", Qt.application.state
+        )
+    }
+
     Component.onCompleted: {
         if (backend && directCall)
             ringbackSource = backend.rtcRingbackToneUrl()
@@ -544,6 +561,12 @@ Item {
         ignoreUnknownSignals: true
 
         onMatrixRtcScreenShareActionFinished: {
+            console.info(
+                "ASTRO_SCREEN_SHARE_DIAG: QML completion received",
+                "roomMatches:", roomId === root.roomId,
+                "operation:", root.pendingOperation,
+                "error:", error
+            )
             if (roomId !== root.roomId)
                 return
 
