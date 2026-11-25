@@ -290,6 +290,8 @@ Item {
             membershipJoined = true
         } else if (audioState.connectionState === "Disconnected" &&
                    pendingOperation.length === 0) {
+            if (backend && screenShareRoomId.length > 0)
+                backend.stopRtcScreenShare(screenShareRoomId)
             audioStarted = false
             membershipJoined = false
             videoStarted = false
