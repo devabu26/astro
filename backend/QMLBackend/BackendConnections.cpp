@@ -199,6 +199,14 @@ Backend::Backend(QObject *parent)
 
     connect(
         this,
+        &Backend::requestFetchMatrixAccountProfile,
+        m_storageWorker,
+        &StorageWorker::fetchMatrixAccountProfile,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
         &Backend::requestFetchMatrixDevices,
         m_storageWorker,
         &StorageWorker::fetchMatrixDevices,
@@ -931,6 +939,16 @@ Backend::Backend(QObject *parent)
                    QStringLiteral("Matrix sync resume failed: ") + error
                );
            }
+       },
+       Qt::QueuedConnection
+   );
+
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixAccountProfileUpdated,
+       this,
+       [this](const QString &json, const QString &error) {
+           emit matrixAccountProfileRetrieved(json, error);
        },
        Qt::QueuedConnection
    );
