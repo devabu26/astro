@@ -147,6 +147,11 @@ public:
     Q_INVOKABLE void startRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
     Q_INVOKABLE void stopRtcScreenShare(const QString &roomId);
     Q_INVOKABLE void switchRtcCamera(const QString &roomId);
+    Q_INVOKABLE void startRtcBackgroundCamera(
+        const QString &roomId,
+        const QString &deviceId
+    );
+    Q_INVOKABLE void stopRtcBackgroundCamera(const QString &roomId);
 
     // Called directly by the Qt Quick video-filter render thread.
     void processRtcCameraFrame(const QString &roomId, const QVideoFrame &frame);
@@ -291,6 +296,13 @@ signals:
         const QString &roomId,
         const QString &error
     );
+    void matrixRtcBackgroundCameraActionFinished(
+        const QString &roomId,
+        bool running,
+        const QString &deviceId,
+        const QString &error
+    );
+    void applicationActiveChanged(bool active);
     void matrixRtcScreenShareActionFinished(
         const QString &roomId,
         const QString &error
