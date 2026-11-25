@@ -713,7 +713,6 @@ pub unsafe extern "C" fn astro_matrix_stop_rtc_video(
 }
 
 #[no_mangle]
-#[no_mangle]
 pub unsafe extern "C" fn astro_matrix_push_rtc_screenshare_audio_frame(
     handle: *mut MatrixClientManager,
     room_id: *const c_char,
@@ -759,6 +758,7 @@ pub unsafe extern "C" fn astro_matrix_push_rtc_screenshare_audio_frame(
     }
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn astro_matrix_stop_rtc_screenshare(
     handle: *mut MatrixClientManager,
     room_id: *const c_char,
