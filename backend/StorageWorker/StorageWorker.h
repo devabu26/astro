@@ -159,6 +159,7 @@ public slots:
     // Called by the worker-thread timer to process retained
     // Matrix timeline subscriptions.
     void pollRoomTimelineUpdates();
+    void pollRtcRemoteVideoFrames();
 
 
     // ---------------------------------------------------------
@@ -455,6 +456,7 @@ private:
 
     // Polls retained timeline subscriptions on this worker's thread.
     QTimer *m_timelinePollTimer = nullptr;
+    QTimer *m_rtcVideoPollTimer = nullptr;
 
     // Retained only while encrypted storage is unlocked.
     QByteArray m_storagePassphrase;
