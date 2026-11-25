@@ -817,6 +817,14 @@ impl MatrixClientManager {
             task.stop();
         }
 
+        let active_rtc_rooms: Vec<String> =
+            self.rtc_livekit_audio_sessions.keys().cloned().collect();
+        for room_id in active_rtc_rooms {
+            if let Err(error) = self.stop_rtc_audio(&room_id) {
+                eprintln!("ASTRO DEBUG: Could not close LiveKit room {room_id} during logout: {error}");
+            }
+        }
+
         let client = self
             .client
             .as_ref()
@@ -2790,6 +2798,9 @@ impl MatrixClientManager {
                     }
                     RoomEvent::TrackSubscribed { participant, track, .. } => {
                         if let RemoteTrack::Video(video_track) = track {
+                            if video_track.source() != TrackSource::Camera {
+                                continue;
+                            }
                             let identity = participant.identity().to_string();
                             let track_sid = video_track.sid().to_string();
                             let key = format!("{room_id}\u{1f}{identity}\u{1f}{track_sid}");
