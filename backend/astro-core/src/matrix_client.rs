@@ -2837,6 +2837,7 @@ impl MatrixClientManager {
                                 let task_room_id = room_id.clone();
                                 let task_identity = identity.clone();
                                 let mut stream = NativeVideoStream::new(video_track.rtc_track());
+                                let task_frame_queue = Arc::clone(&frame_queue);
                                 let task = runtime.spawn(async move {
                                     while let Some(frame) = stream.next().await {
                                         let Some(data) =
@@ -2853,7 +2854,7 @@ impl MatrixClientManager {
                                             data,
                                         };
 
-                                        if let Ok(mut frames) = frame_queue.lock() {
+                                        if let Ok(mut frames) = task_frame_queue.lock() {
                                             if let Some(existing) = frames.iter_mut()
                                                 .find(|queued| queued.key == task_key)
                                             {
