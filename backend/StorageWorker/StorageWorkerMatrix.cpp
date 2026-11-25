@@ -1273,10 +1273,14 @@ public:
                             const int chromaIndex =
                                 (row / 2) * (width / 2) + col / 2;
 
-                            uOut[chromaIndex] = clamp(
+                            // Trial correction: the published camera image has a
+                            // pronounced blue cast on remote clients. Reverse the
+                            // chroma assignment to compensate for a possible RGB
+                            // channel-order mismatch in the Ubuntu Touch capture path.
+                            vOut[chromaIndex] = clamp(
                                 ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128
                             );
-                            vOut[chromaIndex] = clamp(
+                            uOut[chromaIndex] = clamp(
                                 ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128
                             );
                         }
