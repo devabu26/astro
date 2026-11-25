@@ -1,6 +1,7 @@
 
 import QtQuick 2.7
 import Lomiri.Components 1.3
+import Astro.Backend 1.0
 
 Item {
     id: root
@@ -20,6 +21,13 @@ Item {
     property bool videoStarted: false
 
     signal backRequested()
+    signal remoteVideoFrameReceived(
+        string identity,
+        var data,
+        int width,
+        int height
+    )
+    signal remoteVideoCleared(string identity)
 
     readonly property var participants:
         audioState.participants || []
@@ -284,6 +292,41 @@ Item {
         }
     }
 
+    Connections {
+        target: root.backend
+        ignoreUnknownSignals: true
+
+        onMatrixRtcRemoteVideoFrame: {
+            if (roomId === root.roomId) {
+                root.remoteVideoFrameReceived(
+                    identity,
+                    i420,
+                    width,
+                    height
+                )
+            }
+        }
+
+        onMatrixRtcAudioEventsUpdated: {
+            try {
+                var payload = JSON.parse(json)
+                var events = payload.events || []
+                for (var i = 0; i < events.length; ++i) {
+                    var event = events[i]
+                    if (event.room_id !== root.roomId)
+                        continue
+
+                    if (event.type === "track_unsubscribed" ||
+                            event.type === "participant_disconnected") {
+                        root.remoteVideoCleared(event.identity)
+                    }
+                }
+            } catch (error) {
+                console.warn("Could not process LiveKit video cleanup:", error)
+            }
+        }
+    }
+
     Rectangle {
         anchors.fill: parent
         color: "#101820"
@@ -450,18 +493,62 @@ Item {
                         width: (parent.width -
                                 (parent.columns - 1) * units.gu(1)) /
                                parent.columns
-                        height: units.gu(10)
+                        height: remoteVideo.hasFrame
+                                ? width * 9 / 16
+                                : units.gu(10)
                         radius: units.gu(1)
+                        clip: true
                         color: modelData.speaking === true
                                ? "#294c43" : "#263b4a"
                         border.width: modelData.speaking === true
                                       ? units.gu(0.2) : 0
                         border.color: "#65d69b"
 
+                        RtcVideoItem {
+                            id: remoteVideo
+                            anchors.fill: parent
+                            visible: hasFrame
+                        }
+
+                        Connections {
+                            target: root
+
+                            onRemoteVideoFrameReceived: {
+                                if (identity === modelData.identity) {
+                                    remoteVideo.setI420Frame(
+                                        data,
+                                        width,
+                                        height
+                                    )
+                                }
+                            }
+
+                            onRemoteVideoCleared: {
+                                if (identity === modelData.identity)
+                                    remoteVideo.clearFrame()
+                            }
+                        }
+
+                        Text {
+                            anchors.left: parent.left
+                            anchors.bottom: parent.bottom
+                            anchors.margins: units.gu(1)
+                            visible: remoteVideo.hasFrame
+                            text: modelData.name ||
+                                  modelData.identity ||
+                                  "Participant"
+                            color: "white"
+                            font.pixelSize: units.gu(1.4)
+                            style: Text.Outline
+                            styleColor: "#80000000"
+                            z: 2
+                        }
+
                         Row {
                             anchors.fill: parent
                             anchors.margins: units.gu(1)
                             spacing: units.gu(1)
+                            visible: !remoteVideo.hasFrame
 
                             Rectangle {
                                 anchors.verticalCenter: parent.verticalCenter
