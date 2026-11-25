@@ -50,9 +50,7 @@ Item {
                 if (profile.avatar_url && root.backend)
                     root.backend.requestSenderAvatar(
                         "account-profile",
-                        profile.avatar_url,
-                        128,
-                        128
+                        profile.avatar_url
                     )
             } catch (parseError) {
                 root.profileError = "Could not read your Matrix account profile."
@@ -75,6 +73,13 @@ Item {
             root.matrixDisplayName = ""
             root.matrixAvatarData = ""
             root.profileError = ""
+        }
+
+        onMatrixLoginSucceeded: root.refreshAccountProfile()
+        onMatrixSessionRestored: root.refreshAccountProfile()
+        onStorageReadyChanged: {
+            if (root.backend && root.backend.storageReady)
+                root.refreshAccountProfile()
         }
     }
 
