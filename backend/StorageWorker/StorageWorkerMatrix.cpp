@@ -1554,8 +1554,8 @@ void StorageWorker::startRtcVideo(
         errorMessage = QStringLiteral("Could not start LiveKit video");
 
     if (result >= 0 && errorMessage.isEmpty()) {
-        // The camera itself is owned by QML Camera + VideoOutput. This surface
-        // is only the I420 conversion bridge invoked by RtcCameraVideoFilter.
+        // Foreground QML frames and background native-camera frames share this
+        // conversion surface and are normalized to the published track size.
         m_rtcVideoWidth = width;
         m_rtcVideoHeight = height;
         m_rtcVideoSurface = new RtcCameraVideoSurface(
