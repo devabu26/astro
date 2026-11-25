@@ -1130,23 +1130,26 @@ public:
                         mapped.bytesPerLine(0),
                         imageFormat
                     );
-                const QImage rgb = source.convertToFormat(QImage::Format_RGB32);
+                // RGBA8888 has a defined byte order on every CPU architecture.
+                // Read channels explicitly instead of relying on native-endian QRgb
+                // storage when converting the QML-captured image to I420.
+                const QImage rgba = source.convertToFormat(QImage::Format_RGBA8888);
 
-                if (!rgb.isNull()) {
+                if (!rgba.isNull()) {
                     auto clamp = [](int value) -> uchar {
                         return static_cast<uchar>(qBound(0, value, 255));
                     };
 
                     for (int row = 0; row < height; row += 2) {
-                        const QRgb *row0 =
-                            reinterpret_cast<const QRgb *>(rgb.constScanLine(row));
-                        const QRgb *row1 =
-                            reinterpret_cast<const QRgb *>(rgb.constScanLine(row + 1));
+                        const uchar *row0 = rgba.constScanLine(row);
+                        const uchar *row1 = rgba.constScanLine(row + 1);
 
                         for (int col = 0; col < width; col += 2) {
-                            const QRgb pixels[4] = {
-                                row0[col], row0[col + 1],
-                                row1[col], row1[col + 1]
+                            const uchar *pixels[4] = {
+                                row0 + col * 4,
+                                row0 + (col + 1) * 4,
+                                row1 + col * 4,
+                                row1 + (col + 1) * 4
                             };
 
                             int rSum = 0;
@@ -1154,9 +1157,9 @@ public:
                             int bSum = 0;
 
                             for (int p = 0; p < 4; ++p) {
-                                const int r = qRed(pixels[p]);
-                                const int g = qGreen(pixels[p]);
-                                const int b = qBlue(pixels[p]);
+                                const int r = pixels[p][0];
+                                const int g = pixels[p][1];
+                                const int b = pixels[p][2];
                                 rSum += r;
                                 gSum += g;
                                 bSum += b;
