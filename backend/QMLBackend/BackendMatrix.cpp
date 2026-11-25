@@ -554,6 +554,41 @@ void Backend::switchRtcCamera(const QString &roomId)
     emit requestSwitchRtcCamera(roomId);
 }
 
+void Backend::startRtcBackgroundCamera(
+    const QString &roomId,
+    const QString &deviceId
+)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcBackgroundCameraActionFinished(
+            roomId,
+            false,
+            QString(),
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    emit requestStartRtcBackgroundCamera(roomId, deviceId);
+}
+
+void Backend::stopRtcBackgroundCamera(const QString &roomId)
+{
+    if (roomId.isEmpty()) {
+        emit matrixRtcBackgroundCameraActionFinished(
+            roomId,
+            false,
+            QString(),
+            QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    emit requestStopRtcBackgroundCamera(roomId);
+}
+
 void Backend::stopRtcVideo(const QString &roomId)
 {
     if (!m_storageReady || roomId.isEmpty()) {
