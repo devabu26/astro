@@ -28,7 +28,7 @@ use matrix_sdk::{
 use livekit::prelude::{LocalAudioTrack, LocalVideoTrack, LocalTrack, PlatformAudio, RemoteTrack, Room as LiveKitRoom, RoomEvent, RoomOptions, TrackPublishOptions, TrackSource};
 use livekit::webrtc::video_stream::native::NativeVideoStream;
 use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
-use livekit::webrtc::video_frame::VideoBuffer;
+use livekit::webrtc::video_frame::{VideoBuffer, VideoBufferType};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::video_frame::{
@@ -115,6 +115,36 @@ fn pack_remote_i420_frame(buffer: &I420Buffer) -> Option<Vec<u8>> {
     append_plane(&mut packed, plane_v, stride_v as usize, chroma_width, chroma_height)?;
 
     (packed.len() == capacity).then_some(packed)
+}
+
+fn pack_remote_video_frame(buffer: &dyn VideoBuffer) -> Option<Vec<u8>> {
+    match buffer.buffer_type() {
+        VideoBufferType::I420 => pack_remote_i420_frame(buffer.as_i420()?),
+        VideoBufferType::Native => {
+            let i420 = buffer.as_native()?.to_i420();
+            pack_remote_i420_frame(&i420)
+        }
+        VideoBufferType::I420A => {
+            let i420 = buffer.as_i420a()?.to_i420();
+            pack_remote_i420_frame(&i420)
+        }
+        VideoBufferType::I422 => {
+            let i420 = buffer.as_i422()?.to_i420();
+            pack_remote_i420_frame(&i420)
+        }
+        VideoBufferType::I444 => {
+            let i420 = buffer.as_i444()?.to_i420();
+            pack_remote_i420_frame(&i420)
+        }
+        VideoBufferType::I010 => {
+            let i420 = buffer.as_i010()?.to_i420();
+            pack_remote_i420_frame(&i420)
+        }
+        VideoBufferType::NV12 => {
+            let i420 = buffer.as_nv12()?.to_i420();
+            pack_remote_i420_frame(&i420)
+        }
+    }
 }
 
 type TimelineUpdateStream = Pin<Box<dyn Stream<Item = Vec<VectorDiff<Arc<TimelineItem>>>>>>;
@@ -2808,16 +2838,17 @@ impl MatrixClientManager {
                                 let mut stream = NativeVideoStream::new(video_track.rtc_track());
                                 let task = runtime.spawn(async move {
                                     while let Some(frame) = stream.next().await {
-                                        let i420 = frame.buffer.to_i420();
-                                        let Some(data) = pack_remote_i420_frame(&i420) else {
+                                        let Some(data) =
+                                            pack_remote_video_frame(frame.buffer.as_ref())
+                                        else {
                                             continue;
                                         };
                                         let next_frame = RtcRemoteVideoFrame {
                                             key: task_key.clone(),
                                             room_id: task_room_id.clone(),
                                             identity: task_identity.clone(),
-                                            width: i420.width(),
-                                            height: i420.height(),
+                                            width: frame.buffer.width(),
+                                            height: frame.buffer.height(),
                                             data,
                                         };
 
