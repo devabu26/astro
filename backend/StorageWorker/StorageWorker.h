@@ -308,6 +308,13 @@ signals:
     void matrixRtcAudioEventsUpdated(const QString &json);
     void matrixRtcAudioActionFinished(const QString &roomId, const QString &error);
     void matrixRtcVideoActionFinished(const QString &roomId, const QString &error);
+    void matrixRtcRemoteVideoFrame(
+        const QString &roomId,
+        const QString &identity,
+        int width,
+        int height,
+        const QByteArray &i420
+    );
 
     void matrixDeviceVerificationFinished(
         const QString &deviceId,
