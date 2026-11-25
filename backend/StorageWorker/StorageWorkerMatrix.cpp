@@ -1045,6 +1045,12 @@ public:
             return false;
         }
 
+        // A previous frame is still being converted/submitted on the worker.
+        // Drop this capture before mapping CPU buffers or reading back a GL
+        // texture; the camera preview itself continues rendering normally.
+        if (m_pending->loadAcquire() != 0)
+            return true;
+
         const bool glTextureFrame =
             frame.handleType() == QAbstractVideoBuffer::GLTextureHandle;
         QVideoFrame mapped(frame);
