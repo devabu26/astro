@@ -303,6 +303,13 @@ Backend::Backend(QObject *parent)
         &Backend::matrixRtcVideoActionFinished
     );
 
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixRtcBackgroundCameraActionFinished,
+        this,
+        &Backend::matrixRtcBackgroundCameraActionFinished
+    );
+
    connect(
         m_storageWorker,
         &StorageWorker::matrixRtcScreenShareActionFinished,
