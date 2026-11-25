@@ -516,10 +516,8 @@ Item {
     VideoOutput {
         id: localCameraPreview
         z: 50
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.rightMargin: units.gu(2)
-        anchors.topMargin: units.gu(10)
+        x: parent.width - width - units.gu(2)
+        y: units.gu(10)
         width: units.gu(20)
         height: width * 4 / 3
         visible: root.videoStarted
@@ -527,6 +525,16 @@ Item {
         fillMode: VideoOutput.PreserveAspectCrop
         orientation: 270
 
+        // Drag the local camera preview anywhere within the call page.
+        MouseArea {
+            anchors.fill: parent
+            drag.target: localCameraPreview
+            drag.axis: Drag.XAndYAxis
+            drag.minimumX: 0
+            drag.maximumX: Math.max(0, root.width - localCameraPreview.width)
+            drag.minimumY: 0
+            drag.maximumY: Math.max(0, root.height - localCameraPreview.height)
+        }
     }
 
     Rectangle {
