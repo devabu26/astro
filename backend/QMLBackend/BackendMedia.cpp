@@ -11,6 +11,8 @@
 #include <QFile>
 #include <QDebug>
 #include <QVideoFrame>
+#include <QVideoProbe>
+#include <QMediaObject>
 #include <QImage>
 #include <QUuid>
 #include <QMap>
@@ -254,6 +256,52 @@ void Backend::processRtcCameraFrame(
     // Qt Quick GL context current, and the worker's surface reads the texture
     // before queueing the converted I420 bytes back to the worker thread.
     m_storageWorker->processRtcCameraFrame(frame);
+}
+
+
+bool Backend::setRtcCameraProbe(QObject *mediaObject)
+{
+    if (!m_rtcCameraProbe)
+        m_rtcCameraProbe = new QVideoProbe(this);
+
+    m_rtcCameraProbe->setSource(nullptr);
+    m_rtcCameraProbeFrames = 0;
+
+    if (!mediaObject) {
+        qInfo() << "ASTRO_BACKGROUND_CAMERA: QVideoProbe detached";
+        return true;
+    }
+
+    QMediaObject *source = qobject_cast<QMediaObject *>(mediaObject);
+    if (!source) {
+        qWarning() << "ASTRO_BACKGROUND_CAMERA: QVideoProbe source is not a QMediaObject";
+        return false;
+    }
+
+    if (!connect(
+            m_rtcCameraProbe,
+            &QVideoProbe::videoFrameProbed,
+            this,
+            [this](const QVideoFrame &frame) {
+                const int count = ++m_rtcCameraProbeFrames;
+                if (count == 1 || count % 150 == 0) {
+                    qInfo() << "ASTRO_BACKGROUND_CAMERA: QVideoProbe frame"
+                            << count
+                            << "size:" << frame.size()
+                            << "format:" << frame.pixelFormat()
+                            << "valid:" << frame.isValid();
+                }
+            },
+            Qt::UniqueConnection)) {
+        // A lambda connection is not reliably deduplicated by Qt::UniqueConnection;
+        // an existing connection is harmlessly avoided by connecting only once below.
+    }
+
+    const bool attached = m_rtcCameraProbe->setSource(source);
+    qInfo() << "ASTRO_BACKGROUND_CAMERA: QVideoProbe attach"
+            << attached
+            << "active:" << m_rtcCameraProbe->isActive();
+    return attached;
 }
 
 
