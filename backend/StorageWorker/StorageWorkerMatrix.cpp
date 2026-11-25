@@ -1748,7 +1748,8 @@ void StorageWorker::startRtcScreenShare(
     mir_screencast_spec_set_height(spec, static_cast<unsigned int>(height));
     mir_screencast_spec_set_pixel_format(spec, pixelFormat);
     mir_screencast_spec_set_capture_region(spec, &captureRegion);
-    mir_screencast_spec_set_number_of_buffers(spec, 0);
+    // Keep Mir's server-allocated screencast buffers. The CPU-only buffers
+    // from mir_connection_allocate_buffer_sync() cannot be used as GL targets.
     m_rtcScreenCast = mir_screencast_create_sync(spec);
     mir_screencast_spec_release(spec);
     if (!mir_screencast_is_valid(m_rtcScreenCast)) {
@@ -1760,16 +1761,21 @@ void StorageWorker::startRtcScreenShare(
         return;
     }
 
-    m_rtcScreenShareBuffer = mir_connection_allocate_buffer_sync(
-        m_rtcScreenShareConnection, width, height, pixelFormat);
-    if (!m_rtcScreenShareBuffer || !mir_buffer_is_valid(m_rtcScreenShareBuffer)) {
-        const QString message = m_rtcScreenShareBuffer
-            ? QString::fromLocal8Bit(mir_buffer_get_error_message(m_rtcScreenShareBuffer))
-            : QStringLiteral("Could not allocate a Mir screen-capture buffer");
+    // Use the screencast's server-allocated buffer stream, as mirscreencast
+    // does. These buffers support the compositor's GL render-target path.
+    m_rtcScreenShareStream = mir_screencast_get_buffer_stream(m_rtcScreenCast);
+    if (!m_rtcScreenShareStream ||
+        !mir_buffer_stream_is_valid(m_rtcScreenShareStream)) {
+        const QString message = m_rtcScreenShareStream
+            ? QString::fromLocal8Bit(
+                mir_buffer_stream_get_error_message(m_rtcScreenShareStream))
+            : QStringLiteral("Mir did not provide a screencast buffer stream");
         failStart(message.isEmpty()
-            ? QStringLiteral("Could not allocate a Mir screen-capture buffer") : message);
+            ? QStringLiteral("Could not obtain a Mir screencast buffer stream")
+            : message);
         return;
     }
+    qInfo() << "ASTRO_SCREEN_SHARE: Mir screencast buffer stream ready";
 
     m_rtcScreenShareRoomId = roomId;
     m_rtcScreenShareWidth = width;
@@ -1800,37 +1806,23 @@ void StorageWorker::startRtcScreenShare(
 void StorageWorker::captureRtcScreenShareFrame()
 {
     if (!m_rtcScreenShareConnection || !m_rtcScreenCast ||
-        !m_rtcScreenShareBuffer || m_rtcScreenShareRoomId.isEmpty())
+        !m_rtcScreenShareStream || m_rtcScreenShareRoomId.isEmpty())
         return;
 
     const QString roomId = m_rtcScreenShareRoomId;
     const int width = m_rtcScreenShareWidth;
     const int height = m_rtcScreenShareHeight;
-    const MirScreencastResult captureResult =
-        mir_screencast_capture_to_buffer_sync(m_rtcScreenCast, m_rtcScreenShareBuffer);
-    if (captureResult != mir_screencast_success) {
-        QString message = QString::fromLocal8Bit(
-            mir_screencast_get_error_message(m_rtcScreenCast));
-        if (message.isEmpty()) message = QStringLiteral("Mir screen capture failed");
-        const QByteArray roomBytes = roomId.toUtf8();
-        stopRtcScreenShareCapture();
-        if (m_matrixClient) {
-            char *stopError = nullptr;
-            astro_matrix_stop_rtc_screenshare(m_matrixClient, roomBytes.constData(), &stopError);
-            if (stopError) astro_string_free(stopError);
-        }
-        emit matrixRtcScreenShareActionFinished(roomId, message);
-        return;
-    }
 
     MirGraphicsRegion region{};
-    MirBufferLayout layout{};
-    const bool mapped = mir_buffer_map(m_rtcScreenShareBuffer, &region, &layout);
-    if (!mapped || !region.vaddr ||
-        region.width < static_cast<unsigned int>(width) ||
-        region.height < static_cast<unsigned int>(height) ||
-        region.stride < width * 4) {
-        if (mapped) mir_buffer_unmap(m_rtcScreenShareBuffer);
+    const bool mapped =
+        mir_buffer_stream_get_graphics_region(m_rtcScreenShareStream, &region);
+    const bool validRegion = mapped && region.vaddr &&
+        region.width >= static_cast<unsigned int>(width) &&
+        region.height >= static_cast<unsigned int>(height) &&
+        region.stride >= width * 4;
+    if (!validRegion) {
+        if (mapped)
+            mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
         const QByteArray roomBytes = roomId.toUtf8();
         stopRtcScreenShareCapture();
         if (m_matrixClient) {
@@ -1839,16 +1831,20 @@ void StorageWorker::captureRtcScreenShareFrame()
             if (stopError) astro_string_free(stopError);
         }
         emit matrixRtcScreenShareActionFinished(roomId,
-            QStringLiteral("Could not map the Mir screen-capture buffer"));
+            QStringLiteral("Could not access the Mir screencast buffer stream"));
         return;
     }
 
     QByteArray rgba(width * height * 4, Qt::Uninitialized);
-    for (int row = 0; row < height; ++row)
+    // Mir's buffer-stream screencast is vertically inverted; read bottom-up
+    // to produce the correctly oriented frame.
+    for (int row = 0; row < height; ++row) {
+        const int sourceRow = height - 1 - row;
         std::memcpy(rgba.data() + row * width * 4,
-                    region.vaddr + row * region.stride,
+                    region.vaddr + sourceRow * region.stride,
                     static_cast<size_t>(width * 4));
-    mir_buffer_unmap(m_rtcScreenShareBuffer);
+    }
+    mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
 
     const QByteArray i420 = rgbaFrameToI420(rgba, width, height);
     const QByteArray roomBytes = roomId.toUtf8();
@@ -1929,10 +1925,8 @@ void StorageWorker::stopRtcScreenShareCapture()
         mir_screencast_release_sync(m_rtcScreenCast);
         m_rtcScreenCast = nullptr;
     }
-    if (m_rtcScreenShareBuffer) {
-        mir_buffer_release(m_rtcScreenShareBuffer);
-        m_rtcScreenShareBuffer = nullptr;
-    }
+    // The stream is owned by MirScreencast and is released with it.
+    m_rtcScreenShareStream = nullptr;
     if (m_rtcScreenShareConnection) {
         mir_connection_release(m_rtcScreenShareConnection);
         m_rtcScreenShareConnection = nullptr;
