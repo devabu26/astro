@@ -9,6 +9,7 @@
 #include <cstdint>
 
 class RtcCameraVideoSurface;
+class QVideoFrame;
 class QOpenGLContext;
 class QOffscreenSurface;
 
@@ -103,6 +104,8 @@ public slots:
 
     // ASTRO_RTC_VIDEO_STAGE3
     void startRtcVideo(const QString &roomId, int width, int height);
+    // Called directly by the Qt Quick video-filter render thread while its GL context is current.
+    void processRtcCameraFrame(const QVideoFrame &frame);
     void switchRtcCamera(const QString &roomId);
     void pushRtcVideoFrame(
         const QString &roomId,
