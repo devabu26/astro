@@ -285,7 +285,7 @@ Item {
         id: cameraFrameGrabTimer
         interval: 33
         repeat: true
-        running: root.videoStarted && root.applicationActive && root.applicationActive
+        running: root.videoStarted && root.applicationActive
 
         onTriggered: {
             if (!root.applicationActive ||
@@ -456,6 +456,10 @@ Item {
                 return
 
             root.nativeBackgroundCameraRunning = running
+            if (running && deviceId && deviceId.length > 0 &&
+                    localCamera.deviceId !== deviceId) {
+                localCamera.deviceId = deviceId
+            }
             if (error && error.length > 0)
                 root.actionError = error
 
