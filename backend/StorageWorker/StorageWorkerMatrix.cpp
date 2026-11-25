@@ -1635,6 +1635,10 @@ void StorageWorker::startRtcScreenShare(
     int height
 )
 {
+    qInfo() << "ASTRO_SCREEN_SHARE: worker request received"
+            << "matrixClient:" << (m_matrixClient != nullptr)
+            << "roomIdEmpty:" << roomId.isEmpty()
+            << "size:" << width << "x" << height;
     if (!m_matrixClient || roomId.isEmpty()) {
         emit matrixRtcScreenShareActionFinished(roomId,
             !m_matrixClient ? QStringLiteral("No active Matrix session")
@@ -1655,6 +1659,7 @@ void StorageWorker::startRtcScreenShare(
 
     const QByteArray roomIdBytes = roomId.toUtf8();
     char *error = nullptr;
+    qInfo() << "ASTRO_SCREEN_SHARE: publishing LiveKit screen-share track";
     const int32_t publishResult = astro_matrix_start_rtc_screenshare(
         m_matrixClient, roomIdBytes.constData(),
         static_cast<uint32_t>(width), static_cast<uint32_t>(height), &error);
@@ -1682,6 +1687,7 @@ void StorageWorker::startRtcScreenShare(
     };
 
     // Use Mir directly: confined apps cannot exec /usr/bin/mirscreencast.
+    qInfo() << "ASTRO_SCREEN_SHARE: connecting to Mir";
     m_rtcScreenShareConnection = mir_connect_sync("/run/mir_socket", "Astro");
     if (!m_rtcScreenShareConnection ||
         !mir_connection_is_valid(m_rtcScreenShareConnection)) {
