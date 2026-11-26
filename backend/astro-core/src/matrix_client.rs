@@ -57,7 +57,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::{Builder, Runtime};
 
 use crate::media::MediaManager;
-use crate::notifications::{register_notification_handler, NotificationQueue};
+use crate::notifications::{register_incoming_call_handler, register_notification_handler, NotificationQueue};
 use crate::session_storage::{delete_session, load_session, save_session};
 
 static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -635,6 +635,7 @@ impl MatrixClientManager {
 
         let notification_queue = NotificationQueue::default();
         register_notification_handler(&client, notification_queue.clone());
+        register_incoming_call_handler(&client, notification_queue.clone());
 
         Ok(Self {
             timelines: HashMap::new(),
@@ -2220,6 +2221,7 @@ impl MatrixClientManager {
         let mut unread_counts = Vec::new();
         let mut verification_events = Vec::new();
         let notification_events = self.notification_queue.drain_json();
+        let incoming_call_events = self.notification_queue.drain_incoming_calls_json();
 
         // Move newly received requests into the manager so their SDK
         // handles remain available for later accept/cancel operations.
@@ -2349,6 +2351,7 @@ impl MatrixClientManager {
             && unread_counts.is_empty()
             && verification_events.is_empty()
             && notification_events.is_empty()
+            && incoming_call_events.is_empty()
         {
             return serde_json::json!({
                 "updates": []
@@ -2360,7 +2363,8 @@ impl MatrixClientManager {
             "updates": updates,
             "unread_counts": unread_counts,
             "verification_requests": verification_events,
-            "notifications": notification_events
+            "notifications": notification_events,
+            "incoming_calls": incoming_call_events
         })
         .to_string()
     }
