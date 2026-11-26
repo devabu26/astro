@@ -16,6 +16,19 @@ Item {
 
     onRtcMembershipsChanged: root.requestRtcParticipantAvatars()
 
+    // The participant/presence panel is transient UI. Never carry an
+    // expanded panel into another room or leave it open after navigating
+    // away from this conversation.
+    function collapseRtcParticipants() {
+        rtcParticipants.expanded = false
+    }
+
+    onRoomIdChanged: root.collapseRtcParticipants()
+    onVisibleChanged: {
+        if (!visible)
+            root.collapseRtcParticipants()
+    }
+
 
 
     property bool composerEmojiPickerVisible: false
