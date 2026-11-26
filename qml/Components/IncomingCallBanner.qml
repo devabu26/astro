@@ -9,7 +9,7 @@ Item {
     property string eventId: ""
     property string callIntent: "audio"
 
-    signal answerRequested(string roomId, string eventId)
+    signal openRequested(string roomId, string eventId)
 
     visible: roomId !== ""
     height: visible ? banner.implicitHeight : 0
@@ -78,10 +78,10 @@ Item {
                 spacing: units.gu(1)
 
                 Button {
-                    text: "Answer"
+                    text: "Open room"
                     color: UbuntuColors.green
                     onClicked: {
-                        root.answerRequested(root.roomId, root.eventId)
+                        root.openRequested(root.roomId, root.eventId)
                         root.clear()
                     }
                 }
