@@ -16,6 +16,12 @@
 #include <QList>
 #include <QThread>
 #include <QMetaObject>
+#include <QQuickWindow>
+#include <QRunnable>
+#include <QPointer>
+#include <QTimer>
+#include <atomic>
+#include <memory>
 #include <functional>
 
 #include <QDBusConnection>
@@ -29,6 +35,55 @@
 #include <QDBusVariant>
 #include <QDBusArgument>
 #include <QDBusMetaType>
+
+
+namespace {
+
+class ScreenShareSceneGraphFenceJob final : public QRunnable
+{
+public:
+    ScreenShareSceneGraphFenceJob(
+        Backend *backend,
+        const QString &roomId,
+        const std::shared_ptr<std::atomic_bool> &completed
+    )
+        : m_backend(backend),
+          m_roomId(roomId),
+          m_completed(completed)
+    {
+    }
+
+    void run() override
+    {
+        if (m_completed->exchange(true))
+            return;
+
+        QPointer<Backend> backend = m_backend;
+        const QString roomId = m_roomId;
+        qInfo() << "ASTRO_SCREEN_SHARE_DIAG: scenegraph fence reached after frame swap"
+                << "room:" << roomId
+                << "renderThread:" << QThread::currentThreadId();
+
+        if (!backend)
+            return;
+
+        QMetaObject::invokeMethod(
+            backend.data(),
+            [backend, roomId]() {
+                if (backend)
+                    backend->stopRtcScreenShare(roomId);
+            },
+            Qt::QueuedConnection
+        );
+    }
+
+private:
+    QPointer<Backend> m_backend;
+    QString m_roomId;
+    std::shared_ptr<std::atomic_bool> m_completed;
+};
+
+} // namespace
 
 // =============================================================
 
@@ -551,6 +606,52 @@ void Backend::stopRtcScreenShare(const QString &roomId)
     }
 
     emit requestStopRtcScreenShare(roomId);
+}
+
+void Backend::stopRtcScreenShareAfterSceneGraph(
+    QObject *windowObject,
+    const QString &roomId
+)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        stopRtcScreenShare(roomId);
+        return;
+    }
+
+    QQuickWindow *window = qobject_cast<QQuickWindow *>(windowObject);
+    if (!window || !window->isExposed()) {
+        qWarning() << "ASTRO_SCREEN_SHARE_DIAG: no exposed Qt Quick window;"
+                   << "stopping without scenegraph fence"
+                   << "room:" << roomId;
+        stopRtcScreenShare(roomId);
+        return;
+    }
+
+    const auto completed =
+        std::make_shared<std::atomic_bool>(false);
+
+    qInfo() << "ASTRO_SCREEN_SHARE_DIAG: scheduling scenegraph fence"
+            << "room:" << roomId
+            << "stage: AfterSwap";
+
+    window->scheduleRenderJob(
+        new ScreenShareSceneGraphFenceJob(this, roomId, completed),
+        QQuickWindow::AfterSwapStage
+    );
+    window->update();
+
+    // If the window becomes hidden or stops rendering before the job runs,
+    // do not leave the Stop operation waiting indefinitely. The atomic flag
+    // ensures the fallback and render job can never dispatch teardown twice.
+    QTimer::singleShot(500, this, [this, roomId, completed]() {
+        if (completed->exchange(true))
+            return;
+
+        qWarning() << "ASTRO_SCREEN_SHARE_DIAG: scenegraph fence timed out;"
+                   << "using bounded fallback"
+                   << "room:" << roomId;
+        stopRtcScreenShare(roomId);
+    });
 }
 
 void Backend::switchRtcCamera(const QString &roomId)
