@@ -477,14 +477,13 @@ Item {
         }
     }
 
-    // Keep an application-thread heartbeat while screen sharing or stopping it.
-    // If this stops during teardown, the QML event loop is being starved or blocked.
+    // Keep the QML event-loop heartbeat for the whole call, including after
+    // the stop callback. This distinguishes a blocked QML thread from a
+    // stalled Qt Quick scenegraph/render thread.
     Timer {
         interval: 2000
         repeat: true
-        running: root.screenShareStarted ||
-                 root.pendingOperation === "startScreenShare" ||
-                 root.pendingOperation === "stopScreenShare"
+        running: root.visible && root.callActive
         onTriggered: console.info(
             "ASTRO_SCREEN_SHARE_DIAG: QML heartbeat",
             "operation:", root.pendingOperation,
@@ -820,13 +819,15 @@ Item {
 
         onMatrixRtcScreenShareActionFinished: {
             console.info(
-                "ASTRO_SCREEN_SHARE_DIAG: QML completion received",
+                "ASTRO_SCREEN_SHARE_DIAG: QML completion handler entered",
                 "roomMatches:", roomId === root.roomId,
                 "operation:", root.pendingOperation,
                 "error:", error
             )
-            if (roomId !== root.roomId)
+            if (roomId !== root.roomId) {
+                console.info("ASTRO_SCREEN_SHARE_DIAG: ignored completion for another room")
                 return
+            }
 
             var operation = root.pendingOperation
             root.pendingOperation = ""
@@ -850,10 +851,12 @@ Item {
                     root.screenShareAudioRequested = false
                     root.screenShareRoomId = ""
                 }
-                if (operation === "stopScreenShare" ||
-                    operation === "stopScreenShareForHangup") {
-
-                }
+                console.info(
+                    "ASTRO_SCREEN_SHARE_DIAG: QML completion handler finished with error",
+                    "operation:", operation,
+                    "pendingOperation:", root.pendingOperation,
+                    "screenShareStarted:", root.screenShareStarted
+                )
                 return
             }
 
@@ -878,6 +881,13 @@ Item {
                 }
             }
 
+            console.info(
+                "ASTRO_SCREEN_SHARE_DIAG: QML completion handler finished",
+                "operation:", operation,
+                "pendingOperation:", root.pendingOperation,
+                "screenShareStarted:", root.screenShareStarted,
+                "screenShareRoomId:", root.screenShareRoomId
+            )
         }
 
         onMatrixRtcAudioEventsUpdated: {
