@@ -645,6 +645,8 @@ function loadRooms(json, finished) {
                     Item {
                         width: parent.width
                         height: units.gu(8)
+                        // Keep the heading and its dropdown above the search/navigation controls.
+                        z: 20
 
                         // Room ordering selector sits beside the existing overflow menu.
                         Rectangle {
