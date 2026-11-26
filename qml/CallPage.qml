@@ -41,12 +41,11 @@ Item {
     property bool remoteAnswered: false
     property string ringbackSource: ""
 
-    // Mir screencast teardown can leave the Lomiri Qt Quick renderer without
-    // presenting another frame. Releasing redundant scene-graph resources is
-    // a stronger recovery attempt than update() alone; Qt Quick can recreate
-    // the scene graph from the unchanged QML item tree on the next frame.
+    // Keep requesting frames while Mir tears down its screencast. Do not
+    // call QQuickWindow.releaseResources() here: on Qt 5.12/Lomiri that can
+    // force a scene-graph teardown at exactly the point the compositor is
+    // recovering from Mir screencast release.
     property int screenShareRenderRecoveryTicks: 0
-    property bool screenShareRenderResourcesReleased: false
 
     Timer {
         id: screenShareRenderRecoveryTimer
@@ -56,30 +55,21 @@ Item {
 
         onTriggered: {
             var window = root.Window.window
-            if (window) {
-                if (!root.screenShareRenderResourcesReleased) {
-                    root.screenShareRenderResourcesReleased = true
-                    console.warn(
-                        "ASTRO_RENDER_RECOVERY: requesting Qt Quick resource release",
-                        "visible:", window.visible
-                    )
-                    window.releaseResources()
-                }
-
+            if (window && window.visible &&
+                    Qt.application.state === Qt.ApplicationActive) {
                 window.update()
             }
 
             root.screenShareRenderRecoveryTicks--
-            if (root.screenShareRenderRecoveryTicks <= 0) {
+            if (root.screenShareRenderRecoveryTicks <= 0)
                 stop()
-                root.screenShareRenderResourcesReleased = false
-            }
         }
     }
 
     function refreshAfterScreenShareStop() {
-        root.screenShareRenderRecoveryTicks = 15
-        root.screenShareRenderResourcesReleased = false
+        // Cover both the asynchronous Mir release and LiveKit unpublish,
+        // then continue briefly after their completion.
+        root.screenShareRenderRecoveryTicks = 40
         screenShareRenderRecoveryTimer.restart()
     }
 
@@ -337,6 +327,10 @@ Item {
         actionError = ""
         if (screenShareStarted) {
             pendingOperation = "stopScreenShare"
+            // Begin requesting Qt Quick frames immediately; waiting for the
+            // backend completion is too late if compositor teardown stalls
+            // presentation while the asynchronous Mir release is underway.
+            refreshAfterScreenShareStop()
             backend.stopRtcScreenShare(roomId)
         } else {
             screenShareChoiceVisible = true
