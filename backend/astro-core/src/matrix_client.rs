@@ -1833,6 +1833,12 @@ impl MatrixClientManager {
             let runtime = std::sync::Arc::clone(&self.runtime);
 
             let (json, update_stream) = runtime.block_on(async {
+                // A room can be reopened after a previous member/profile fetch
+                // failed or while membership state was still lazy-loaded.
+                // Refresh member state before serialising this snapshot so
+                // sender_profile() can provide avatar MXC URIs.
+                timeline.fetch_members().await;
+
                 // Take a fresh snapshot and subscription together.
                 let (items, updates) = timeline.subscribe().await;
 
