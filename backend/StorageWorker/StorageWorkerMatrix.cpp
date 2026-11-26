@@ -1898,6 +1898,23 @@ void StorageWorker::startRtcBackgroundCamera(
                 );
                 connect(
                     m_rtcCamera,
+                    &QCamera::statusChanged,
+                    this,
+                    [this, roomId](QCamera::Status status) {
+                        qInfo() << "ASTRO_BACKGROUND_CAMERA: native status changed"
+                                << "room:" << roomId
+                                << "status:" << static_cast<int>(status)
+                                << "state:" << (m_rtcCamera
+                                    ? static_cast<int>(m_rtcCamera->state()) : -1)
+                                << "error:" << (m_rtcCamera
+                                    ? static_cast<int>(m_rtcCamera->error()) : -1)
+                                << "errorString:" << (m_rtcCamera
+                                    ? m_rtcCamera->errorString() : QString())
+                                << "thread:" << QThread::currentThreadId();
+                    }
+                );
+                connect(
+                    m_rtcCamera,
                     QOverload<QCamera::Error>::of(&QCamera::error),
                     this,
                     [this, roomId](QCamera::Error error) {
