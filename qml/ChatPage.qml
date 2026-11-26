@@ -1147,6 +1147,7 @@ function loadRooms(json, finished) {
                         selectedRoom: root.selectedRoom
                         sortMode: root.savedRoomSortMode()
                         rtcMembershipsByRoom: root.rtcMembershipsByRoom
+                        rtcCallStatesByRoom: root.rtcCallStatesByRoom
 
                         onRoomSelected: {
                             root.dismissSearchKeyboard()
