@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include <QThread>
 #include <QDebug>
 
 // =============================================================
