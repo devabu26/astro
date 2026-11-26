@@ -2805,7 +2805,9 @@ impl MatrixClientManager {
 
         let mut e2ee_key_provider = None;
         let mut e2ee_installed_keys = HashMap::new();
+        let mut expected_local_e2ee_identity: Option<String> = None;
         if let Some((local_identity, keys)) = e2ee_material {
+            expected_local_e2ee_identity = Some(local_identity.clone());
             let mut key_options = KeyProviderOptions::default();
             key_options.key_ring_size = 256;
             key_options.key_derivation_algorithm = KeyDerivationAlgorithm::HKDF;
@@ -2883,18 +2885,12 @@ impl MatrixClientManager {
             .await
             .map_err(|error| format!("Could not connect to LiveKit: {error}"))?;
 
-            if let Some(expected_identity) = e2ee_installed_keys.keys()
-                .find(|(identity, _)| e2ee_key_provider.is_some() && identity == &room.local_participant().identity().to_string())
-                .map(|(identity, _)| identity.clone())
-            {
-                let _ = expected_identity;
-            }
-            if e2ee_key_provider.is_some() {
+            if let Some(expected_identity) = expected_local_e2ee_identity.as_deref() {
                 let actual_identity = room.local_participant().identity().to_string();
-                if !e2ee_installed_keys.keys().any(|(identity, _)| identity == &actual_identity) {
+                if actual_identity != expected_identity {
                     let _ = room.close().await;
                     return Err(format!(
-                        "LiveKit assigned participant identity '{actual_identity}', which does not match the MatrixRTC E2EE identity"
+                        "LiveKit assigned participant identity '{actual_identity}', but MatrixRTC requires '{expected_identity}' for E2EE"
                     ));
                 }
             }
@@ -3584,7 +3580,38 @@ impl MatrixClientManager {
         let mut cancelled_keys = HashSet::new();
         let mut cancelled_prefixes = HashSet::new();
 
+        // Feed MatrixRTC rotations and newly received participant keys into
+        // the already-connected LiveKit frame-cryptor key providers.
+        let e2ee_snapshots: HashMap<String, Vec<(String, u8, Vec<u8>)>> =
+            self.rtc_e2ee_sessions.iter()
+                .map(|(room_id, e2ee)| (room_id.clone(), e2ee.livekit_key_snapshot()))
+                .collect();
+
         for (room_id, session) in self.rtc_livekit_audio_sessions.iter_mut() {
+            if let (Some(provider), Some(keys)) =
+                (session.e2ee_key_provider.as_ref(), e2ee_snapshots.get(room_id))
+            {
+                for (identity, index, key) in keys {
+                    let cache_key = (identity.clone(), *index);
+                    if session.e2ee_installed_keys.get(&cache_key) == Some(key) {
+                        continue;
+                    }
+
+                    let participant_identity = ParticipantIdentity::from(identity.clone());
+                    if provider.set_key(&participant_identity, i32::from(*index), key.clone()) {
+                        session.e2ee_installed_keys.insert(cache_key, key.clone());
+                        eprintln!(
+                            "ASTRO RTC E2EE: installed LiveKit key index {} for participant {}",
+                            index, identity
+                        );
+                    } else {
+                        eprintln!(
+                            "ASTRO RTC E2EE: LiveKit rejected rotated key index {} for participant {}",
+                            index, identity
+                        );
+                    }
+                }
+            }
             // Bound work per room so a large event burst cannot monopolise the worker.
             for _ in 0..256 {
                 let event = match session.events.try_recv() {
