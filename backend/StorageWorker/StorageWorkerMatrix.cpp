@@ -2568,7 +2568,6 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
     }
 
     MirScreencast *screencast = m_rtcScreenCast;
-    MirConnection *connection = m_rtcScreenShareConnection;
     m_rtcScreenCast = nullptr;
     m_rtcScreenShareConnection = nullptr;
     m_rtcScreenShareStream = nullptr;
