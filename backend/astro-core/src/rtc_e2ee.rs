@@ -25,6 +25,7 @@ use tokio::task::AbortHandle;
 const RTC_SLOT_ID: &str = "m.call#room";
 const RTC_MEMBER_EVENT: &str = "m.rtc.member";
 const RTC_KEY_EVENT: &str = "m.rtc.encryption_key";
+const LEGACY_RTC_KEY_EVENT: &str = "io.element.call.encryption_keys";
 const RTC_KEY_BYTES: usize = 32;
 const RTC_KEY_ACTIVATION_DELAY: Duration = Duration::from_secs(5);
 const RTC_PENDING_KEY_LIMIT: usize = 128;
@@ -76,9 +77,9 @@ impl RtcE2eeSession {
         let task_room = room.clone();
 
         let handle = runtime.spawn(async move {
-            let event_type = ToDeviceEventType::from(RTC_KEY_EVENT);
+            let event_types = vec![ToDeviceEventType::from(LEGACY_RTC_KEY_EVENT)];
             let mut incoming = task_client
-                .subscribe_to_custom_to_device_messages(vec![event_type]);
+                .subscribe_to_custom_to_device_messages(event_types);
             let mut sticky_updates = task_room.sticky_events().subscribe();
             let mut rotation = tokio::time::interval(Duration::from_secs(15 * 60));
             // Skip interval's immediate first tick; the first key was generated above.
