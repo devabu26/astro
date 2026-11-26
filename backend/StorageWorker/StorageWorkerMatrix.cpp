@@ -1141,17 +1141,18 @@ public:
         qInfo() << "RTC supportedPixelFormats requested handle:"
         << static_cast<int>(type);
         
-        // Ubuntu Touch's camera backend can deliver GL-backed RGB32 frames.
-        // Advertise that format explicitly so QCamera can negotiate the
-        // GLTextureHandle path; rejecting this handle type leaves the native
-        // background camera with no compatible viewfinder surface.
-        if (type == QAbstractVideoBuffer::GLTextureHandle)
-            return { QVideoFrame::Format_RGB32 };
-
-        if (type != QAbstractVideoBuffer::NoHandle)
+        // The Ubuntu Touch camera backend has been observed returning
+        // GLTextureHandle frames with texture ID 0. Those frames cannot be
+        // read back or converted into LiveKit I420. Deliberately negotiate
+        // only CPU-backed frames instead of advertising a GL path that this
+        // device/backend combination does not reliably populate.
+        if (type != QAbstractVideoBuffer::NoHandle) {
+            qInfo() << "RTC camera rejecting non-CPU surface handle:"
+                    << static_cast<int>(type);
             return {};
+        }
 
-        qInfo() << "RTC supportedPixelFormats returning CPU formats";
+        qInfo() << "RTC supportedPixelFormats returning CPU-only formats";
 
         // Camera backends may also negotiate CPU-backed YUV/RGB formats.
         return {
