@@ -9,7 +9,8 @@ Item {
     property string eventId: ""
     property string callIntent: "unknown"
 
-    signal openRequested(string roomId, string eventId)
+    signal acceptRequested(string roomId, string eventId)
+    signal declineRequested(string roomId, string eventId)
 
     visible: roomId !== ""
     height: visible ? banner.height : 0
@@ -79,17 +80,21 @@ Item {
                 spacing: units.gu(1)
 
                 Button {
-                    text: "Open room"
+                    text: "Accept"
                     color: UbuntuColors.green
                     onClicked: {
-                        root.openRequested(root.roomId, root.eventId)
+                        root.acceptRequested(root.roomId, root.eventId)
                         root.clear()
                     }
                 }
 
                 Button {
-                    text: "Dismiss"
-                    onClicked: root.clear()
+                    text: "Decline"
+                    color: UbuntuColors.red
+                    onClicked: {
+                        root.declineRequested(root.roomId, root.eventId)
+                        root.clear()
+                    }
                 }
             }
         }
