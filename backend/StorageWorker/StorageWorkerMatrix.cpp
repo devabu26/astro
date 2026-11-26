@@ -1141,20 +1141,23 @@ public:
         qInfo() << "RTC supportedPixelFormats requested handle:"
         << static_cast<int>(type);
         
-        // The Ubuntu Touch camera backend has been observed returning
-        // GLTextureHandle frames with texture ID 0. Those frames cannot be
-        // read back or converted into LiveKit I420. Deliberately negotiate
-        // only CPU-backed frames instead of advertising a GL path that this
-        // device/backend combination does not reliably populate.
+        // QtUbuntu's camera backend delivers viewfinder frames as
+        // GLTextureHandle buffers. Advertise the RGB32 format for that handle
+        // type so QCamera can negotiate the GL path; present() reads the
+        // texture back through the worker's context shared with Qt Quick.
+        // Keep the CPU formats too for backends that provide mappable frames.
+        if (type == QAbstractVideoBuffer::GLTextureHandle) {
+            qInfo() << "RTC camera accepting GL texture RGB32 frames";
+            return { QVideoFrame::Format_RGB32 };
+        }
+
         if (type != QAbstractVideoBuffer::NoHandle) {
-            qInfo() << "RTC camera rejecting non-CPU surface handle:"
+            qInfo() << "RTC camera rejecting unsupported surface handle:"
                     << static_cast<int>(type);
             return {};
         }
 
-        qInfo() << "RTC supportedPixelFormats returning CPU-only formats";
-
-        // Camera backends may also negotiate CPU-backed YUV/RGB formats.
+        qInfo() << "RTC supportedPixelFormats returning CPU-backed formats";
         return {
             QVideoFrame::Format_RGB32,
             QVideoFrame::Format_ARGB32,
@@ -1245,7 +1248,12 @@ public:
                                << "texture:" << frame.handle()
                                << "worker GL context current:" << contextCurrent;
                 }
-                return false;
+                // Keep the surface active if a GL texture is temporarily
+                // unavailable (for example while the camera backend is
+                // establishing its shared texture). A failed present() stops
+                // the QAbstractVideoSurface, preventing later frames from
+                // recovering. CPU-backed mapping failures remain fatal.
+                return true;
             }
         } else if (!mapped.map(QAbstractVideoBuffer::ReadOnly)) {
             if (m_loggedMapFailure.testAndSetOrdered(0, 1))
