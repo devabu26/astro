@@ -19,6 +19,11 @@ class Backend : public QObject
         READ storageReady
         NOTIFY storageReadyChanged
     )
+    Q_PROPERTY(
+        int applicationState
+        READ applicationState
+        NOTIFY applicationStateChanged
+    )
 
 public:
     explicit Backend(QObject *parent = nullptr);
@@ -37,6 +42,7 @@ public:
     Q_INVOKABLE void testSecretService();
 
     bool storageReady() const;
+    int applicationState() const;
 
     // ---------------------------------------------------------
     // Encrypted storage operations
@@ -286,6 +292,7 @@ signals:
         const QString &error
     );
     void applicationActiveChanged(bool active);
+    void applicationStateChanged(int state);
     void matrixRtcScreenShareActionFinished(
         const QString &roomId,
         const QString &error
@@ -525,6 +532,7 @@ private:
 
     bool m_storageReady = false;
     bool m_applicationActive = true;
+    int m_applicationState = 4; // Qt::ApplicationActive
     bool m_storageOperationInProgress = false;
     bool m_matrixResumeInProgress = false;
 
