@@ -1,5 +1,6 @@
 
 import QtQuick 2.7
+import Qt.labs.settings 1.0
 import Lomiri.Components 1.3
 import QtQuick.Layouts 1.3
 import QtGraphicalEffects 1.0
@@ -42,6 +43,19 @@ Item {
     property bool roomsLoading: false
     property bool moreMenuVisible: false
     property bool sortMenuVisible: false
+
+    // Keep the room ordering choice across app restarts. Qt.labs.settings
+    // stores this in the application's private settings location.
+    Settings {
+        id: roomNavigationSettings
+        category: "RoomNavigation"
+        property string sortMode: "name"
+    }
+
+    function savedRoomSortMode() {
+        return roomNavigationSettings.sortMode === "recent"
+                ? "recent" : "name"
+    }
 
     function rtcParticipantDisplayName(name, identity) {
         var displayName = String(name || "").trim()
@@ -729,7 +743,10 @@ function loadRooms(json, finished) {
                                         MouseArea {
                                             anchors.fill: parent
                                             onClicked: {
+                                                // Update both the live view and
+                                                // the persisted preference.
                                                 roomNavigator.sortMode = modelData.value
+                                                roomNavigationSettings.sortMode = modelData.value
                                                 root.sortMenuVisible = false
                                             }
                                         }
@@ -1128,6 +1145,7 @@ function loadRooms(json, finished) {
 
                         roomsModel: roomModel
                         selectedRoom: root.selectedRoom
+                        sortMode: root.savedRoomSortMode()
 
                         onRoomSelected: {
                             root.dismissSearchKeyboard()
