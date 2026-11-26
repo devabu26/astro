@@ -29,6 +29,7 @@ Item {
     property bool applicationActive: Qt.application.state === Qt.ApplicationActive
     property bool waitingForForegroundCamera: false
     property bool nativeBackgroundCameraRunning: false
+    property string nativeBackgroundCameraDeviceId: ""
     property bool remoteAnswered: false
     property string ringbackSource: ""
 
@@ -281,6 +282,33 @@ Item {
         }
     }
 
+    // QtUbuntu camera sessions need time to release the device after
+    // the foreground QML camera stops. Start the native background session
+    // only after that handover window.
+    Timer {
+        id: backgroundCameraStartTimer
+        interval: 600
+        repeat: false
+        onTriggered: {
+            if (!root.applicationActive &&
+                    root.videoStarted &&
+                    root.backend &&
+                    root.roomId) {
+                console.info(
+                    "ASTRO_BACKGROUND_CAMERA: starting native capture after QML camera release"
+                )
+                root.backend.startRtcBackgroundCamera(
+                    root.roomId,
+                    root.localCameraDeviceIdForBackground()
+                )
+            }
+        }
+    }
+
+    function localCameraDeviceIdForBackground() {
+        return localCamera.deviceId || ""
+    }
+
     Timer {
         id: cameraFrameGrabTimer
         interval: 33
@@ -349,13 +377,14 @@ Item {
 
         cameraFrameGrabPending = false
         if (active) {
+            backgroundCameraStartTimer.stop()
             waitingForForegroundCamera = true
             localCamera.stop()
             backend.stopRtcBackgroundCamera(roomId)
         } else {
             waitingForForegroundCamera = false
             localCamera.stop()
-            backend.startRtcBackgroundCamera(roomId, localCamera.deviceId)
+            backgroundCameraStartTimer.restart()
         }
     }
 
@@ -365,14 +394,13 @@ Item {
                 localCamera.start()
             } else if (backend && roomId) {
                 localCamera.stop()
-                backend.startRtcBackgroundCamera(
-                    roomId,
-                    localCamera.deviceId
-                )
+                backgroundCameraStartTimer.restart()
             }
         } else {
+            backgroundCameraStartTimer.stop()
             waitingForForegroundCamera = false
             nativeBackgroundCameraRunning = false
+            nativeBackgroundCameraDeviceId = ""
             localCamera.stop()
             if (backend && roomId)
                 backend.stopRtcBackgroundCamera(roomId)
@@ -382,6 +410,7 @@ Item {
     Component.onDestruction: {
         noAnswerTimer.stop()
         ringbackAudio.stop()
+        backgroundCameraStartTimer.stop()
         if (backend && screenShareRoomId.length > 0)
             backend.stopRtcScreenShare(screenShareRoomId)
     }
@@ -459,20 +488,31 @@ Item {
                 return
 
             root.nativeBackgroundCameraRunning = running
-            if (running && deviceId && deviceId.length > 0 &&
-                    localCamera.deviceId !== deviceId) {
-                localCamera.deviceId = deviceId
+            if (running) {
+                root.nativeBackgroundCameraDeviceId = deviceId || ""
             }
-            if (error && error.length > 0)
+            if (error && error.length > 0) {
                 root.actionError = error
+                console.warn(
+                    "ASTRO_BACKGROUND_CAMERA: native capture transition failed:",
+                    error
+                )
+            }
 
             if (running && root.applicationActive) {
+                // The app returned while native capture was starting. Stop
+                // it first; the completion below restarts the QML camera.
                 root.waitingForForegroundCamera = true
                 root.backend.stopRtcBackgroundCamera(root.roomId)
             } else if (!running &&
                        root.applicationActive &&
                        root.videoStarted &&
                        root.waitingForForegroundCamera) {
+                if (root.nativeBackgroundCameraDeviceId.length > 0 &&
+                        localCamera.deviceId !== root.nativeBackgroundCameraDeviceId) {
+                    localCamera.deviceId = root.nativeBackgroundCameraDeviceId
+                }
+                root.nativeBackgroundCameraDeviceId = ""
                 root.waitingForForegroundCamera = false
                 localCamera.start()
             }
@@ -616,7 +656,12 @@ Item {
                     root.screenShareRoomId = ""
                 } else if (operation === "stopScreenShare" ||
                            operation === "stopScreenShareForHangup") {
-                    root.screenShareStarted = true
+                    // Local capture has already been stopped. A signalling
+                    // error must not leave the UI claiming that capture is
+                    // still running or invite another stop against dead state.
+                    root.screenShareStarted = false
+                    root.screenShareAudioRequested = false
+                    root.screenShareRoomId = ""
                 } else {
                     root.screenShareStarted = false
                     root.screenShareAudioRequested = false
