@@ -44,7 +44,10 @@ Item {
     property int cameraFrameGrabAttempts: 0
     property int cameraFrameGrabCompletions: 0
     property int cameraFrameGrabFailures: 0
+    property double cameraFrameGrabStartedAt: 0
     property bool waitingForForegroundCamera: false
+    property bool nativeBackgroundCameraStartPending: false
+    property bool nativeBackgroundCameraAttempted: false
     property bool nativeBackgroundCameraRunning: false
     property string nativeBackgroundCameraDeviceId: ""
     property bool remoteAnswered: false
@@ -471,11 +474,45 @@ Item {
         }
     }
 
-    // Native background QCamera currently shares Qt Multimedia and Mir
-    // graphics resources with the foreground Qt Quick camera pipeline.
-    // Until camera ownership is moved to a dedicated, correctly-affined
-    // controller, keep the QML camera unloaded while backgrounded rather
-    // than opening a second camera from StorageWorker.
+    // Start native capture only after Qt confirms that the foreground QML
+    // camera has completely unloaded. The native surface accepts CPU-backed
+    // frames only; it does not use the Qt Quick preview or its GL textures.
+    Timer {
+        id: backgroundCameraStartTimer
+        interval: 100
+        repeat: true
+        running: root.videoStarted &&
+                 !root.applicationActive &&
+                 !root.nativeBackgroundCameraRunning &&
+                 !root.nativeBackgroundCameraStartPending &&
+                 !root.nativeBackgroundCameraAttempted &&
+                 localCamera.cameraStatus === Camera.UnloadedStatus
+
+        onTriggered: root.tryStartBackgroundCamera()
+    }
+
+    // Give Mir a short settling window after the native camera confirms
+    // UnloadedStatus before asking Qt Quick to reopen the foreground camera.
+    Timer {
+        id: foregroundCameraRestartTimer
+        interval: 250
+        repeat: false
+        onTriggered: {
+            if (!root.videoStarted ||
+                    !root.applicationActive ||
+                    !root.waitingForForegroundCamera ||
+                    root.nativeBackgroundCameraRunning ||
+                    root.nativeBackgroundCameraStartPending)
+                return
+
+            root.waitingForForegroundCamera = false
+            console.info(
+                "ASTRO_BACKGROUND_CAMERA: restarting foreground QML camera"
+            )
+            localCamera.start()
+        }
+    }
+
     Timer {
         id: cameraFrameGrabTimer
         interval: 33
@@ -488,16 +525,31 @@ Item {
 
         onTriggered: {
             if (!root.applicationActive ||
-                    root.cameraFrameGrabPending ||
                     !localCameraPreview.visible ||
                     !root.backend ||
                     !root.roomId)
                 return
 
+            if (root.cameraFrameGrabPending) {
+                if (root.cameraFrameGrabStartedAt > 0 &&
+                        Date.now() - root.cameraFrameGrabStartedAt < 750)
+                    return
+
+                console.warn(
+                    "ASTRO_BACKGROUND_CAMERA: clearing stale frame-grab pending flag",
+                    "ageMs:", root.cameraFrameGrabStartedAt > 0
+                        ? Date.now() - root.cameraFrameGrabStartedAt : -1
+                )
+                root.cameraFrameGrabPending = false
+                root.cameraFrameGrabStartedAt = 0
+            }
+
             root.cameraFrameGrabPending = true
+            root.cameraFrameGrabStartedAt = Date.now()
             root.cameraFrameGrabAttempts += 1
             var accepted = localCameraPreview.grabToImage(function(result) {
                 root.cameraFrameGrabPending = false
+                root.cameraFrameGrabStartedAt = 0
                 root.cameraFrameGrabCompletions += 1
                 if (result && result.image &&
                         root.videoStarted && root.backend &&
@@ -527,6 +579,7 @@ Item {
 
             if (!accepted) {
                 root.cameraFrameGrabPending = false
+                root.cameraFrameGrabStartedAt = 0
                 root.cameraFrameGrabFailures += 1
                 console.warn(
                     "ASTRO_BACKGROUND_CAMERA: grabToImage was rejected",
@@ -578,6 +631,47 @@ Item {
             ringbackSource = backend.rtcRingbackToneUrl()
     }
 
+    function tryStartBackgroundCamera() {
+        if (applicationActive ||
+                !videoStarted ||
+                !backend ||
+                !roomId ||
+                nativeBackgroundCameraRunning ||
+                nativeBackgroundCameraStartPending ||
+                nativeBackgroundCameraAttempted)
+            return
+
+        if (localCamera.cameraState !== Camera.UnloadedState ||
+                localCamera.cameraStatus !== Camera.UnloadedStatus)
+            return
+
+        // Camera unload can complete before a queued Qt Quick readback callback.
+        // Allow that callback to drain before handing the camera device over.
+        if (cameraFrameGrabPending) {
+            var pendingAge = cameraFrameGrabStartedAt > 0
+                    ? Date.now() - cameraFrameGrabStartedAt : 0
+            if (pendingAge < 750)
+                return
+
+            console.warn(
+                "ASTRO_BACKGROUND_CAMERA: frame-grab callback did not drain before handover",
+                "ageMs:", pendingAge
+            )
+            cameraFrameGrabPending = false
+            cameraFrameGrabStartedAt = 0
+        }
+
+        nativeBackgroundCameraAttempted = true
+        nativeBackgroundCameraStartPending = true
+        console.info(
+            "ASTRO_BACKGROUND_CAMERA: QML camera unloaded; requesting native capture",
+            "deviceId:", localCamera.deviceId,
+            "cameraStatus:", localCamera.cameraStatus,
+            "cameraState:", localCamera.cameraState
+        )
+        backend.startRtcBackgroundCamera(roomId, localCamera.deviceId)
+    }
+
     function updateCameraForApplicationState(active) {
         applicationActive = active
         applicationState = backend
@@ -596,9 +690,10 @@ Item {
         if (!videoStarted || !backend || !roomId)
             return
 
-        cameraFrameGrabPending = false
         foregroundCameraRestartTimer.stop()
+        backgroundCameraStartTimer.stop()
         if (active) {
+            nativeBackgroundCameraAttempted = false
             // If a background-camera request was already in flight, wait
             // for its confirmed shutdown before reopening the QML camera.
             waitingForForegroundCamera = true
@@ -608,6 +703,7 @@ Item {
             // currently crosses Qt Multimedia/Mir graphics ownership and
             // is the source of the background-transition crash.
             waitingForForegroundCamera = false
+            nativeBackgroundCameraAttempted = false
             localCamera.cameraState = Camera.UnloadedState
             console.info(
                 "ASTRO_BACKGROUND_CAMERA: foreground QML camera unload requested",
@@ -624,12 +720,18 @@ Item {
                 localCamera.start()
             } else if (backend && roomId) {
                 localCamera.cameraState = Camera.UnloadedState
+                nativeBackgroundCameraAttempted = false
             }
         } else {
             foregroundCameraRestartTimer.stop()
+            backgroundCameraStartTimer.stop()
             waitingForForegroundCamera = false
+            nativeBackgroundCameraStartPending = false
+            nativeBackgroundCameraAttempted = false
             nativeBackgroundCameraRunning = false
             nativeBackgroundCameraDeviceId = ""
+            cameraFrameGrabPending = false
+            cameraFrameGrabStartedAt = 0
             localCamera.cameraState = Camera.UnloadedState
             if (backend && roomId)
                 backend.stopRtcBackgroundCamera(roomId)
@@ -736,12 +838,16 @@ Item {
             if (roomId !== root.roomId)
                 return
 
+            root.nativeBackgroundCameraStartPending = false
             root.nativeBackgroundCameraRunning = running
             if (running) {
                 root.nativeBackgroundCameraDeviceId = deviceId || ""
+            } else {
+                root.nativeBackgroundCameraDeviceId = ""
             }
 
             if (error && error.length > 0) {
+                backgroundCameraStartTimer.stop()
                 root.actionError = error
                 console.warn(
                     "ASTRO_BACKGROUND_CAMERA: native capture transition failed:",
@@ -768,7 +874,9 @@ Item {
             } else if (!running &&
                        root.applicationActive &&
                        root.videoStarted &&
-                       root.waitingForForegroundCamera) {
+                       root.waitingForForegroundCamera &&
+                       root.pendingOperation !== "stopVideo" &&
+                       root.pendingOperation !== "stopVideoForHangup") {
                 // Mir/Qt camera resources can still be settling immediately
                 // after QCamera reports UnloadedStatus. Defer the QML restart
                 // to the next event-loop window to avoid overlapping GL teardown.
@@ -1061,6 +1169,12 @@ Item {
                 "videoStarted:", root.videoStarted,
                 "error:", errorString
             )
+            if (cameraStatus === Camera.UnloadedStatus &&
+                    !root.applicationActive) {
+                console.info(
+                    "ASTRO_BACKGROUND_CAMERA: QML camera confirmed unloaded"
+                )
+            }
         }
 
         onError: {
