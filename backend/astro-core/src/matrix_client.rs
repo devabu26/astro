@@ -2814,6 +2814,10 @@ impl MatrixClientManager {
             // MSC4195 requires a 128-bit derived AES key. LiveKit's AES-GCM
             // frame cryptor uses 128-bit keys with this HKDF provider.
             let provider = KeyProvider::new(key_options);
+            let mut keys = keys;
+            // KeyProvider::set_key updates its default send index. Install
+            // remote keys first and the local sender key last.
+            keys.sort_by_key(|(identity, _, _)| identity == &local_identity);
 
             for (identity, index, key) in keys {
                 let participant_identity = ParticipantIdentity::from(identity.clone());
@@ -3591,7 +3595,18 @@ impl MatrixClientManager {
             if let (Some(provider), Some(keys)) =
                 (session.e2ee_key_provider.as_ref(), e2ee_snapshots.get(room_id))
             {
+                let local_identity = session.room.local_participant().identity().to_string();
+                let mut local_key = None;
+
+                // Remote keys may be installed at any time, but always restore
+                // the local key index last because LiveKit tracks one latest
+                // sending index on the KeyProvider.
                 for (identity, index, key) in keys {
+                    if identity == &local_identity {
+                        local_key = Some((*index, key.clone()));
+                        continue;
+                    }
+
                     let cache_key = (identity.clone(), *index);
                     if session.e2ee_installed_keys.get(&cache_key) == Some(key) {
                         continue;
@@ -3608,6 +3623,19 @@ impl MatrixClientManager {
                         eprintln!(
                             "ASTRO RTC E2EE: LiveKit rejected rotated key index {} for participant {}",
                             index, identity
+                        );
+                    }
+                }
+
+                if let Some((index, key)) = local_key {
+                    let cache_key = (local_identity.clone(), index);
+                    let participant_identity = ParticipantIdentity::from(local_identity.clone());
+                    if provider.set_key(&participant_identity, i32::from(index), key.clone()) {
+                        session.e2ee_installed_keys.insert(cache_key, key);
+                    } else {
+                        eprintln!(
+                            "ASTRO RTC E2EE: LiveKit rejected local sender key index {}",
+                            index
                         );
                     }
                 }
