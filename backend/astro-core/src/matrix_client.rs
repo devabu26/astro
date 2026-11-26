@@ -1891,6 +1891,14 @@ impl MatrixClientManager {
                 .await
                 .map_err(|error| format!("Could not load room history: {error}"))?;
 
+            // Timeline sender profiles are not guaranteed to be available
+            // until the room member list has been synchronised. Without this,
+            // sender_profile() commonly remains Unavailable and Astro serialises
+            // messages without sender_avatar, so QML has no MXC URI to fetch.
+            // Fetch members after pagination so the SDK can also update the
+            // profiles of the events already loaded into this timeline.
+            timeline.fetch_members().await;
+
             // Retain this stream so ongoing Matrix sync changes can be observed.
             let (items, updates) = timeline.subscribe().await;
 
@@ -1985,6 +1993,10 @@ impl MatrixClientManager {
             eprintln!(
                 "ASTRO REFRESH TRACE: Pagination completed; reached_start={reached_start}"
             );
+
+            // Cache refresh can leave member/profile details unavailable too.
+            // Re-sync room members before serialising the refreshed snapshot.
+            timeline.fetch_members().await;
 
             // Take a fresh snapshot after pagination and establish a new
             // Astro-side subscription for subsequent timeline updates.
