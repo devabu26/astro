@@ -165,19 +165,7 @@ Item {
         participantAvatarCache = cache
     }
 
-    onRoomIdChanged: {
-        participantAvatarCache = ({})
-        participantAvatarRequests = ({})
-    }
-
     onMembershipsChanged: {
-        for (var i = 0; i < participants.length; ++i) {
-            var identity = participants[i].identity || ""
-            requestParticipantAvatar(identity, participantAvatarMxc(identity))
-        }
-    }
-
-    onAudioStateChanged: {
         for (var i = 0; i < participants.length; ++i) {
             var identity = participants[i].identity || ""
             requestParticipantAvatar(identity, participantAvatarMxc(identity))
@@ -619,6 +607,13 @@ Item {
     }
 
     onAudioStateChanged: {
+        for (var avatarIndex = 0; avatarIndex < participants.length; ++avatarIndex) {
+            var avatarIdentity = participants[avatarIndex].identity || ""
+            requestParticipantAvatar(
+                avatarIdentity, participantAvatarMxc(avatarIdentity)
+            )
+        }
+
         if (participants.length > 0) {
             remoteAnswered = true
             noAnswerTimer.stop()
@@ -648,6 +643,8 @@ Item {
     }
 
     onRoomIdChanged: {
+        participantAvatarCache = ({})
+        participantAvatarRequests = ({})
         noAnswerTimer.stop()
         ringbackAudio.stop()
         remoteAnswered = false
