@@ -1836,6 +1836,16 @@ void StorageWorker::startRtcBackgroundCamera(
     QString errorMessage;
     QString selectedDeviceId;
 
+    qInfo() << "ASTRO_BACKGROUND_CAMERA: native start requested"
+            << "room:" << roomId
+            << "deviceId:" << deviceId
+            << "workerThread:" << QThread::currentThreadId()
+            << "workerThreadObject:" << thread()
+            << "matrixSession:" << (m_matrixClient != nullptr)
+            << "videoSurface:" << m_rtcVideoSurface
+            << "surfaceRoom:" << m_rtcVideoRoomId
+            << "surfaceActive:" << (m_rtcVideoSurface && m_rtcVideoSurface->isActive());
+
     {
         QMutexLocker locker(&m_rtcCameraFrameMutex);
 
@@ -1871,7 +1881,15 @@ void StorageWorker::startRtcBackgroundCamera(
             const QList<QCameraInfo> cameras =
                 QCameraInfo::availableCameras();
 
+            qInfo() << "ASTRO_BACKGROUND_CAMERA: camera enumeration"
+                    << "count:" << cameras.size()
+                    << "requestedDevice:" << deviceId;
             for (const QCameraInfo &camera : cameras) {
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: available device"
+                        << camera.deviceName()
+                        << camera.description()
+                        << "position:" << static_cast<int>(camera.position())
+                        << "orientation:" << camera.orientation();
                 if (!deviceId.isEmpty() &&
                     camera.deviceName() == deviceId) {
                     selected = camera;
@@ -1992,7 +2010,18 @@ void StorageWorker::startRtcBackgroundCamera(
                     Qt::QueuedConnection
                 );
 
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: calling QCamera::start"
+                        << "statusBefore:" << static_cast<int>(m_rtcCamera->status())
+                        << "stateBefore:" << static_cast<int>(m_rtcCamera->state())
+                        << "errorBefore:" << static_cast<int>(m_rtcCamera->error())
+                        << "device:" << selectedDeviceId
+                        << "thread:" << QThread::currentThreadId();
                 m_rtcCamera->start();
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: QCamera::start returned"
+                        << "statusAfter:" << static_cast<int>(m_rtcCamera->status())
+                        << "stateAfter:" << static_cast<int>(m_rtcCamera->state())
+                        << "errorAfter:" << static_cast<int>(m_rtcCamera->error())
+                        << "errorString:" << m_rtcCamera->errorString();
 
                 // All startup completion is handled by the queued
                 // statusChanged callback above. Keeping a single completion
@@ -2039,6 +2068,10 @@ void StorageWorker::startRtcBackgroundCamera(
     }
 
     if (!errorMessage.isEmpty()) {
+        qWarning() << "ASTRO_BACKGROUND_CAMERA: native start rejected"
+                   << "room:" << roomId
+                   << "error:" << errorMessage
+                   << "workerThread:" << QThread::currentThreadId();
         emit matrixRtcBackgroundCameraActionFinished(
             roomId, false, QString(), errorMessage
         );
