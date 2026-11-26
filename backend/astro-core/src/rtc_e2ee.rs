@@ -656,13 +656,13 @@ async fn try_store_received_key(
 
         if let Ok(mut keys) = received_keys.lock() {
             keys.insert(
-    (candidate.member_id.clone(), candidate.index),
-    ReceivedMediaKey {
-        livekit_identity: format!("{}:{}", candidate.sender, candidate.sender_device),
-        bytes: candidate.bytes.clone(),
-        activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
-    },
-);
+                (candidate.member_id.clone(), candidate.index),
+                ReceivedMediaKey {
+                    livekit_identity: format!("{}:{}", candidate.sender, candidate.sender_device),
+                    bytes: candidate.bytes.clone(),
+                    activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
+                },
+            );
         }
         return true;
     }
