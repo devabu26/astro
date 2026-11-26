@@ -2824,41 +2824,20 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
         return;
     }
 
-    m_rtcMirReleasePendingRoomId = roomId;
-    m_rtcMirReleasePendingError.clear();
-    m_rtcMirReleaseComplete = std::make_shared<std::atomic_bool>(false);
-    const auto releaseComplete = m_rtcMirReleaseComplete;
+    // The screencast was created using the persistent Mir connection owned
+    // by this StorageWorker. Release it on the same thread rather than handing
+    // the connection-backed object to a detached thread. This avoids racing
+    // Mir connection operations across threads. StorageWorker is not the QML
+    // thread, and recent device diagnostics measured this release at ~3 ms.
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: releasing screencast on owner thread"
+            << "thread:" << quintptr(QThread::currentThreadId());
+    QElapsedTimer releaseTimer;
+    releaseTimer.start();
+    mir_screencast_release_sync(screencast);
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: owner-thread screencast release complete"
+            << "elapsedMs:" << releaseTimer.elapsed();
 
-    qInfo() << "ASTRO_SCREEN_SHARE_STOP: starting parallel Mir release and LiveKit unpublish";
-
-    // Mir teardown can wait on compositor IPC. Keep it isolated on its own
-    // thread, but do not make LiveKit unpublish wait for Mir to finish.
-    try {
-        std::thread([screencast, releaseComplete]() {
-            QElapsedTimer releaseTimer;
-            releaseTimer.start();
-            qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release begin"
-                    << "thread:" << quintptr(QThread::currentThreadId());
-            mir_screencast_release_sync(screencast);
-            qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release complete"
-                    << "elapsedMs:" << releaseTimer.elapsed();
-            releaseComplete->store(true, std::memory_order_release);
-        }).detach();
-    } catch (const std::exception &exception) {
-        // Never fall back to synchronous Mir teardown on the StorageWorker:
-        // that can stall the worker's event loop and freeze call controls.
-        qCritical() << "ASTRO_SCREEN_SHARE_STOP: could not create Mir cleanup thread;"
-                    << "leaving screencast for process cleanup:" << exception.what();
-        releaseComplete->store(true, std::memory_order_release);
-        m_rtcMirReleasePendingError =
-            QStringLiteral("Could not start background Mir screencast cleanup");
-    }
-
-    if (m_rtcScreenShareStopPollTimer)
-        m_rtcScreenShareStopPollTimer->start();
-
-    // Start the network-side unpublish immediately. A slow compositor release
-    // must not keep the old screen-share track published to remote peers.
+    beginRtcScreenShareUnpublish(roomId, QString());
     beginRtcScreenShareUnpublish(roomId, m_rtcMirReleasePendingError);
 }
 
