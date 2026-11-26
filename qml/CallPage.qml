@@ -36,10 +36,12 @@ Item {
     property bool remoteAnswered: false
     property string ringbackSource: ""
 
-    // Mir screen-share teardown can leave Qt Quick without a fresh expose
-    // event on some Lomiri/Mir devices. Briefly request frames after stopping
-    // capture so the call UI is repainted without requiring an app switch.
+    // Mir screencast teardown can leave the Lomiri Qt Quick renderer without
+    // presenting another frame. Releasing redundant scene-graph resources is
+    // a stronger recovery attempt than update() alone; Qt Quick can recreate
+    // the scene graph from the unchanged QML item tree on the next frame.
     property int screenShareRenderRecoveryTicks: 0
+    property bool screenShareRenderResourcesReleased: false
 
     Timer {
         id: screenShareRenderRecoveryTimer
@@ -49,17 +51,30 @@ Item {
 
         onTriggered: {
             var window = root.Window.window
-            if (window)
+            if (window) {
+                if (!root.screenShareRenderResourcesReleased) {
+                    root.screenShareRenderResourcesReleased = true
+                    console.warn(
+                        "ASTRO_RENDER_RECOVERY: requesting Qt Quick resource release",
+                        "visible:", window.visible
+                    )
+                    window.releaseResources()
+                }
+
                 window.update()
+            }
 
             root.screenShareRenderRecoveryTicks--
-            if (root.screenShareRenderRecoveryTicks <= 0)
+            if (root.screenShareRenderRecoveryTicks <= 0) {
                 stop()
+                root.screenShareRenderResourcesReleased = false
+            }
         }
     }
 
     function refreshAfterScreenShareStop() {
         root.screenShareRenderRecoveryTicks = 15
+        root.screenShareRenderResourcesReleased = false
         screenShareRenderRecoveryTimer.restart()
     }
 
