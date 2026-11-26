@@ -282,20 +282,21 @@ Item {
         }
     }
 
-    // QtUbuntu camera sessions need time to release the device after
-    // the foreground QML camera stops. Start the native background session
-    // only after that handover window.
+    // QCamera::stop() only returns the QML camera to LoadedState; the
+    // device remains open. Release it completely before the native camera
+    // tries to acquire the same hardware while Astro is backgrounded.
     Timer {
         id: backgroundCameraStartTimer
-        interval: 600
+        interval: 200
         repeat: false
         onTriggered: {
             if (!root.applicationActive &&
                     root.videoStarted &&
                     root.backend &&
-                    root.roomId) {
+                    root.roomId &&
+                    localCamera.cameraStatus === Camera.UnloadedStatus) {
                 console.info(
-                    "ASTRO_BACKGROUND_CAMERA: starting native capture after QML camera release"
+                    "ASTRO_BACKGROUND_CAMERA: QML camera unloaded; starting native capture"
                 )
                 root.backend.startRtcBackgroundCamera(
                     root.roomId,
@@ -383,8 +384,9 @@ Item {
             backend.stopRtcBackgroundCamera(roomId)
         } else {
             waitingForForegroundCamera = false
-            localCamera.stop()
-            backgroundCameraStartTimer.restart()
+            localCamera.cameraState = Camera.UnloadedState
+            if (localCamera.cameraStatus === Camera.UnloadedStatus)
+                backgroundCameraStartTimer.restart()
         }
     }
 
@@ -393,8 +395,9 @@ Item {
             if (applicationActive) {
                 localCamera.start()
             } else if (backend && roomId) {
-                localCamera.stop()
-                backgroundCameraStartTimer.restart()
+                localCamera.cameraState = Camera.UnloadedState
+                if (localCamera.cameraStatus === Camera.UnloadedStatus)
+                    backgroundCameraStartTimer.restart()
             }
         } else {
             backgroundCameraStartTimer.stop()
@@ -732,6 +735,18 @@ Item {
                     ? QtMultimedia.availableCameras[0].deviceId : "")
         captureMode: Camera.CaptureVideo
         viewfinder.maximumFrameRate: 30
+
+        onCameraStatusChanged: {
+            console.info(
+                "ASTRO_BACKGROUND_CAMERA: QML camera status:",
+                cameraStatus
+            )
+            if (!root.applicationActive &&
+                    root.videoStarted &&
+                    cameraStatus === Camera.UnloadedStatus) {
+                backgroundCameraStartTimer.restart()
+            }
+        }
 
         onError: {
             root.actionError = errorString
