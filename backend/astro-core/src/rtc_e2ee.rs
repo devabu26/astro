@@ -1,12 +1,13 @@
 //! MatrixRTC per-member media-key exchange (MSC4143 / MSC4195).
 //!
-//! This module distributes and validates media keys. It does not yet enable
-//! LiveKit frame encryption; that remains a separate integration stage so the
-//! existing audio/video publishing path is not changed here.
+//! This module distributes MatrixRTC media keys and exposes them to LiveKit's
+//! per-participant frame cryptor key provider.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use base64::Engine as _;
+use sha2::{Digest, Sha256};
 
 use futures_util::StreamExt;
 use matrix_sdk::{
@@ -78,7 +79,7 @@ impl RtcE2eeSession {
             activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
         }));
         let received_keys = Arc::new(Mutex::new(BTreeMap::new()));
-        let local_livekit_identity = legacy_livekit_identity(&client)?;
+        let local_livekit_identity = matrix_livekit_identity(&client, &local_member_id)?;
 
         let task_local_key = Arc::clone(&local_key);
         let task_received_keys = Arc::clone(&received_keys);
@@ -227,6 +228,7 @@ impl RtcE2eeSession {
             activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
         }));
         let received_keys = Arc::new(Mutex::new(BTreeMap::new()));
+        let local_livekit_identity = legacy_livekit_identity(&client)?;
 
         let task_local_key = Arc::clone(&local_key);
         let task_received_keys = Arc::clone(&received_keys);
@@ -384,6 +386,18 @@ impl Drop for RtcE2eeSession {
     }
 }
 
+fn matrix_livekit_identity(client: &Client, member_id: &str) -> Result<String, String> {
+    let user_id = client.user_id()
+        .ok_or_else(|| "Matrix user ID is unavailable for LiveKit E2EE identity".to_string())?;
+    Ok(matrix_livekit_identity_from_parts(user_id.as_str(), member_id))
+}
+
+fn matrix_livekit_identity_from_parts(sender: &str, member_id: &str) -> String {
+    // MSC4195: Base64-no-pad(SHA-256(Canonical JSON([sender, member.id]))).
+    let canonical = serde_json::to_vec(&[sender, member_id])
+        .expect("serializing two strings as canonical JSON cannot fail");
+    base64::engine::general_purpose::STANDARD_NO_PAD.encode(Sha256::digest(canonical))
+}
 fn legacy_livekit_identity(client: &Client) -> Result<String, String> {
     let user_id = client.user_id()
         .ok_or_else(|| "Matrix user ID is unavailable for LiveKit E2EE identity".to_string())?;
@@ -606,7 +620,7 @@ fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMed
 async fn try_store_received_key(
     client: &Client,
     room: &Room,
-    received_keys: &Arc<Mutex<BTreeMap<(String, u8), Vec<u8>>>>,
+    received_keys: &Arc<Mutex<BTreeMap<(String, u8), ReceivedMediaKey>>>,
     candidate: &PendingMediaKey,
 ) -> bool {
     if candidate.room_id != room.room_id().as_str() {
@@ -651,7 +665,10 @@ async fn try_store_received_key(
             keys.insert(
     (candidate.member_id.clone(), candidate.index),
     ReceivedMediaKey {
-        livekit_identity: format!("{}:{}", candidate.sender, candidate.sender_device),
+        livekit_identity: matrix_livekit_identity_from_parts(
+            candidate.sender.as_str(),
+            &candidate.member_id,
+        ),
         bytes: candidate.bytes.clone(),
         activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
     },
@@ -856,7 +873,14 @@ async fn try_store_received_key_legacy(
     }
 
     if let Ok(mut keys) = received_keys.lock() {
-        keys.insert((candidate.member_id.clone(), candidate.index), candidate.bytes.clone());
+        keys.insert(
+            (candidate.member_id.clone(), candidate.index),
+            ReceivedMediaKey {
+                livekit_identity: format!("{}:{}", candidate.sender, candidate.sender_device),
+                bytes: candidate.bytes.clone(),
+                activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
+            },
+        );
     }
     true
 }
