@@ -1741,7 +1741,18 @@ void StorageWorker::startRtcBackgroundCamera(
                         m_rtcBackgroundCameraPendingRoomId.clear();
                         m_rtcBackgroundCameraPendingDeviceId.clear();
 
-                        stopRtcBackgroundCamera(roomId);
+                        {
+                            QMutexLocker cleanupLocker(&m_rtcCameraFrameMutex);
+                            if (m_rtcCamera &&
+                                m_rtcVideoRoomId == roomId) {
+                                m_rtcCamera->stop();
+                                m_rtcCamera->setViewfinder(
+                                    static_cast<QAbstractVideoSurface *>(nullptr)
+                                );
+                                delete m_rtcCamera;
+                                m_rtcCamera = nullptr;
+                            }
+                        }
                         if (wasPending) {
                             emit matrixRtcBackgroundCameraActionFinished(
                                 roomId, false, QString(), message
@@ -1782,7 +1793,18 @@ void StorageWorker::startRtcBackgroundCamera(
                     m_rtcBackgroundCameraPendingRoomId.clear();
                     m_rtcBackgroundCameraPendingDeviceId.clear();
 
-                    stopRtcBackgroundCamera(roomId);
+                    {
+                        QMutexLocker cleanupLocker(&m_rtcCameraFrameMutex);
+                        if (m_rtcCamera &&
+                            m_rtcVideoRoomId == roomId) {
+                            m_rtcCamera->stop();
+                            m_rtcCamera->setViewfinder(
+                                static_cast<QAbstractVideoSurface *>(nullptr)
+                            );
+                            delete m_rtcCamera;
+                            m_rtcCamera = nullptr;
+                        }
+                    }
                     emit matrixRtcBackgroundCameraActionFinished(
                         roomId,
                         false,
@@ -1812,6 +1834,14 @@ void StorageWorker::stopRtcBackgroundCamera(const QString &roomId)
 {
     {
         QMutexLocker locker(&m_rtcCameraFrameMutex);
+
+        if (m_rtcBackgroundCameraStartPending &&
+            (roomId.isEmpty() ||
+             roomId == m_rtcBackgroundCameraPendingRoomId)) {
+            m_rtcBackgroundCameraStartPending = false;
+            m_rtcBackgroundCameraPendingRoomId.clear();
+            m_rtcBackgroundCameraPendingDeviceId.clear();
+        }
 
         // Ignore stale stop requests from a previous call page.
         if (m_rtcCamera &&
