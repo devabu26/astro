@@ -35,10 +35,23 @@ StorageWorker::StorageWorker(QObject *parent)
         this,
         &StorageWorker::pollRtcRemoteVideoFrames
     );
+
+    // Poll asynchronous LiveKit screen-share unpublishing without blocking
+    // the worker's event loop on network signalling.
+    m_rtcScreenShareStopPollTimer = new QTimer(this);
+    m_rtcScreenShareStopPollTimer->setInterval(50);
+    connect(
+        m_rtcScreenShareStopPollTimer,
+        &QTimer::timeout,
+        this,
+        &StorageWorker::pollRtcScreenShareStop
+    );
 }
 
 StorageWorker::~StorageWorker()
 {
+    if (m_rtcScreenShareStopPollTimer)
+        m_rtcScreenShareStopPollTimer->stop();
     stopRtcScreenShareCapture();
     if (m_timelinePollTimer) {
         m_timelinePollTimer->stop();
