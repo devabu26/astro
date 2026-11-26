@@ -528,6 +528,8 @@ private:
     int m_rtcScreenShareHeight = 0;
     bool m_rtcScreenShareStartPending = false;
     QByteArray m_rtcScreenShareLastFrame;
+    // Reuse packed Y/U/V output across screen-share frames and sessions.
+    QByteArray m_rtcScreenShareI420Frame;
     QElapsedTimer m_rtcScreenShareLastFrameSent;
     // Aggregate screen-share stage timings; emitted every five seconds.
     QElapsedTimer m_rtcScreenSharePerfWindow;
