@@ -1,4 +1,5 @@
 import QtQuick 2.7
+import QtGraphicalEffects 1.0
 import QtMultimedia 5.8
 import Lomiri.Components 1.3
 import Lomiri.Content 1.1
@@ -1981,6 +1982,22 @@ Item {
                         elide: Text.ElideRight
                     }
 
+                    // A red glow marks this room when the logged-in
+                    // Matrix user is currently joined to its call.
+                    DropShadow {
+                        anchors.fill: callButton
+                        source: callButton
+                        horizontalOffset: 0
+                        verticalOffset: 0
+                        radius: 12
+                        samples: 25
+                        spread: 0.18
+                        color: "#ffff3548"
+                        opacity: root.rtcCallState.joinedByMe === true ? 0.78 : 0
+                        visible: opacity > 0
+                        z: 9
+                    }
+
                     // Open the dedicated audio call page.
                     Rectangle {
                         id: callButton
@@ -1995,8 +2012,12 @@ Item {
                         height: units.gu(5)
                         radius: units.gu(1)
 
-                        color: callButtonMouse.pressed
-                               ? "#40596b" : "transparent"
+                        color: root.rtcCallState.joinedByMe === true
+                               ? (callButtonMouse.pressed ? "#c94a55" : "#a8323d")
+                               : (callButtonMouse.pressed ? "#40596b" : "transparent")
+                        border.width: root.rtcCallState.joinedByMe === true
+                                      ? units.dp(1) : 0
+                        border.color: "#ff9aa2"
 
                         visible: root.roomId.length > 0
 
