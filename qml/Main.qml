@@ -404,6 +404,21 @@ MainView {
                 return
             }
 
+            // Incoming MatrixRTC rings are separate from ordinary message
+            // notifications. Only surface them while Astro is foregrounded.
+            var incomingCalls = data.incoming_calls || []
+            if (Qt.application.state === Qt.ApplicationActive) {
+                for (var callIndex = 0; callIndex < incomingCalls.length; callIndex++) {
+                    var incomingCall = incomingCalls[callIndex]
+                    incomingCallBanner.showIncomingCall(
+                        incomingCall.sender,
+                        incomingCall.room_id,
+                        incomingCall.event_id,
+                        incomingCall.call_intent
+                    )
+                }
+            }
+
             var events = data.verification_requests || []
 
             for (var i = 0; i < events.length; i++) {
@@ -598,11 +613,31 @@ MainView {
     // Matrix device verification dialog
     // =========================================================
 
+    IncomingCallBanner {
+        id: incomingCallBanner
+        anchors.top: parent.top
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.topMargin: units.gu(2)
+        width: parent.width - units.gu(4)
+        z: 2100
+
+        onAnswerRequested: {
+            root.showingSettings = false
+            root.openCallPage(
+                roomId,
+                chatPage.roomNameForId(roomId),
+                true
+            )
+        }
+    }
+
     NotificationBanner {
         id: notificationBanner
         anchors.top: parent.top
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.topMargin: units.gu(2)
+        anchors.topMargin: incomingCallBanner.visible
+            ? incomingCallBanner.height + units.gu(3)
+            : units.gu(2)
         width: parent.width - units.gu(4)
         z: 2000
 
