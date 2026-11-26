@@ -721,6 +721,17 @@ Item {
                 return
 
             var operation = root.pendingOperation
+            if (operation !== "startScreenShare" &&
+                    operation !== "stopScreenShare" &&
+                    operation !== "stopScreenShareForHangup") {
+                console.info(
+                    "ASTRO_SCREEN_SHARE_DIAG: ignored stale completion",
+                    "operation:", operation,
+                    "error:", error
+                )
+                return
+            }
+
             root.pendingOperation = ""
 
             if (error && error.length > 0) {
