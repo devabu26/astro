@@ -18,50 +18,11 @@ Item {
     // MatrixRTC membership profiles provide the MXC avatar URI for each user.
     property var memberships: []
     property var participantAvatarCache: ({})
+    property var participantAvatarCacheUris: ({})
     property var participantAvatarRequests: ({})
 
 
-    property string pendingOperation: ""
-    property string actionError: ""
-
-    property bool audioStarted: false
-    property bool membershipJoined: false
-    property bool muted: false
-    property bool pendingMuted: false
-    property bool videoStarted: false
-    property bool screenShareStarted: false
-    property string screenShareRoomId: ""
-    property bool screenShareChoiceVisible: false
-    property bool screenShareAudioRequested: false
-    property bool cameraFrameGrabPending: false
-    property bool screenShareStopDispatched: false
-    property int screenShareStopDrainElapsedMs: 0
-    property string screenShareStopRoomId: ""
-    property bool applicationActive: Qt.application.state === Qt.ApplicationActive
-    property int applicationState: backend
-                                  ? backend.applicationState
-                                  : Qt.application.state
-    property int cameraFrameGrabAttempts: 0
-    property int cameraFrameGrabCompletions: 0
-    property int cameraFrameGrabFailures: 0
-    property double cameraFrameGrabStartedAt: 0
-    property bool waitingForForegroundCamera: false
-    property bool nativeBackgroundCameraStartPending: false
-    property bool nativeBackgroundCameraAttempted: false
-    property bool nativeBackgroundCameraRunning: false
-    property string nativeBackgroundCameraDeviceId: ""
-    property bool remoteAnswered: false
-    property string ringbackSource: ""
-
-    signal backRequested()
-    signal remoteVideoCleared(string identity, string source)
-
-    readonly property var participants:
-        audioState.participants || []
-
-    readonly property bool callActive:
-        audioState.active === true || audioStarted
-
+    property string pendingOperation: "";
     function participantProfile(identity) {
         identity = String(identity || "")
         if (!identity)
@@ -89,42 +50,86 @@ Item {
                 : String(fallbackName || identity || "Participant")
     }
 
-    function participantAvatarRequestKey(identity) {
-        return "call-avatar:" + roomId + ":" + String(identity || "")
+    function participantAvatarRequestKey(identity, mxcUri) {
+        return "call-avatar:" +
+                encodeURIComponent(roomId) + ":" +
+                encodeURIComponent(String(identity || "")) + ":" +
+                encodeURIComponent(String(mxcUri || ""))
     }
 
     function requestParticipantAvatar(identity, mxcUri) {
         identity = String(identity || "")
         mxcUri = String(mxcUri || "")
-        if (!backend || !identity || !mxcUri)
+        if (!backend || !roomId || !identity || !mxcUri)
             return
 
-        if (participantAvatarCache[identity] ||
-                participantAvatarRequests[identity] === mxcUri)
+        if (participantAvatarCache[identity] &&
+                participantAvatarCacheUris[identity] === mxcUri)
+            return
+
+        if (participantAvatarRequests[identity] === mxcUri)
             return
 
         var requests = Object.assign({}, participantAvatarRequests)
         requests[identity] = mxcUri
         participantAvatarRequests = requests
+
+        console.info(
+            "ASTRO_CALL_AVATAR: requesting",
+            "identity:", identity,
+            "hasMxc:", true
+        )
         backend.requestSenderAvatar(
-            participantAvatarRequestKey(identity), mxcUri
+            participantAvatarRequestKey(identity, mxcUri), mxcUri
         )
     }
 
-    function storeParticipantAvatar(identity, dataUrl) {
-        if (!identity || !dataUrl)
+    function requestVisibleParticipantAvatars() {
+        for (var i = 0; i < participants.length; ++i) {
+            var identity = String(participants[i].identity || "")
+            var mxcUri = participantAvatarMxc(identity)
+            if (identity && mxcUri)
+                requestParticipantAvatar(identity, mxcUri)
+            else if (identity)
+                console.info(
+                    "ASTRO_CALL_AVATAR: no MatrixRTC profile yet",
+                    "identity:", identity,
+                    "membershipCount:", memberships.length
+                )
+        }
+    }
+
+    function finishParticipantAvatarRequest(identity, mxcUri, dataUrl) {
+        var requests = Object.assign({}, participantAvatarRequests)
+        if (requests[identity] === mxcUri)
+            delete requests[identity]
+        participantAvatarRequests = requests
+
+        // Ignore stale responses after a room change or avatar update.
+        if (roomId === "" || participantAvatarMxc(identity) !== mxcUri)
+            return
+
+        if (!dataUrl)
             return
 
         var cache = Object.assign({}, participantAvatarCache)
+        var cacheUris = Object.assign({}, participantAvatarCacheUris)
         cache[identity] = dataUrl
+        cacheUris[identity] = mxcUri
         participantAvatarCache = cache
+        participantAvatarCacheUris = cacheUris
+
+        console.info(
+            "ASTRO_CALL_AVATAR: loaded",
+            "identity:", identity
+        )
     }
 
-    onMembershipsChanged: {
-        for (var i = 0; i < participants.length; ++i) {
-            var identity = participants[i].identity || ""
-            requestParticipantAvatar(identity, participantAvatarMxc(identity))
-        }
+    onMembershipsChanged: requestVisibleParticipantAvatars()
+    onParticipantsChanged: requestVisibleParticipantAvatars()
+
+    onRoomIdChanged: {
+        participantAvatarRequests = ({})
     }
 
     Connections {
@@ -132,18 +137,40 @@ Item {
         ignoreUnknownSignals: true
 
         onSenderAvatarRetrieved: {
-            var prefix = "call-avatar:" + root.roomId + ":"
-            if (requestKey.indexOf(prefix) !== 0)
+            var parts = requestKey.substring("call-avatar:".length).split(":")
+            if (parts.length !== 3)
                 return
-            var identity = requestKey.substring(prefix.length)
-            root.storeParticipantAvatar(identity, dataUrl)
+
+            var responseRoom = decodeURIComponent(parts[0])
+            var identity = decodeURIComponent(parts[1])
+            var mxcUri = decodeURIComponent(parts[2])
+            if (responseRoom !== root.roomId)
+                return
+
+            root.finishParticipantAvatarRequest(identity, mxcUri, dataUrl)
         }
 
         onSenderAvatarFailed: {
-            var prefix = "call-avatar:" + root.roomId + ":"
-            if (requestKey.indexOf(prefix) !== 0)
+            var parts = requestKey.substring("call-avatar:".length).split(":")
+            if (parts.length !== 3)
                 return
-            console.warn("Could not load call participant avatar:", error)
+
+            var responseRoom = decodeURIComponent(parts[0])
+            var identity = decodeURIComponent(parts[1])
+            var mxcUri = decodeURIComponent(parts[2])
+            if (responseRoom !== root.roomId)
+                return
+
+            var requests = Object.assign({}, root.participantAvatarRequests)
+            if (requests[identity] === mxcUri) {
+                delete requests[identity]
+                root.participantAvatarRequests = requests
+            }
+            console.warn(
+                "ASTRO_CALL_AVATAR: download failed",
+                "identity:", identity,
+                "error:", error
+            )
         }
     }
 
