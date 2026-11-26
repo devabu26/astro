@@ -699,9 +699,9 @@ Item {
             waitingForForegroundCamera = true
             backend.stopRtcBackgroundCamera(roomId)
         } else {
-            // Do not create a second QCamera in StorageWorker. That path
-            // currently crosses Qt Multimedia/Mir graphics ownership and
-            // is the source of the background-transition crash.
+            // Release the Qt Quick camera first. The native worker camera is
+            // requested only after its status reaches UnloadedStatus, so the
+            // two camera objects never contend for the physical device.
             waitingForForegroundCamera = false
             nativeBackgroundCameraAttempted = false
             localCamera.cameraState = Camera.UnloadedState
@@ -854,10 +854,9 @@ Item {
                     error
                 )
 
-                // A failed start/timeout is not proof that QCamera has released
-                // the device. The worker unloads it asynchronously; request
-                // Confirm that unload completed before restarting the QML camera
-                // the subsequent error-free stopped notification.
+                // A failed start/timeout is not proof that QCamera has
+                // released the device. On foreground return, request another
+                // stop and wait for its error-free unload completion.
                 if (root.applicationActive &&
                         root.videoStarted &&
                         root.waitingForForegroundCamera) {
