@@ -1250,6 +1250,7 @@ function loadRooms(json, finished) {
                 targetRequestSerial: root.notificationRequestSerial
 
                 onBackRequested: {
+                    roomView.collapseRtcParticipants()
                     root.showConversation = false
                 }
 
