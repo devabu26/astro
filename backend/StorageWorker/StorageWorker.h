@@ -120,6 +120,7 @@ public slots:
     void stopRtcBackgroundCamera(const QString &roomId);
     void startRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
     void stopRtcScreenShare(const QString &roomId);
+    void pollRtcScreenShareStop();
     // Called directly by the Qt Quick video-filter render thread while its GL context is current.
     void processRtcCameraFrame(const QVideoFrame &frame);
     void processRtcCameraImage(const QString &roomId, const QImage &image);
@@ -502,6 +503,8 @@ private:
     MirScreencast *m_rtcScreenCast = nullptr;
     MirBufferStream *m_rtcScreenShareStream = nullptr;
     QTimer *m_rtcScreenShareTimer = nullptr;
+    QTimer *m_rtcScreenShareStopPollTimer = nullptr;
+    QString m_rtcScreenShareStopPendingRoomId;
     int m_rtcScreenShareWidth = 0;
     int m_rtcScreenShareHeight = 0;
     bool m_rtcScreenShareStartPending = false;
