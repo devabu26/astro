@@ -8,6 +8,7 @@ extern "C" {
 
 typedef struct AstroStorageManager AstroStorageManager;
 typedef struct AstroMatrixClient AstroMatrixClient;
+typedef struct AstroRtcI420Frame AstroRtcI420Frame;
 
 typedef void (*AstroAttachmentProgressCallback)(
     void *context,
@@ -264,14 +265,18 @@ int32_t astro_matrix_push_rtc_screenshare_audio_frame(
     uint64_t pcm_samples,
     char **error_out
 );
-int32_t astro_matrix_push_rtc_screenshare_frame(
-    AstroMatrixClient *handle,
-    const char *room_id,
-    uint32_t width,
-    uint32_t height,
-    const uint8_t *frame_data,
-    uint64_t frame_data_len,
+int32_t astro_matrix_create_rtc_screenshare_frame(
+    uint32_t width, uint32_t height,
+    AstroRtcI420Frame **frame_out,
+    uint8_t **plane_y_out, uint32_t *stride_y_out,
+    uint8_t **plane_u_out, uint32_t *stride_u_out,
+    uint8_t **plane_v_out, uint32_t *stride_v_out,
     char **error_out
+);
+void astro_matrix_free_rtc_screenshare_frame(AstroRtcI420Frame *frame);
+int32_t astro_matrix_submit_rtc_screenshare_frame(
+    AstroMatrixClient *handle, const char *room_id,
+    AstroRtcI420Frame *frame, char **error_out
 );
 int32_t astro_matrix_stop_rtc_screenshare(
     AstroMatrixClient *handle,
