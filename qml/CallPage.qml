@@ -130,7 +130,6 @@ Item {
         noAnswerTimer.stop()
         ringbackAudio.stop()
         localCamera.stop()
-        backgroundCameraStartTimer.stop()
         waitingForForegroundCamera = false
 
         if (screenShareRoomId === roomId)
@@ -486,8 +485,6 @@ Item {
                 localCamera.start()
             } else if (backend && roomId) {
                 localCamera.cameraState = Camera.UnloadedState
-                if (localCamera.cameraStatus === Camera.UnloadedStatus)
-                    backgroundCameraStartTimer.restart()
             }
         } else {
             foregroundCameraRestartTimer.stop()
@@ -503,7 +500,6 @@ Item {
     Component.onDestruction: {
         noAnswerTimer.stop()
         ringbackAudio.stop()
-        backgroundCameraStartTimer.stop()
         localCamera.cameraState = Camera.UnloadedState
         if (backend && roomId)
             backend.stopRtcBackgroundCamera(roomId)
