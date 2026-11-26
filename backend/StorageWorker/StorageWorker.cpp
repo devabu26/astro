@@ -53,10 +53,6 @@ StorageWorker::~StorageWorker()
     if (m_rtcScreenShareStopPollTimer)
         m_rtcScreenShareStopPollTimer->stop();
     stopRtcScreenShareCapture();
-    if (m_rtcMirConnection) {
-        mir_connection_release(m_rtcMirConnection);
-        m_rtcMirConnection = nullptr;
-    }
     if (m_timelinePollTimer) {
         m_timelinePollTimer->stop();
     }
