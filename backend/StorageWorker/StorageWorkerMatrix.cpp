@@ -1747,21 +1747,22 @@ void StorageWorker::startRtcBackgroundCamera(
                         m_rtcBackgroundCameraPendingRoomId.clear();
                         m_rtcBackgroundCameraPendingDeviceId.clear();
 
+                        bool unloadAlreadyPending = false;
                         {
                             QMutexLocker cleanupLocker(&m_rtcCameraFrameMutex);
-                            if (m_rtcCamera &&
-                                m_rtcVideoRoomId == roomId) {
-                                m_rtcCamera->stop();
-                                m_rtcCamera->setViewfinder(
-                                    static_cast<QAbstractVideoSurface *>(nullptr)
-                                );
-                                delete m_rtcCamera;
-                                m_rtcCamera = nullptr;
-                            }
+                            unloadAlreadyPending =
+                                m_rtcBackgroundCameraStopPending;
                         }
+
+                        // Do not delete a camera from its error callback.
+                        // The backend may still be unwinding a capture or
+                        // unload operation. Route cleanup through the same
+                        // UnloadedStatus completion path as normal teardown.
                         emit matrixRtcBackgroundCameraActionFinished(
                             roomId, false, QString(), message
                         );
+                        if (!unloadAlreadyPending)
+                            stopRtcBackgroundCamera(roomId);
                     },
                     Qt::QueuedConnection
                 );
@@ -1797,18 +1798,6 @@ void StorageWorker::startRtcBackgroundCamera(
                     m_rtcBackgroundCameraPendingRoomId.clear();
                     m_rtcBackgroundCameraPendingDeviceId.clear();
 
-                    {
-                        QMutexLocker cleanupLocker(&m_rtcCameraFrameMutex);
-                        if (m_rtcCamera &&
-                            m_rtcVideoRoomId == roomId) {
-                            m_rtcCamera->stop();
-                            m_rtcCamera->setViewfinder(
-                                static_cast<QAbstractVideoSurface *>(nullptr)
-                            );
-                            delete m_rtcCamera;
-                            m_rtcCamera = nullptr;
-                        }
-                    }
                     emit matrixRtcBackgroundCameraActionFinished(
                         roomId,
                         false,
@@ -1819,6 +1808,11 @@ void StorageWorker::startRtcBackgroundCamera(
                               )
                             : message
                     );
+
+                    // Timeout is not proof that the device has closed.
+                    // Request unload and wait for UnloadedStatus instead of
+                    // deleting QCamera while its backend may still be active.
+                    stopRtcBackgroundCamera(roomId);
                 });
 
                 qInfo() << "RTC native background camera start requested; awaiting ActiveStatus:"
