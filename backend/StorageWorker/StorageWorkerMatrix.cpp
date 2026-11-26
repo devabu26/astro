@@ -1141,18 +1141,14 @@ public:
         qInfo() << "RTC supportedPixelFormats requested handle:"
         << static_cast<int>(type);
         
-        // QtUbuntu's camera backend delivers viewfinder frames as
-        // GLTextureHandle buffers. Advertise the RGB32 format for that handle
-        // type so QCamera can negotiate the GL path; present() reads the
-        // texture back through the worker's context shared with Qt Quick.
-        // Keep the CPU formats too for backends that provide mappable frames.
-        if (type == QAbstractVideoBuffer::GLTextureHandle) {
-            qInfo() << "RTC camera accepting GL texture RGB32 frames";
-            return { QVideoFrame::Format_RGB32 };
-        }
-
+        // Do not negotiate GLTextureHandle on Ubuntu Touch yet. Its
+        // camera backend's GL textures are not guaranteed to remain valid
+        // or shared with the worker context during app-state transitions.
+        // Advertising this path caused the app to crash when backgrounding.
+        // Keep the surface restricted to CPU-mappable frames until a safe
+        // camera-owned GL context/texture handoff is implemented.
         if (type != QAbstractVideoBuffer::NoHandle) {
-            qInfo() << "RTC camera rejecting unsupported surface handle:"
+            qInfo() << "RTC camera rejecting non-CPU surface handle:"
                     << static_cast<int>(type);
             return {};
         }
