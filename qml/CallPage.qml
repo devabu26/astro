@@ -393,34 +393,11 @@ Item {
         }
     }
 
-    // QCamera::stop() only returns the QML camera to LoadedState; the
-    // device remains open. Release it completely before the native camera
-    // tries to acquire the same hardware while Astro is backgrounded.
-    Timer {
-        id: backgroundCameraStartTimer
-        interval: 200
-        repeat: false
-        onTriggered: {
-            if (!root.applicationActive &&
-                    root.videoStarted &&
-                    root.backend &&
-                    root.roomId &&
-                    localCamera.cameraStatus === Camera.UnloadedStatus) {
-                console.info(
-                    "ASTRO_BACKGROUND_CAMERA: QML camera unloaded; starting native capture"
-                )
-                root.backend.startRtcBackgroundCamera(
-                    root.roomId,
-                    root.localCameraDeviceIdForBackground()
-                )
-            }
-        }
-    }
-
-    function localCameraDeviceIdForBackground() {
-        return localCamera.deviceId || ""
-    }
-
+    // Native background QCamera currently shares Qt Multimedia and Mir
+    // graphics resources with the foreground Qt Quick camera pipeline.
+    // Until camera ownership is moved to a dedicated, correctly-affined
+    // controller, keep the QML camera unloaded while backgrounded rather
+    // than opening a second camera from StorageWorker.
     Timer {
         id: cameraFrameGrabTimer
         interval: 33
@@ -490,17 +467,16 @@ Item {
         cameraFrameGrabPending = false
         foregroundCameraRestartTimer.stop()
         if (active) {
-            backgroundCameraStartTimer.stop()
+            // If a background-camera request was already in flight, wait
+            // for its confirmed shutdown before reopening the QML camera.
             waitingForForegroundCamera = true
-            // Keep the QML camera unloaded until native capture confirms it
-            // has released the hardware. Calling stop() here would move it
-            // back to LoadedState and reopen the device too early.
             backend.stopRtcBackgroundCamera(roomId)
         } else {
+            // Do not create a second QCamera in StorageWorker. That path
+            // currently crosses Qt Multimedia/Mir graphics ownership and
+            // is the source of the background-transition crash.
             waitingForForegroundCamera = false
             localCamera.cameraState = Camera.UnloadedState
-            if (localCamera.cameraStatus === Camera.UnloadedStatus)
-                backgroundCameraStartTimer.restart()
         }
     }
 
@@ -514,7 +490,6 @@ Item {
                     backgroundCameraStartTimer.restart()
             }
         } else {
-            backgroundCameraStartTimer.stop()
             foregroundCameraRestartTimer.stop()
             waitingForForegroundCamera = false
             nativeBackgroundCameraRunning = false
@@ -904,11 +879,7 @@ Item {
                 "ASTRO_BACKGROUND_CAMERA: QML camera status:",
                 cameraStatus
             )
-            if (!root.applicationActive &&
-                    root.videoStarted &&
-                    cameraStatus === Camera.UnloadedStatus) {
-                backgroundCameraStartTimer.restart()
-            }
+
         }
 
         onError: {
