@@ -281,8 +281,8 @@ QByteArray transformI420Frame(
     int cropX = 0;
     int cropY = 0;
 
-    // Match VideoOutput.PreserveAspectCrop: fill the portrait target and
-    // crop the excess from the centre rather than stretching the camera.
+    // Match VideoOutput.PreserveAspectCrop: fill the target and crop the
+    // excess from the centre rather than stretching the camera image.
     if (static_cast<qint64>(rotatedWidth) * targetHeight >
         static_cast<qint64>(rotatedHeight) * targetWidth) {
         cropWidth = (rotatedHeight * targetWidth / targetHeight) & ~1;
@@ -296,63 +296,77 @@ QByteArray transformI420Frame(
     const int sourceChromaSize = sourceYSize / 4;
     const int targetYSize = targetWidth * targetHeight;
     const int targetChromaSize = targetYSize / 4;
+
     QByteArray output(
         targetYSize + targetChromaSize * 2,
         Qt::Uninitialized
     );
 
-    auto transformPlane = [rotate270](
-        const uchar *input,
-        int inputWidth,
-        int inputHeight,
-        uchar *outputPlane,
-        int outputWidth,
-        int outputHeight,
-        int left,
-        int top,
-        int width,
-        int height
-    ) {
-        const int rotatedWidth = rotate270 ? inputHeight : inputWidth;
-        const int rotatedHeight = rotate270 ? inputWidth : inputHeight;
-        QByteArray rotated(
-            rotatedWidth * rotatedHeight,
-            Qt::Uninitialized
-        );
-        uchar *rotatedData = reinterpret_cast<uchar *>(rotated.data());
-
-        for (int y = 0; y < inputHeight; ++y) {
-            for (int x = 0; x < inputWidth; ++x) {
-                const int destinationX = rotate270 ? y : x;
-                const int destinationY = rotate270
-                    ? inputWidth - 1 - x
-                    : y;
-                rotatedData[destinationY * rotatedWidth + destinationX] =
-                    input[y * inputWidth + x];
-            }
-        }
-
-        for (int y = 0; y < outputHeight; ++y) {
-            const int sourceY = top +
-                std::min(height - 1, y * height / outputHeight);
-            const uchar *sourceRow =
-                rotatedData + sourceY * rotatedWidth + left;
-            uchar *destinationRow = outputPlane + y * outputWidth;
-
-            for (int x = 0; x < outputWidth; ++x) {
-                const int sourceX =
-                    std::min(width - 1, x * width / outputWidth);
-                destinationRow[x] = sourceRow[sourceX];
-            }
-        }
-    };
-
-    const uchar *sourceY = reinterpret_cast<const uchar *>(source.constData());
+    const uchar *sourceY =
+        reinterpret_cast<const uchar *>(source.constData());
     const uchar *sourceU = sourceY + sourceYSize;
     const uchar *sourceV = sourceU + sourceChromaSize;
     uchar *targetY = reinterpret_cast<uchar *>(output.data());
     uchar *targetU = targetY + targetYSize;
     uchar *targetV = targetU + targetChromaSize;
+
+    // Fuse rotation, centre crop and nearest-neighbour scaling into a
+    // single source-to-destination pass per I420 plane. The previous
+    // implementation allocated and filled a complete rotated temporary
+    // plane before reading it again to crop/scale. Direct coordinate
+    // mapping produces the same pixel selection without those allocations
+    // or the extra full-frame memory pass.
+    auto transformPlane = [rotate270](
+        const uchar *input,
+        int inputWidth,
+        int inputHeight,
+        uchar *destination,
+        int outputWidth,
+        int outputHeight,
+        int left,
+        int top,
+        int cropPlaneWidth,
+        int cropPlaneHeight
+    ) {
+        const int rotatedPlaneWidth =
+            rotate270 ? inputHeight : inputWidth;
+        const int rotatedPlaneHeight =
+            rotate270 ? inputWidth : inputHeight;
+
+        for (int y = 0; y < outputHeight; ++y) {
+            const int rotatedY = top +
+                std::min(cropPlaneHeight - 1,
+                         y * cropPlaneHeight / outputHeight);
+            uchar *destinationRow =
+                destination + y * outputWidth;
+
+            for (int x = 0; x < outputWidth; ++x) {
+                const int rotatedX = left +
+                    std::min(cropPlaneWidth - 1,
+                             x * cropPlaneWidth / outputWidth);
+
+                const int sourceX = rotate270
+                    ? inputWidth - 1 - rotatedY
+                    : rotatedX;
+                const int sourceY = rotate270
+                    ? rotatedX
+                    : rotatedY;
+
+                // Keep the mapped coordinates bounded even when unusual
+                // aspect ratios produce an edge-aligned crop.
+                const int boundedX =
+                    std::min(inputWidth - 1, std::max(0, sourceX));
+                const int boundedY =
+                    std::min(inputHeight - 1, std::max(0, sourceY));
+
+                destinationRow[x] =
+                    input[boundedY * inputWidth + boundedX];
+            }
+        }
+
+        Q_UNUSED(rotatedPlaneWidth);
+        Q_UNUSED(rotatedPlaneHeight);
+    };
 
     transformPlane(
         sourceY, sourceWidth, sourceHeight,
