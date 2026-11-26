@@ -590,6 +590,7 @@ MainView {
             roomName: root.callRoomName
             directCall: chatPage.selectedRoomKind === "dm"
             audioState: chatPage.rtcAudioStatesByRoom[root.callRoomId] || ({})
+            membershipState: chatPage.rtcCallStatesByRoom[root.callRoomId] || ({})
 
             visible: astroBackend.storageReady &&
                      root.matrixAuthenticated &&
