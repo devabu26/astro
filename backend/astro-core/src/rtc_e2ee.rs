@@ -663,7 +663,7 @@ async fn legacy_memberships(room: &Room) -> Option<Vec<LegacyRtcMember>> {
 
             let Some(device_id_str) = entry.get("device_id").and_then(Value::as_str)
                 .filter(|value| !value.is_empty()) else { continue };
-            let Ok(device_id) = matrix_sdk::ruma::DeviceId::parse(device_id_str) else { continue };
+            let device_id: OwnedDeviceId = device_id_str.into();
 
             let expiry = entry.get("expires_ts").and_then(Value::as_u64).or_else(|| {
                 let duration = entry.get("expires").and_then(Value::as_u64)?;
