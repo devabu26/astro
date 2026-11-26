@@ -22,7 +22,47 @@ Item {
     property var participantAvatarRequests: ({})
 
 
-    property string pendingOperation: "";
+    property string pendingOperation: ""
+    property string actionError: ""
+
+    property bool audioStarted: false
+    property bool membershipJoined: false
+    property bool muted: false
+    property bool pendingMuted: false
+    property bool videoStarted: false
+    property bool screenShareStarted: false
+    property string screenShareRoomId: ""
+    property bool screenShareChoiceVisible: false
+    property bool screenShareAudioRequested: false
+    property bool cameraFrameGrabPending: false
+    property bool screenShareStopDispatched: false
+    property int screenShareStopDrainElapsedMs: 0
+    property string screenShareStopRoomId: ""
+    property bool applicationActive: Qt.application.state === Qt.ApplicationActive
+    property int applicationState: backend
+                                  ? backend.applicationState
+                                  : Qt.application.state
+    property int cameraFrameGrabAttempts: 0
+    property int cameraFrameGrabCompletions: 0
+    property int cameraFrameGrabFailures: 0
+    property double cameraFrameGrabStartedAt: 0
+    property bool waitingForForegroundCamera: false
+    property bool nativeBackgroundCameraStartPending: false
+    property bool nativeBackgroundCameraAttempted: false
+    property bool nativeBackgroundCameraRunning: false
+    property string nativeBackgroundCameraDeviceId: ""
+    property bool remoteAnswered: false
+    property string ringbackSource: ""
+
+    signal backRequested()
+    signal remoteVideoCleared(string identity, string source)
+
+    readonly property var participants:
+        audioState.participants || []
+
+    readonly property bool callActive:
+        audioState.active === true || audioStarted
+
     function participantProfile(identity) {
         identity = String(identity || "")
         if (!identity)
