@@ -2435,11 +2435,36 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
         return;
     }
 
-    // Stop producing frames immediately. LiveKit track unpublishing is
-    // started as a Tokio task and completed by pollRtcScreenShareStop().
     qInfo() << "ASTRO_SCREEN_SHARE_STOP: releasing local capture";
     stopRtcScreenShareCapture();
     qInfo() << "ASTRO_SCREEN_SHARE_STOP: local capture released";
+    beginRtcScreenShareUnpublish(roomId, QString());
+}
+
+void StorageWorker::beginRtcScreenShareUnpublish(
+    const QString &roomId,
+    const QString &completionError
+)
+{
+    if (!m_matrixClient || roomId.isEmpty()) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId,
+            completionError.isEmpty()
+                ? (!m_matrixClient
+                    ? QStringLiteral("No active Matrix session")
+                    : QStringLiteral("Room ID is empty"))
+                : completionError
+        );
+        return;
+    }
+
+    if (!m_rtcScreenShareStopPendingRoomId.isEmpty()) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId,
+            QStringLiteral("Another screen-share teardown is already running")
+        );
+        return;
+    }
 
     const QByteArray roomIdBytes = roomId.toUtf8();
     char *error = nullptr;
@@ -2447,10 +2472,15 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
         m_matrixClient, roomIdBytes.constData(), &error
     );
 
-    QString errorMessage;
+    QString errorMessage = completionError;
     if (error) {
-        errorMessage = QString::fromUtf8(error);
+        const QString ffiError = QString::fromUtf8(error);
         astro_string_free(error);
+        if (!ffiError.isEmpty()) {
+            if (!errorMessage.isEmpty())
+                errorMessage += QStringLiteral("; ");
+            errorMessage += ffiError;
+        }
     }
 
     if (result < 0) {
@@ -2461,16 +2491,62 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
     }
 
     if (result == 0) {
-        emit matrixRtcScreenShareActionFinished(roomId, QString());
+        emit matrixRtcScreenShareActionFinished(roomId, errorMessage);
         return;
     }
 
     m_rtcScreenShareStopPendingRoomId = roomId;
+    m_rtcScreenShareStopCompletionError = errorMessage;
     if (m_rtcScreenShareStopPollTimer)
         m_rtcScreenShareStopPollTimer->start();
-    qInfo() << "ASTRO_SCREEN_SHARE_STOP: LiveKit unpublish running asynchronously";
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: LiveKit unpublish running asynchronously"
+            << "room:" << roomId;
 }
 
+void StorageWorker::pollRtcScreenShareStop()
+{
+    if (m_rtcScreenShareStopPendingRoomId.isEmpty() || !m_matrixClient) {
+        if (m_rtcScreenShareStopPollTimer)
+            m_rtcScreenShareStopPollTimer->stop();
+        m_rtcScreenShareStopPendingRoomId.clear();
+        m_rtcScreenShareStopCompletionError.clear();
+        return;
+    }
+
+    const QString roomId = m_rtcScreenShareStopPendingRoomId;
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    char *error = nullptr;
+    const int32_t result = astro_matrix_poll_rtc_screenshare_stop(
+        m_matrixClient, roomIdBytes.constData(), &error
+    );
+
+    QString errorMessage = m_rtcScreenShareStopCompletionError;
+    if (error) {
+        const QString ffiError = QString::fromUtf8(error);
+        astro_string_free(error);
+        if (!ffiError.isEmpty()) {
+            if (!errorMessage.isEmpty())
+                errorMessage += QStringLiteral("; ");
+            errorMessage += ffiError;
+        }
+    }
+
+    if (result > 0)
+        return;
+
+    if (m_rtcScreenShareStopPollTimer)
+        m_rtcScreenShareStopPollTimer->stop();
+    m_rtcScreenShareStopPendingRoomId.clear();
+    m_rtcScreenShareStopCompletionError.clear();
+
+    if (result < 0 && errorMessage.isEmpty())
+        errorMessage = QStringLiteral("Could not finish LiveKit screen-share teardown");
+
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: asynchronous unpublish completed"
+            << "result:" << result
+            << "error:" << errorMessage;
+    emit matrixRtcScreenShareActionFinished(roomId, errorMessage);
+}
 void StorageWorker::pollRtcScreenShareStop()
 {
     if (m_rtcScreenShareStopPendingRoomId.isEmpty() || !m_matrixClient) {
