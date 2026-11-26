@@ -328,11 +328,6 @@ QByteArray transformI420Frame(
         int cropPlaneWidth,
         int cropPlaneHeight
     ) {
-        const int rotatedPlaneWidth =
-            rotate270 ? inputHeight : inputWidth;
-        const int rotatedPlaneHeight =
-            rotate270 ? inputWidth : inputHeight;
-
         for (int y = 0; y < outputHeight; ++y) {
             const int rotatedY = top +
                 std::min(cropPlaneHeight - 1,
@@ -363,9 +358,6 @@ QByteArray transformI420Frame(
                     input[boundedY * inputWidth + boundedX];
             }
         }
-
-        Q_UNUSED(rotatedPlaneWidth);
-        Q_UNUSED(rotatedPlaneHeight);
     };
 
     transformPlane(
