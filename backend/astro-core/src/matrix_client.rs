@@ -3613,6 +3613,7 @@ impl MatrixClientManager {
             {
                 let local_identity = session.room.local_participant().identity().to_string();
                 let mut local_key = None;
+                let mut remote_key_attempted = false;
 
                 // Remote keys may be installed at any time, but always restore
                 // the local key index last because LiveKit tracks one latest
@@ -3629,6 +3630,7 @@ impl MatrixClientManager {
                     }
 
                     let participant_identity = ParticipantIdentity::from(identity.clone());
+                    remote_key_attempted = true;
                     if provider.set_key(&participant_identity, i32::from(*index), key.clone()) {
                         session.e2ee_installed_keys.insert(cache_key, key.clone());
                         eprintln!(
@@ -3645,14 +3647,17 @@ impl MatrixClientManager {
 
                 if let Some((index, key)) = local_key {
                     let cache_key = (local_identity.clone(), index);
-                    let participant_identity = ParticipantIdentity::from(local_identity.clone());
-                    if provider.set_key(&participant_identity, i32::from(index), key.clone()) {
-                        session.e2ee_installed_keys.insert(cache_key, key);
-                    } else {
-                        eprintln!(
-                            "ASTRO RTC E2EE: LiveKit rejected local sender key index {}",
-                            index
-                        );
+                    let local_key_changed = session.e2ee_installed_keys.get(&cache_key) != Some(&key);
+                    if remote_key_attempted || local_key_changed {
+                        let participant_identity = ParticipantIdentity::from(local_identity.clone());
+                        if provider.set_key(&participant_identity, i32::from(index), key.clone()) {
+                            session.e2ee_installed_keys.insert(cache_key, key);
+                        } else {
+                            eprintln!(
+                                "ASTRO RTC E2EE: LiveKit rejected local sender key index {}",
+                                index
+                            );
+                        }
                     }
                 }
             }
