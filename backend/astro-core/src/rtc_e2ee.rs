@@ -86,8 +86,11 @@ impl RtcE2eeSession {
 
         let handle = runtime.spawn(async move {
             let event_type = ToDeviceEventType::from(RTC_KEY_EVENT);
-            let mut incoming = task_client
-                .subscribe_to_custom_to_device_messages(vec![event_type]);
+            // Matrix SDK returns a stream that is not Unpin; pin it so
+            // StreamExt::next can be used inside tokio::select!.
+            let mut incoming = Box::pin(
+                task_client.subscribe_to_custom_to_device_messages(vec![event_type]),
+            );
             let mut sticky_updates = task_room.sticky_events().subscribe();
             let mut rotation = tokio::time::interval(Duration::from_secs(15 * 60));
             // Skip interval's immediate first tick; the first key was generated above.
@@ -235,8 +238,11 @@ impl RtcE2eeSession {
 
         let handle = runtime.spawn(async move {
             let event_types = vec![ToDeviceEventType::from(LEGACY_RTC_KEY_EVENT)];
-            let mut incoming = task_client
-                .subscribe_to_custom_to_device_messages(event_types);
+            // Matrix SDK returns a stream that is not Unpin; pin it so
+            // StreamExt::next can be used inside tokio::select!.
+            let mut incoming = Box::pin(
+                task_client.subscribe_to_custom_to_device_messages(event_types),
+            );
             let mut poll = tokio::time::interval(Duration::from_secs(5));
             let mut rotation = tokio::time::interval(Duration::from_secs(15 * 60));
             poll.tick().await;
