@@ -2443,7 +2443,7 @@ void StorageWorker::startRtcScreenShare(
     // The actual capture and LiveKit dimensions are selected from Mir below.
     const QByteArray roomIdBytes = roomId.toUtf8();
     auto failStart = [this, &roomId](const QString &message) {
-        stopRtcScreenShareCapture();
+        stopRtcScreenShareCapture(roomId);
         beginRtcScreenShareUnpublish(roomId, message);
     };
 
@@ -2467,19 +2467,11 @@ void StorageWorker::startRtcScreenShare(
             << "socket:" << mirSocketPath
             << "threadName:" << currentThread->objectName()
             << "threadId:" << quintptr(QThread::currentThreadId());
-    // Reuse one Mir client connection for the lifetime of the worker.
-    // Releasing/reconnecting the app-facing Mir connection on every stop
-    // correlates with Qt Quick render stalls on Lomiri. Only the per-session
-    // screencast is released when the user stops sharing.
-    if (!m_rtcMirConnection ||
-        !mir_connection_is_valid(m_rtcMirConnection)) {
-        if (m_rtcMirConnection) {
-            mir_connection_release(m_rtcMirConnection);
-            m_rtcMirConnection = nullptr;
-        }
-        m_rtcMirConnection = mir_connect_sync(mirSocketPath.constData(), "Astro");
-    }
-    m_rtcScreenShareConnection = m_rtcMirConnection;
+    // Give each screen-share session its own Mir connection. Disconnecting
+    // this connection on stop lets Mir tear down the screencast without
+    // touching any other Astro or Lomiri client connection.
+    m_rtcScreenShareConnection = mir_connect_sync(
+        mirSocketPath.constData(), "Astro Screen Share");
     const bool mirConnectionValid =
         m_rtcScreenShareConnection &&
         mir_connection_is_valid(m_rtcScreenShareConnection);
@@ -2848,9 +2840,7 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
         m_rtcScreenShareTimer = nullptr;
     }
 
-    MirScreencast *screencast = m_rtcScreenCast;
-    m_rtcScreenCast = nullptr;
-    m_rtcScreenShareConnection = nullptr;
+    releaseRtcScreenShareMirConnection(roomId);
     m_rtcScreenShareStream = nullptr;
     m_rtcScreenShareRoomId.clear();
     m_rtcScreenShareWidth = 0;
@@ -2859,21 +2849,9 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
     m_rtcScreenShareLastFrameSent.invalidate();
     m_rtcScreenShareStartPending = false;
 
-    if (!screencast) {
-        // The persistent Mir connection is not part of this session's
-        // teardown and must not be released here.
-        beginRtcScreenShareUnpublish(roomId, QString());
-        return;
-    }
-
-    // DIAGNOSTIC ONLY: deliberately do not release this screencast.
-    // The previous release path has been associated with a UI presentation
-    // freeze. Keep the Mir resource allocated until Astro exits so this test
-    // can determine whether mir_screencast_release_sync() triggers the freeze.
-    // Do not use this build for repeated screen-share sessions.
-    qWarning() << "ASTRO_SCREEN_SHARE_STOP: DIAGNOSTIC - skipping Mir screencast release"
-               << "resource retained until process exit";
-
+    // Mir teardown runs on a dedicated connection in a background thread.
+    // The public C API only provides synchronous screencast destruction, so
+    // this diagnostic test disconnects the whole session instead.
     beginRtcScreenShareUnpublish(roomId, QString());
 }
 
@@ -2957,13 +2935,12 @@ void StorageWorker::beginRtcScreenShareUnpublish(
 void StorageWorker::pollRtcScreenShareStop()
 {
     // Keep the stop operation pending until both independent resources have
-    // actually finished: LiveKit must unpublish its tracks and Mir must release
-    // the screencast. This prevents a rapid restart from reusing Mir while the
-    // previous screencast is still being destroyed.
+    // actually finished: LiveKit must unpublish its tracks and the dedicated
+    // Mir connection must disconnect before another session can start.
     if (!m_rtcMirReleasePendingRoomId.isEmpty() &&
         m_rtcMirReleaseComplete &&
         m_rtcMirReleaseComplete->load(std::memory_order_acquire)) {
-        qInfo() << "ASTRO_SCREEN_SHARE_STOP: background Mir release finished"
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: dedicated Mir connection disconnected"
                 << "room:" << m_rtcMirReleasePendingRoomId;
         m_rtcMirReleasePendingRoomId.clear();
         m_rtcMirReleasePendingError.clear();
@@ -3247,7 +3224,41 @@ void StorageWorker::captureRtcScreenShareAudio()
 }
 
 
-void StorageWorker::stopRtcScreenShareCapture()
+void StorageWorker::releaseRtcScreenShareMirConnection(const QString &roomId)
+{
+    MirConnection *connection = m_rtcScreenShareConnection;
+    MirScreencast *screencast = m_rtcScreenCast;
+    m_rtcScreenShareConnection = nullptr;
+    m_rtcScreenCast = nullptr;
+    m_rtcScreenShareStream = nullptr;
+
+    if (!connection && !screencast)
+        return;
+
+    // The Mir C API has no non-blocking MirScreencast destructor. Closing the
+    // dedicated connection asks the server to release all session resources;
+    // the opaque client-side screencast wrapper is intentionally left for
+    // process teardown in this diagnostic experiment.
+    const auto completed = std::make_shared<std::atomic_bool>(false);
+    if (!roomId.isEmpty()) {
+        m_rtcMirReleasePendingRoomId = roomId;
+        m_rtcMirReleasePendingError.clear();
+        m_rtcMirReleaseComplete = completed;
+        if (m_rtcScreenShareStopPollTimer)
+            m_rtcScreenShareStopPollTimer->start();
+    }
+
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: disconnecting dedicated Mir connection"
+            << "connection:" << static_cast<const void *>(connection)
+            << "screencast:" << static_cast<const void *>(screencast);
+    std::thread([connection, completed]() {
+        if (connection)
+            mir_connection_release(connection);
+        completed->store(true, std::memory_order_release);
+    }).detach();
+}
+
+void StorageWorker::stopRtcScreenShareCapture(const QString &releaseRoomId)
 {
     if (m_rtcScreenShareAudioInput) {
         m_rtcScreenShareAudioInput->stop();
@@ -3264,18 +3275,9 @@ void StorageWorker::stopRtcScreenShareCapture()
         m_rtcScreenShareTimer = nullptr;
         qInfo() << "ASTRO_SCREEN_SHARE_STOP: capture timer stopped";
     }
-    if (m_rtcScreenCast) {
-        qInfo() << "ASTRO_SCREEN_SHARE_STOP: Mir screencast release begin";
-        mir_screencast_release_sync(m_rtcScreenCast);
-        m_rtcScreenCast = nullptr;
-        qInfo() << "ASTRO_SCREEN_SHARE_STOP: Mir screencast release complete";
-    }
-    // The stream is owned by MirScreencast and is released with it.
-    m_rtcScreenShareStream = nullptr;
-    // m_rtcScreenShareConnection aliases the worker-lifetime Mir
-    // connection. Keep it open so stopping a screencast does not tear down
-    // the application's Mir client connection.
-    m_rtcScreenShareConnection = nullptr;
+    const QString roomId = !releaseRoomId.isEmpty()
+        ? releaseRoomId : m_rtcScreenShareRoomId;
+    releaseRtcScreenShareMirConnection(roomId);
     m_rtcScreenShareRoomId.clear();
     m_rtcScreenShareWidth = 0;
     m_rtcScreenShareHeight = 0;
