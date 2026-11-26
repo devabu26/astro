@@ -526,6 +526,13 @@ fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMed
             media_key.get("key")?.as_str()?,
         )
     } else {
+        let session = content.get("session")?;
+        if session.get("application").and_then(Value::as_str) != Some("m.call")
+            || session.get("call_id").and_then(Value::as_str) != Some("")
+            || session.get("scope").and_then(Value::as_str) != Some("m.room")
+        {
+            return None;
+        }
         let member = content.get("member")?;
         let claimed_device_id = member.get("claimed_device_id")?.as_str()?;
         // Claimed device metadata is only a consistency check; Olm metadata
