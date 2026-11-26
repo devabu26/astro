@@ -80,6 +80,9 @@ impl RtcE2eeSession {
             let mut incoming = task_client
                 .subscribe_to_custom_to_device_messages(vec![event_type]);
             let mut sticky_updates = task_room.sticky_events().subscribe();
+            let mut rotation = tokio::time::interval(Duration::from_secs(15 * 60));
+            // Skip interval's immediate first tick; the first key was generated above.
+            rotation.tick().await;
             let mut pending = VecDeque::<PendingMediaKey>::new();
 
             publish_local_key(
@@ -109,6 +112,16 @@ impl RtcE2eeSession {
                             }
                             pending.push_back(candidate);
                         }
+                    }
+
+                    _ = rotation.tick() => {
+                        rotate_local_key(&task_local_key);
+                        publish_local_key(
+                            &task_client,
+                            &task_room,
+                            &local_member_id,
+                            &task_local_key,
+                        ).await;
                     }
 
                     update = sticky_updates.recv() => {
