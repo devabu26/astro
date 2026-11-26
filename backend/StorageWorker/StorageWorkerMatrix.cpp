@@ -1631,6 +1631,29 @@ public:
             return false;
         }
 
+        // Track native GL conversion independently from QML frames. Log
+        // only a small sample so diagnostics do not add per-frame overhead.
+        if (glTextureFrame) {
+            const int convertedFrame =
+                m_nativeI420ConversionCount.fetchAndAddRelaxed(1) + 1;
+            if (!m_nativeI420ConversionTimer.isValid())
+                m_nativeI420ConversionTimer.start();
+            if (convertedFrame <= 3 || convertedFrame % 30 == 0) {
+                const qint64 elapsedMs =
+                    m_nativeI420ConversionTimer.elapsed();
+                qInfo() << "ASTRO_RTC_CAMERA: native I420 conversion succeeded"
+                        << "frames:" << convertedFrame
+                        << "elapsedMs:" << elapsedMs
+                        << "averageFps:" << (elapsedMs > 0
+                            ? convertedFrame * 1000.0 / elapsedMs : 0.0)
+                        << "source:" << width << "x" << height
+                        << "format:" << format
+                        << "output:" << m_targetWidth << "x" << m_targetHeight
+                        << "bytes:" << m_i420Output.size()
+                        << "rotated270:" << rotate270;
+            }
+        }
+
         // QByteArray's implicit sharing gives the queued worker a stable
         // snapshot. The pending gate prevents this surface from writing the
         // reusable storage again until pushRtcVideoFrame() has returned.
@@ -1652,9 +1675,11 @@ public:
 
         const bool queued = QMetaObject::invokeMethod(
             worker,
-            [worker, pending, roomId, outputFrame, outputWidth, outputHeight]() {
+            [worker, pending, roomId, outputFrame, outputWidth, outputHeight,
+             nativeCameraFrame = glTextureFrame]() {
                 worker->pushRtcVideoFrame(
-                    roomId, outputWidth, outputHeight, outputFrame
+                    roomId, outputWidth, outputHeight, outputFrame,
+                    nativeCameraFrame
                 );
                 pending->storeRelease(0);
             },
@@ -1686,6 +1711,8 @@ private:
     QElapsedTimer m_frameDiagnosticTimer;
     QAtomicInt m_glFrameCount{0};
     QElapsedTimer m_glFrameDiagnosticTimer;
+    QAtomicInt m_nativeI420ConversionCount{0};
+    QElapsedTimer m_nativeI420ConversionTimer;
     QAtomicInt m_loggedInvalidFrame{0};
     QAtomicInt m_loggedInvalidDimensions{0};
     QAtomicInt m_loggedMapFailure{0};
@@ -2561,7 +2588,8 @@ void StorageWorker::pushRtcVideoFrame(
     const QString &roomId,
     int width,
     int height,
-    const QByteArray &i420
+    const QByteArray &i420,
+    bool nativeCameraFrame
 )
 {
     if (!m_matrixClient || roomId.isEmpty())
@@ -2592,6 +2620,18 @@ void StorageWorker::pushRtcVideoFrame(
                loggedCameraSubmissionError.testAndSetOrdered(0, 1)) {
         qWarning() << "RTC video frame submission failed"
                    << "frame:" << width << "x" << height;
+    } else if (nativeCameraFrame) {
+        static QAtomicInt nativeSuccessfulSubmissions{0};
+        const int submitted =
+            nativeSuccessfulSubmissions.fetchAndAddRelaxed(1) + 1;
+        if (submitted <= 3 || submitted % 30 == 0) {
+            qInfo() << "ASTRO_RTC_CAMERA: native LiveKit frame submission succeeded"
+                    << "frames:" << submitted
+                    << "size:" << width << "x" << height
+                    << "i420Bytes:" << i420.size()
+                    << "result:" << result
+                    << "room:" << roomId;
+        }
     }
 }
 
