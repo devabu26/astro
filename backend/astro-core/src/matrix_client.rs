@@ -2471,6 +2471,35 @@ impl MatrixClientManager {
     }
 
 
+    /// Decline a specific incoming MatrixRTC ring using MSC4310.
+    pub fn decline_rtc_call(&self, room_id: &str, notification_event_id: &str) -> Result<(), String> {
+        let room_id = room_id.trim();
+        let notification_event_id = notification_event_id.trim();
+        if room_id.is_empty() || notification_event_id.is_empty() {
+            return Err("Room ID and call notification event ID are required".into());
+        }
+        let client = self.client.as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?
+            .clone();
+        let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+            .map_err(|error| format!("Invalid room ID: {error}"))?;
+        let parsed_event_id = matrix_sdk::ruma::EventId::parse(notification_event_id)
+            .map_err(|error| format!("Invalid call notification event ID: {error}"))?;
+        self.runtime.block_on(async move {
+            let room = client.get_room(&parsed_room_id)
+                .ok_or_else(|| "The call's Matrix room is no longer available".to_string())?;
+            let content = serde_json::json!({
+                "m.relates_to": {
+                    "rel_type": "m.reference",
+                    "event_id": parsed_event_id.as_str()
+                }
+            });
+            room.send_raw("org.matrix.msc4310.rtc.decline", content).await
+                .map_err(|error| format!("Could not decline the MatrixRTC call: {error}"))?;
+            Ok(())
+        })
+    }
+
     /// Publish Astro's membership-only presence using Element Call compatibility state.
     pub fn join_rtc_room(&mut self, room_id: &str) -> Result<(), String> {
         let room_id = room_id.trim();
