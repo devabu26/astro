@@ -1734,9 +1734,6 @@ void StorageWorker::startRtcBackgroundCamera(
                                    << static_cast<int>(cameraError)
                                    << message;
 
-                        const bool wasPending =
-                            m_rtcBackgroundCameraStartPending &&
-                            m_rtcBackgroundCameraPendingRoomId == roomId;
                         m_rtcBackgroundCameraStartPending = false;
                         m_rtcBackgroundCameraPendingRoomId.clear();
                         m_rtcBackgroundCameraPendingDeviceId.clear();
