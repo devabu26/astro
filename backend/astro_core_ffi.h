@@ -220,6 +220,12 @@ char *astro_matrix_poll_room_timeline_updates_json(
     char **error_out
 );
 
+int32_t astro_matrix_decline_rtc_call(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    const char *notification_event_id,
+    char **error_out
+);
 int32_t astro_matrix_join_rtc_room(AstroMatrixClient *handle, const char *room_id, char **error_out);
 int32_t astro_matrix_leave_rtc_room(AstroMatrixClient *handle, const char *room_id, char **error_out);
 int32_t astro_matrix_start_rtc_audio(
