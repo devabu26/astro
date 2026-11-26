@@ -246,8 +246,8 @@ Item {
                     text: root.actionPending
                           ? "Updating call presence..."
                           : root.joinedByMe
-                            ? "Leave call presence"
-                            : "Join call presence"
+                            ? "Leave Call"
+                            : "Join Call"
                     color: "white"
                     font.pixelSize: units.gu(1.4)
                     font.bold: true
