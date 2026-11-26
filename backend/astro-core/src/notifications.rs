@@ -169,8 +169,9 @@ pub fn register_incoming_call_handler(client: &Client, queue: NotificationQueue)
                 }
 
                 let call_intent = match event.content.call_intent.as_ref() {
+                    Some(CallIntent::Audio) => "audio",
                     Some(CallIntent::Video) => "video",
-                    _ => "audio",
+                    None => "unknown",
                 };
 
                 queue.push_incoming_call(IncomingCallEvent {
