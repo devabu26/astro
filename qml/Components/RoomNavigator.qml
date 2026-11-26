@@ -8,6 +8,8 @@ Item {
 
     property var roomsModel
     property string selectedRoom: ""
+    // Active MatrixRTC memberships indexed by room ID.
+    property var rtcMembershipsByRoom: ({})
 
     // Navigation controls supplied by ChatPage.
     property string filterMode: "all"
@@ -69,6 +71,42 @@ Item {
         for (var i = 0; i < parents.length; i++) {
             if (String(parents[i]) === String(parentId))
                 return true
+        }
+
+        return false
+    }
+
+    // A room is in an ongoing call while at least one unexpired
+    // MatrixRTC membership is present in its current state snapshot.
+    function roomHasOngoingCall(roomId) {
+        var memberships = root.rtcMembershipsByRoom[String(roomId)] || []
+        return Array.isArray(memberships) && memberships.length > 0
+    }
+
+    // A Space shows the same indicator when any descendant room,
+    // including rooms nested in child Spaces, has an active call.
+    function spaceHasOngoingCall(spaceId, ancestors) {
+        var visited = ancestors ? ancestors.slice() : []
+        var id = String(spaceId)
+
+        if (visited.indexOf(id) !== -1 || !root.roomsModel)
+            return false
+
+        visited.push(id)
+
+        for (var i = 0; i < root.roomsModel.count; i++) {
+            var child = root.roomsModel.get(i)
+
+            if (!hasParent(child, id))
+                continue
+
+            if (child.kind === "space") {
+                if (spaceHasOngoingCall(child.roomId, visited))
+                    return true
+            } else if (child.kind === "room" || child.kind === "dm") {
+                if (roomHasOngoingCall(child.roomId))
+                    return true
+            }
         }
 
         return false
@@ -692,6 +730,10 @@ Item {
             property string entryColour: model.colour || "#526575"
             property string entryKind: model.kind || ""
             property string entryRoomId: model.roomId || ""
+            property bool entryHasOngoingCall:
+                entryRowType === "space"
+                ? root.spaceHasOngoingCall(entryRoomId, [])
+                : root.roomHasOngoingCall(entryRoomId)
             property int entryUnreadCount: Number(model.unreadCount || 0)
             property int entryMentionCount: Number(model.mentionCount || 0)
             property int entryDepth: model.depth === undefined ? 0 : model.depth
@@ -982,18 +1024,35 @@ Item {
                             elide: Text.ElideRight
                         }
 
-                        Text {
+                        Row {
                             width: parent.width
+                            spacing: units.gu(0.6)
 
-                            text: entryPreview
-                            color: "#9aabba"
+                            Rectangle {
+                                width: units.gu(0.9)
+                                height: width
+                                radius: width / 2
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: "#35c759"
+                                visible: entryHasOngoingCall
+                            }
 
-                            font.pixelSize:
-                                entryDepth === 0
-                                ? units.gu(1.5)
-                                : units.gu(1.25)
+                            Text {
+                                width: parent.width -
+                                       (entryHasOngoingCall
+                                        ? units.gu(1.5)
+                                        : 0)
 
-                            elide: Text.ElideRight
+                                text: entryPreview
+                                color: "#9aabba"
+
+                                font.pixelSize:
+                                    entryDepth === 0
+                                    ? units.gu(1.5)
+                                    : units.gu(1.25)
+
+                                elide: Text.ElideRight
+                            }
                         }
                     }
                 }
