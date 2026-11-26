@@ -41,63 +41,6 @@ Item {
     property bool remoteAnswered: false
     property string ringbackSource: ""
 
-    // Keep requesting frames while Mir tears down its screencast. Do not
-    // call QQuickWindow.releaseResources() here: on Qt 5.12/Lomiri that can
-    // force a scene-graph teardown at exactly the point the compositor is
-    // recovering from Mir screencast release.
-    property int screenShareRenderRecoveryTicks: 0
-
-    Timer {
-        id: screenShareRenderRecoveryTimer
-        interval: 100
-        repeat: true
-        running: false
-
-        onTriggered: {
-            var window = root.Window.window
-            if (window && window.visible &&
-                    Qt.application.state === Qt.ApplicationActive) {
-                window.update()
-            }
-
-            root.screenShareRenderRecoveryTicks--
-            if (root.screenShareRenderRecoveryTicks <= 0)
-                stop()
-        }
-    }
-
-    function refreshAfterScreenShareStop() {
-        // Cover both the asynchronous Mir release and LiveKit unpublish,
-        // then continue briefly after their completion.
-        root.screenShareRenderRecoveryTicks = 40
-        screenShareRenderRecoveryTimer.restart()
-    }
-
-    Timer {
-        id: foregroundCameraRestartTimer
-        interval: 750
-        repeat: false
-
-        onTriggered: {
-            if (!root.applicationActive ||
-                    !root.videoStarted ||
-                    !root.waitingForForegroundCamera)
-                return
-
-            if (root.nativeBackgroundCameraDeviceId.length > 0 &&
-                    localCamera.deviceId !== root.nativeBackgroundCameraDeviceId) {
-                localCamera.deviceId = root.nativeBackgroundCameraDeviceId
-            }
-
-            root.nativeBackgroundCameraDeviceId = ""
-            root.waitingForForegroundCamera = false
-            console.info(
-                "ASTRO_BACKGROUND_CAMERA: restarting QML camera after graphics teardown settling period"
-            )
-            localCamera.start()
-        }
-    }
-
     signal backRequested()
     signal remoteVideoCleared(string identity, string source)
 
@@ -324,7 +267,7 @@ Item {
             screenShareRoomId = ""
 
             // Request Qt Quick frames throughout compositor teardown.
-            refreshAfterScreenShareStop()
+
             backend.stopRtcScreenShare(roomId)
         } else {
             screenShareChoiceVisible = true
@@ -911,7 +854,7 @@ Item {
                 }
                 if (operation === "stopScreenShare" ||
                     operation === "stopScreenShareForHangup") {
-                    root.refreshAfterScreenShareStop()
+
                 }
                 return
             }
@@ -939,7 +882,7 @@ Item {
 
             if (operation === "stopScreenShare" ||
                 operation === "stopScreenShareForHangup") {
-                root.refreshAfterScreenShareStop()
+
             }
         }
 
