@@ -7,7 +7,7 @@ Item {
     property string caller: ""
     property string roomId: ""
     property string eventId: ""
-    property string callIntent: "audio"
+    property string callIntent: "unknown"
 
     signal openRequested(string roomId, string eventId)
 
@@ -18,7 +18,7 @@ Item {
         caller = sender || "Someone"
         roomId = incomingRoomId || ""
         eventId = incomingEventId || ""
-        callIntent = intent === "video" ? "video" : "audio"
+        callIntent = intent === "video" || intent === "audio" ? intent : "unknown"
         expiryTimer.restart()
     }
 
@@ -27,7 +27,7 @@ Item {
         caller = ""
         roomId = ""
         eventId = ""
-        callIntent = "audio"
+        callIntent = "unknown"
     }
 
     Timer {
@@ -57,7 +57,8 @@ Item {
 
             Label {
                 width: parent.width
-                text: root.callIntent === "video" ? "Incoming video call" : "Incoming voice call"
+                text: root.callIntent === "video" ? "Incoming video call" :
+                    (root.callIntent === "audio" ? "Incoming voice call" : "Incoming call")
                 color: "white"
                 font.bold: true
                 fontSize: "large"
