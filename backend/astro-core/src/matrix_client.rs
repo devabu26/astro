@@ -4051,6 +4051,7 @@ impl MatrixClientManager {
         })?;
 
         self.rtc_local_memberships.remove(room_id);
+        self.rtc_outgoing_call_notifications.remove(room_id);
         self.rtc_modern_memberships.remove(room_id);
         self.rtc_e2ee_sessions.remove(room_id);
         if let Ok(mut renewals) = self.rtc_modern_renewals.lock() { renewals.remove(room_id); }
