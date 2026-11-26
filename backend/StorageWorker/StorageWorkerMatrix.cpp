@@ -165,16 +165,17 @@ static void rgbaToChromaRowsNeon(
 
 #endif
 
-QByteArray rgbaFrameToI420(
+bool rgbaFrameToI420(
     const QByteArray &rgba,
     int width,
-    int height
+    int height,
+    QByteArray &output
 )
 {
     if (width < 2 || height < 2 ||
         (width & 1) || (height & 1) ||
         rgba.size() != width * height * 4) {
-        return QByteArray();
+        return false;
     }
 
     const QImage image(
@@ -185,11 +186,17 @@ QByteArray rgbaFrameToI420(
         QImage::Format_RGBA8888
     );
     if (image.isNull())
-        return QByteArray();
+        return false;
 
     const int ySize = width * height;
     const int chromaSize = ySize / 4;
-    QByteArray output(ySize + chromaSize * 2, Qt::Uninitialized);
+    const int outputSize = ySize + chromaSize * 2;
+
+    // Keep the destination owned by StorageWorker. resize() does not
+    // allocate again while the frame dimensions remain unchanged.
+    if (output.size() != outputSize)
+        output.resize(outputSize);
+
     uchar *yOut = reinterpret_cast<uchar *>(output.data());
     uchar *uOut = yOut + ySize;
     uchar *vOut = uOut + chromaSize;
@@ -247,7 +254,7 @@ QByteArray rgbaFrameToI420(
 #endif
     }
 
-    return output;
+    return true;
 }
 
 QByteArray transformI420Frame(
@@ -2675,12 +2682,15 @@ void StorageWorker::captureRtcScreenShareFrame()
     const qint64 copyUs = stageClock.nsecsElapsed() / 1000;
 
     stageClock.restart();
-    const QByteArray i420 = rgbaFrameToI420(
-        m_rtcScreenShareLastFrame, width, height
+    const bool converted = rgbaFrameToI420(
+        m_rtcScreenShareLastFrame,
+        width,
+        height,
+        m_rtcScreenShareI420Frame
     );
     const qint64 convertUs = stageClock.nsecsElapsed() / 1000;
     const QByteArray roomBytes = roomId.toUtf8();
-    if (i420.isEmpty()) {
+    if (!converted) {
         stopRtcScreenShareCapture();
         beginRtcScreenShareUnpublish(
             roomId,
@@ -2694,8 +2704,8 @@ void StorageWorker::captureRtcScreenShareFrame()
     const int32_t pushResult = astro_matrix_push_rtc_screenshare_frame(
         m_matrixClient, roomBytes.constData(),
         static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-        reinterpret_cast<const uint8_t *>(i420.constData()),
-        static_cast<uint64_t>(i420.size()), &frameError);
+        reinterpret_cast<const uint8_t *>(m_rtcScreenShareI420Frame.constData()),
+        static_cast<uint64_t>(m_rtcScreenShareI420Frame.size()), &frameError);
     QString failure;
     if (frameError) {
         failure = QString::fromUtf8(frameError);
