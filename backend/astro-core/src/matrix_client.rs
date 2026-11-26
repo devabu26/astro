@@ -990,6 +990,7 @@ impl MatrixClientManager {
                     "member_count": info.joined_members_count(),
                     "unread_count": room.unread_notification_counts().notification_count,
                     "mention_count": room.unread_notification_counts().highlight_count,
+                    "last_activity": room.latest_event_timestamp().map(|timestamp| timestamp.get()),
                     "parent_space_ids": parents
                 }));
             }
@@ -1652,6 +1653,7 @@ impl MatrixClientManager {
                     "member_count": info.joined_members_count(),
                     "unread_count": room.unread_notification_counts().notification_count,
                     "mention_count": room.unread_notification_counts().highlight_count,
+                    "last_activity": room.latest_event_timestamp().map(|timestamp| timestamp.get()),
                     "parent_space_ids": parents
                 }));
             }
