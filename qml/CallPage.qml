@@ -266,8 +266,6 @@ Item {
             screenShareAudioRequested = false
             screenShareRoomId = ""
 
-            // Request Qt Quick frames throughout compositor teardown.
-
             backend.stopRtcScreenShare(roomId)
         } else {
             screenShareChoiceVisible = true
