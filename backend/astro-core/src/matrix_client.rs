@@ -937,9 +937,9 @@ impl MatrixClientManager {
             // insufficient.
             let mut top_level_space_activity: HashMap<String, u64> = HashMap::new();
             for joined_room in &joined_rooms {
-                let timestamp = joined_room
+                let timestamp: u64 = joined_room
                     .latest_event_timestamp()
-                    .map(|value| value.get())
+                    .map(|value| value.get().into())
                     .unwrap_or(0);
 
                 if timestamp == 0 {
@@ -1629,9 +1629,9 @@ impl MatrixClientManager {
             // descendant room, including rooms nested under child Spaces.
             let mut top_level_space_activity: HashMap<String, u64> = HashMap::new();
             for joined_room in &joined_rooms {
-                let timestamp = joined_room
+                let timestamp: u64 = joined_room
                     .latest_event_timestamp()
-                    .map(|value| value.get())
+                    .map(|value| value.get().into())
                     .unwrap_or(0);
 
                 if timestamp == 0 {
