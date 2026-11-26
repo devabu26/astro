@@ -1175,6 +1175,10 @@ public:
         << static_cast<int>(type);
         
         if (type == QAbstractVideoBuffer::GLTextureHandle) {
+            if (m_allowGlTextureFrames.loadAcquire() == 0) {
+                qInfo() << "RTC camera withholding GL formats during CPU-frame probe";
+                return {};
+            }
             // The Ubuntu Touch camera backend supplies RGB32 frames backed
             // by GL_TEXTURE_2D. RtcCameraVideoSurface::present() reads these
             // back synchronously through the worker's shared context before
@@ -1209,12 +1213,23 @@ public:
         return m_surfaceStarted.loadAcquire() != 0;
     }
 
+    void setAllowGlTextureFrames(bool allow)
+    {
+        m_allowGlTextureFrames.storeRelease(allow ? 1 : 0);
+    }
+
     bool start(const QVideoSurfaceFormat &format) override
     {
         const bool glTextureFormat =
             format.handleType() == QAbstractVideoBuffer::GLTextureHandle;
 
         if (glTextureFormat) {
+            if (m_allowGlTextureFrames.loadAcquire() == 0) {
+                m_surfaceStarted.storeRelease(0);
+                qInfo() << "RTC camera declining GL texture format during CPU-frame probe"
+                        << format.pixelFormat() << format.frameSize();
+                return false;
+            }
             // Do not accept a GL surface unless the worker's shared context
             // can actually be made current. present() uses this context for
             // synchronous texture-to-CPU readback.
@@ -1709,6 +1724,7 @@ private:
     QByteArray m_i420Input;
     QByteArray m_i420Output;
     QAtomicInt m_surfaceStarted{0};
+    QAtomicInt m_allowGlTextureFrames{1};
     QAtomicInt m_loggedFrameCount{0};
     QElapsedTimer m_frameDiagnosticTimer;
     QAtomicInt m_glFrameCount{0};
@@ -2026,16 +2042,43 @@ void StorageWorker::startRtcBackgroundCamera(
                             // and performs a synchronous readback while the
                             // camera frame/texture is still valid.
                             if (cameraSettings.isEmpty()) {
-                                qWarning() << "ASTRO_BACKGROUND_CAMERA: camera backend"
-                                           << "exposes no viewfinder settings; using"
-                                           << "supported GL texture readback"
-                                           << "device:"
-                                           << m_rtcBackgroundCameraPendingDeviceId;
+                                qInfo() << "ASTRO_BACKGROUND_CAMERA: camera backend"
+                                        << "exposes no viewfinder settings; probing"
+                                        << "CPU-backed frames first"
+                                        << "device:"
+                                        << m_rtcBackgroundCameraPendingDeviceId;
 
+                                // Prefer CPU-mappable NoHandle frames when the
+                                // backend supports them. If it cannot start a
+                                // CPU surface, retry the known-working GL path.
+                                m_rtcVideoSurface->setAllowGlTextureFrames(false);
                                 m_rtcCamera->setViewfinder(m_rtcVideoSurface);
 
+                                QCamera *probeCamera = m_rtcCamera;
+                                RtcCameraVideoSurface *probeSurface = m_rtcVideoSurface;
+                                QTimer::singleShot(2500, this,
+                                    [this, roomId, probeCamera, probeSurface]() {
+                                        if (m_rtcCamera != probeCamera ||
+                                            m_rtcVideoSurface != probeSurface ||
+                                            m_rtcVideoRoomId != roomId ||
+                                            probeSurface->hasAcceptedFormat()) {
+                                            return;
+                                        }
+
+                                        qWarning() << "ASTRO_BACKGROUND_CAMERA: CPU-backed"
+                                                   << "viewfinder probe was not accepted;"
+                                                   << "retrying GL texture readback";
+
+                                        probeSurface->setAllowGlTextureFrames(true);
+                                        probeCamera->setViewfinder(
+                                            static_cast<QAbstractVideoSurface *>(nullptr)
+                                        );
+                                        probeCamera->setViewfinder(probeSurface);
+                                    }
+                                );
+
                                 qInfo() << "ASTRO_BACKGROUND_CAMERA: starting camera"
-                                        << "with GL texture readback enabled";
+                                        << "with CPU-backed frame probe";
 
                                 m_rtcNativeGlFrameCount.storeRelease(0);
                                 m_rtcNativeGlWatchdogPreviousCount = 0;
