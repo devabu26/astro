@@ -1649,9 +1649,10 @@ void StorageWorker::startRtcBackgroundCamera(
             errorMessage = QStringLiteral(
                 "The LiveKit camera track is not ready"
             );
+        } else if (m_rtcBackgroundCameraStartPending) {
+            // An app-state transition can issue duplicate start requests.
+            return;
         } else {
-            // The QML camera is stopped before this queued request arrives.
-            // Native capture now owns the device while Qt Quick is inactive.
             if (m_rtcCamera) {
                 m_rtcCamera->stop();
                 m_rtcCamera->setViewfinder(
@@ -1681,9 +1682,44 @@ void StorageWorker::startRtcBackgroundCamera(
                     "No native camera device is available"
                 );
             } else {
+                selectedDeviceId = selected.deviceName();
                 m_rtcCamera = new QCamera(selected, this);
                 m_rtcCamera->setCaptureMode(QCamera::CaptureVideo);
                 m_rtcCamera->setViewfinder(m_rtcVideoSurface);
+
+                m_rtcBackgroundCameraStartPending = true;
+                m_rtcBackgroundCameraPendingRoomId = roomId;
+                m_rtcBackgroundCameraPendingDeviceId = selectedDeviceId;
+
+                connect(
+                    m_rtcCamera,
+                    &QCamera::statusChanged,
+                    this,
+                    [this, roomId](QCamera::Status status) {
+                        if (!m_rtcBackgroundCameraStartPending ||
+                            m_rtcBackgroundCameraPendingRoomId != roomId ||
+                            !m_rtcCamera)
+                            return;
+
+                        qInfo() << "RTC background camera status:"
+                                << static_cast<int>(status)
+                                << "available:" << m_rtcCamera->isAvailable();
+
+                        if (status == QCamera::ActiveStatus) {
+                            m_rtcBackgroundCameraStartPending = false;
+                            const QString activeDevice =
+                                m_rtcBackgroundCameraPendingDeviceId;
+                            m_rtcBackgroundCameraPendingRoomId.clear();
+                            m_rtcBackgroundCameraPendingDeviceId.clear();
+                            qInfo() << "RTC native background camera is active:"
+                                    << activeDevice;
+                            emit matrixRtcBackgroundCameraActionFinished(
+                                roomId, true, activeDevice, QString()
+                            );
+                        }
+                    },
+                    Qt::QueuedConnection
+                );
 
                 connect(
                     m_rtcCamera,
@@ -1697,44 +1733,79 @@ void StorageWorker::startRtcBackgroundCamera(
                         qWarning() << "RTC background camera error:"
                                    << static_cast<int>(cameraError)
                                    << message;
+
+                        const bool wasPending =
+                            m_rtcBackgroundCameraStartPending &&
+                            m_rtcBackgroundCameraPendingRoomId == roomId;
+                        m_rtcBackgroundCameraStartPending = false;
+                        m_rtcBackgroundCameraPendingRoomId.clear();
+                        m_rtcBackgroundCameraPendingDeviceId.clear();
+
                         stopRtcBackgroundCamera(roomId);
-                        emit matrixRtcBackgroundCameraActionFinished(
-                            roomId,
-                            false,
-                            QString(),
-                            message
-                        );
+                        if (wasPending) {
+                            emit matrixRtcBackgroundCameraActionFinished(
+                                roomId, false, QString(), message
+                            );
+                        }
                     },
                     Qt::QueuedConnection
                 );
 
                 m_rtcCamera->start();
-                if (!m_rtcCamera->isAvailable()) {
-                    errorMessage = QStringLiteral(
-                        "The native camera could not be opened"
+
+                // Some camera backends transition synchronously before the
+                // statusChanged connection is dispatched.
+                if (m_rtcCamera->status() == QCamera::ActiveStatus) {
+                    m_rtcBackgroundCameraStartPending = false;
+                    m_rtcBackgroundCameraPendingRoomId.clear();
+                    m_rtcBackgroundCameraPendingDeviceId.clear();
+                    qInfo() << "RTC native background camera activated:"
+                            << selected.description() << selectedDeviceId;
+                    emit matrixRtcBackgroundCameraActionFinished(
+                        roomId, true, selectedDeviceId, QString()
                     );
-                    m_rtcCamera->stop();
-                    m_rtcCamera->setViewfinder(
-                        static_cast<QAbstractVideoSurface *>(nullptr)
-                    );
-                    delete m_rtcCamera;
-                    m_rtcCamera = nullptr;
-                } else {
-                    selectedDeviceId = selected.deviceName();
-                    qInfo() << "RTC native background capture started:"
-                            << selected.description()
-                            << selectedDeviceId;
+                    return;
                 }
+
+                // Device availability only means that a service exists. It
+                // does not mean that capture has started. Wait for ActiveStatus
+                // and fail explicitly if the backend never activates.
+                QTimer::singleShot(8000, this, [this, roomId]() {
+                    if (!m_rtcBackgroundCameraStartPending ||
+                        m_rtcBackgroundCameraPendingRoomId != roomId)
+                        return;
+
+                    const QString message = m_rtcCamera
+                        ? m_rtcCamera->errorString()
+                        : QStringLiteral("The native camera disappeared");
+                    m_rtcBackgroundCameraStartPending = false;
+                    m_rtcBackgroundCameraPendingRoomId.clear();
+                    m_rtcBackgroundCameraPendingDeviceId.clear();
+
+                    stopRtcBackgroundCamera(roomId);
+                    emit matrixRtcBackgroundCameraActionFinished(
+                        roomId,
+                        false,
+                        QString(),
+                        message.isEmpty()
+                            ? QStringLiteral(
+                                "The native camera did not become active within 8 seconds"
+                              )
+                            : message
+                    );
+                });
+
+                qInfo() << "RTC native background camera start requested; awaiting ActiveStatus:"
+                        << selected.description() << selectedDeviceId;
             }
         }
     }
 
-    emit matrixRtcBackgroundCameraActionFinished(
-        roomId,
-        errorMessage.isEmpty(),
-        selectedDeviceId,
-        errorMessage
-    );
+    if (!errorMessage.isEmpty()) {
+        emit matrixRtcBackgroundCameraActionFinished(
+            roomId, false, QString(), errorMessage
+        );
+    }
 }
 
 void StorageWorker::stopRtcBackgroundCamera(const QString &roomId)
