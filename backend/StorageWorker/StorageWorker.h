@@ -519,8 +519,12 @@ private:
     MirBufferStream *m_rtcScreenShareStream = nullptr;
     QTimer *m_rtcScreenShareTimer = nullptr;
     QTimer *m_rtcScreenShareStopPollTimer = nullptr;
+    // Covers the complete stop operation, including both LiveKit
+    // unpublish and asynchronous Mir screencast release.
     QString m_rtcScreenShareStopPendingRoomId;
     QString m_rtcScreenShareStopCompletionError;
+    bool m_rtcScreenShareUnpublishStarted = false;
+    bool m_rtcScreenShareUnpublishFinished = false;
     QString m_rtcMirReleasePendingRoomId;
     QString m_rtcMirReleasePendingError;
     std::shared_ptr<std::atomic_bool> m_rtcMirReleaseComplete;
