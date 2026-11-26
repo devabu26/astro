@@ -131,7 +131,8 @@ public slots:
         const QString &roomId,
         int width,
         int height,
-        const QByteArray &i420
+        const QByteArray &i420,
+        bool nativeCameraFrame = false
     );
     void stopRtcVideo(const QString &roomId);
 
