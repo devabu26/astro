@@ -423,27 +423,27 @@ Backend::Backend(QObject *parent)
 
     connect(
         this,
-    connect(
-        this,
-    connect(
-        this,
         &Backend::requestAcceptRtcCall,
         m_storageWorker,
         &StorageWorker::acceptRtcCall,
         Qt::QueuedConnection
     );
 
+    connect(
+        this,
         &Backend::requestDeclineRtcCall,
         m_storageWorker,
         &StorageWorker::declineRtcCall,
         Qt::QueuedConnection
     );
 
+    connect(
+        this,
         &Backend::requestJoinRtcRoom,
-       m_storageWorker,
-       &StorageWorker::joinRtcRoom,
-       Qt::QueuedConnection
-   );
+        m_storageWorker,
+        &StorageWorker::joinRtcRoom,
+        Qt::QueuedConnection
+    );
 
    connect(
        this,
