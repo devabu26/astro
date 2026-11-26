@@ -6,8 +6,6 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use base64::Engine as _;
-use sha2::{Digest, Sha256};
 
 use futures_util::StreamExt;
 use matrix_sdk::{
@@ -79,7 +77,7 @@ impl RtcE2eeSession {
             activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
         }));
         let received_keys = Arc::new(Mutex::new(BTreeMap::new()));
-        let local_livekit_identity = matrix_livekit_identity(&client, &local_member_id)?;
+        let local_livekit_identity = legacy_livekit_identity(&client)?;
 
         let task_local_key = Arc::clone(&local_key);
         let task_received_keys = Arc::clone(&received_keys);
@@ -387,18 +385,6 @@ impl Drop for RtcE2eeSession {
     }
 }
 
-fn matrix_livekit_identity(client: &Client, member_id: &str) -> Result<String, String> {
-    let user_id = client.user_id()
-        .ok_or_else(|| "Matrix user ID is unavailable for LiveKit E2EE identity".to_string())?;
-    Ok(matrix_livekit_identity_from_parts(user_id.as_str(), member_id))
-}
-
-fn matrix_livekit_identity_from_parts(sender: &str, member_id: &str) -> String {
-    // MSC4195: Base64-no-pad(SHA-256(Canonical JSON([sender, member.id]))).
-    let canonical = serde_json::to_vec(&[sender, member_id])
-        .expect("serializing two strings as canonical JSON cannot fail");
-    base64::engine::general_purpose::STANDARD_NO_PAD.encode(Sha256::digest(canonical))
-}
 fn legacy_livekit_identity(client: &Client) -> Result<String, String> {
     let user_id = client.user_id()
         .ok_or_else(|| "Matrix user ID is unavailable for LiveKit E2EE identity".to_string())?;
@@ -666,10 +652,7 @@ async fn try_store_received_key(
             keys.insert(
     (candidate.member_id.clone(), candidate.index),
     ReceivedMediaKey {
-        livekit_identity: matrix_livekit_identity_from_parts(
-            candidate.sender.as_str(),
-            &candidate.member_id,
-        ),
+        livekit_identity: format!("{}:{}", candidate.sender, candidate.sender_device),
         bytes: candidate.bytes.clone(),
         activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
     },
@@ -884,19 +867,6 @@ async fn try_store_received_key_legacy(
         );
     }
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::matrix_livekit_identity_from_parts;
-
-    #[test]
-    fn msc4195_participant_identity_matches_spec_vector() {
-        assert_eq!(
-            matrix_livekit_identity_from_parts("@alice:example.com", "memberABC"),
-            "M3VnsLXrkbxIDINXO64u8PZzFyD9ZYFiQULR2dshWYs",
-        );
-    }
 }
 
 fn encode_base64_no_pad(bytes: &[u8]) -> String {
