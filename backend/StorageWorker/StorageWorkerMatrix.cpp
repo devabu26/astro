@@ -1168,6 +1168,11 @@ public:
         };
     }
 
+    bool hasAcceptedFormat() const
+    {
+        return m_surfaceStarted.loadAcquire() != 0;
+    }
+
     bool start(const QVideoSurfaceFormat &format) override
     {
         // Some Ubuntu Touch camera backends still attempt to start a GL
@@ -1175,6 +1180,7 @@ public:
         // Never mark that surface active: the delivered texture may be zero
         // or belong to a context that is not shared with this worker.
         if (format.handleType() != QAbstractVideoBuffer::NoHandle) {
+            m_surfaceStarted.storeRelease(0);
             qWarning() << "RTC camera refusing non-CPU surface format:"
                        << format.pixelFormat()
                        << format.frameSize()
@@ -1183,6 +1189,7 @@ public:
         }
 
         const bool started = QAbstractVideoSurface::start(format);
+        m_surfaceStarted.storeRelease(started ? 1 : 0);
         qInfo() << "RTC camera negotiated format:"
                 << format.pixelFormat()
                 << format.frameSize()
@@ -1190,6 +1197,12 @@ public:
                 << "surface started:" << started
                 << "surface error code:" << static_cast<int>(error());
         return started;
+    }
+
+    void stop() override
+    {
+        QAbstractVideoSurface::stop();
+        m_surfaceStarted.storeRelease(0);
     }
 
     bool present(const QVideoFrame &frame) override
@@ -1570,6 +1583,7 @@ private:
     int m_targetWidth = 360;
     int m_targetHeight = 480;
     QSharedPointer<QAtomicInt> m_pending;
+    QAtomicInt m_surfaceStarted{0};
     QAtomicInt m_loggedFrameCount{0};
     QAtomicInt m_loggedInvalidFrame{0};
     QAtomicInt m_loggedInvalidDimensions{0};
@@ -1732,11 +1746,40 @@ void StorageWorker::startRtcBackgroundCamera(
                                 << "available:" << m_rtcCamera->isAvailable();
 
                         if (status == QCamera::ActiveStatus) {
-                            m_rtcBackgroundCameraStartPending = false;
+                            const bool surfaceAccepted =
+                                m_rtcVideoSurface &&
+                                m_rtcVideoSurface->hasAcceptedFormat();
                             const QString activeDevice =
                                 m_rtcBackgroundCameraPendingDeviceId;
+
+                            qInfo() << "RTC native camera reached ActiveStatus;"
+                                    << "viewfinder format accepted:" << surfaceAccepted
+                                    << "surface active:"
+                                    << (m_rtcVideoSurface &&
+                                        m_rtcVideoSurface->isActive());
+
+                            m_rtcBackgroundCameraStartPending = false;
                             m_rtcBackgroundCameraPendingRoomId.clear();
                             m_rtcBackgroundCameraPendingDeviceId.clear();
+
+                            if (!surfaceAccepted) {
+                                const QString message = QStringLiteral(
+                                    "The camera became active, but its video surface rejected the format"
+                                );
+                                qWarning() << "RTC native camera cannot provide CPU-backed frames:"
+                                           << activeDevice;
+                                emit matrixRtcBackgroundCameraActionFinished(
+                                    roomId, false, QString(), message
+                                );
+
+                                // ActiveStatus only confirms that the device
+                                // opened. It does not prove that Qt accepted
+                                // the viewfinder format. Release it through
+                                // the normal asynchronous unload path.
+                                stopRtcBackgroundCamera(roomId);
+                                return;
+                            }
+
                             qInfo() << "RTC native background camera is active:"
                                     << activeDevice;
                             emit matrixRtcBackgroundCameraActionFinished(
@@ -1786,19 +1829,11 @@ void StorageWorker::startRtcBackgroundCamera(
 
                 m_rtcCamera->start();
 
-                // Some camera backends transition synchronously before the
-                // statusChanged connection is dispatched.
-                if (m_rtcCamera->status() == QCamera::ActiveStatus) {
-                    m_rtcBackgroundCameraStartPending = false;
-                    m_rtcBackgroundCameraPendingRoomId.clear();
-                    m_rtcBackgroundCameraPendingDeviceId.clear();
-                    qInfo() << "RTC native background camera activated:"
-                            << selected.description() << selectedDeviceId;
-                    emit matrixRtcBackgroundCameraActionFinished(
-                        roomId, true, selectedDeviceId, QString()
-                    );
-                    return;
-                }
+                // All startup completion is handled by the queued
+                // statusChanged callback above. Keeping a single completion
+                // path avoids reporting success before the viewfinder has
+                // accepted a CPU-backed format, and avoids duplicate signals
+                // when a backend changes status synchronously inside start().
 
                 // Device availability only means that a service exists. It
                 // does not mean that capture has started. Wait for ActiveStatus
