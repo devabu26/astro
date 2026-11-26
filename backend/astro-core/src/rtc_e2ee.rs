@@ -568,26 +568,21 @@ fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMed
             media_key.get("key")?.as_str()?,
         )
     } else {
-        let session = content.get("session")?;
-        if session.get("application").and_then(Value::as_str) != Some("m.call")
-            || session.get("call_id").and_then(Value::as_str) != Some("")
-            || session.get("scope").and_then(Value::as_str) != Some("m.room")
-        {
-            return None;
-        }
         let member = content.get("member")?;
         let claimed_device_id = member.get("claimed_device_id")?.as_str()?;
         // Claimed device metadata is only a consistency check; Olm metadata
         // and the legacy room-state membership establish the trusted identity.
         if claimed_device_id != sender_device.as_str() { return None; }
-        let member_id = member.get("id").and_then(Value::as_str)
+        let member_id = content.get("member_id").and_then(Value::as_str)
+            .or_else(|| member.get("id").and_then(Value::as_str))
             .map(str::to_owned)
             .unwrap_or_else(|| format!("{}:{claimed_device_id}", info.sender));
-        let keys = content.get("keys")?;
+        // Prefer the current field and accept the deprecated keys fallback.
+        let media_key = content.get("media_key").or_else(|| content.get("keys"))?;
         (
             member_id,
-            u8::try_from(keys.get("index")?.as_u64()?).ok()?,
-            keys.get("key")?.as_str()?,
+            u8::try_from(media_key.get("index")?.as_u64()?).ok()?,
+            media_key.get("key")?.as_str()?,
         )
     };
 
@@ -793,17 +788,22 @@ async fn publish_local_key_legacy(
         Some(device_id) => device_id.to_string(),
         None => return false,
     };
-    let sent_ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    // Pre-sticky Element Call clients use the legacy event name and envelope.
+    // Match matrix-js-sdk's legacy to-device payload exactly. The deprecated
+    // keys/member fields are retained alongside member_id/media_key so older
+    // and newer MatrixRTC clients can consume the same encrypted event.
+    let media_key = serde_json::json!({
+        "index": key.index,
+        "key": encode_base64_no_pad(&key.bytes)
+    });
     let content = serde_json::json!({
         "room_id": room.room_id().as_str(),
-        "keys": { "index": key.index, "key": encode_base64_no_pad(&key.bytes) },
-        "member": { "id": member_id, "claimed_device_id": own_device },
-        "session": { "application": "m.call", "call_id": "", "scope": "m.room" },
-        "sent_ts": sent_ts
+        "member_id": member_id,
+        "media_key": media_key,
+        "keys": media_key.clone(),
+        "member": {
+            "id": member_id,
+            "claimed_device_id": own_device
+        }
     });
     let raw = match Raw::<AnyToDeviceEventContent>::from_json_string(content.to_string()) {
         Ok(raw) => raw,
