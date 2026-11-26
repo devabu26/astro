@@ -1256,9 +1256,14 @@ function loadRooms(json, finished) {
                     if (!root.mainRoot)
                         return
 
-                    root.mainRoot.callRoomId = roomId
-                    root.mainRoot.callRoomName = roomName
-                    root.mainRoot.showingCallPage = true
+                    root.mainRoot.openCallPage(roomId, roomName, false)
+                }
+
+                onJoinCallRequested: {
+                    if (!root.mainRoot)
+                        return
+
+                    root.mainRoot.openCallPage(roomId, roomName, true)
                 }
             }
         }
