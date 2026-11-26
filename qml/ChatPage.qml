@@ -254,7 +254,8 @@ function loadRooms(json, finished) {
                 parentSpaceIds: JSON.stringify(
                     room.parent_space_ids || []
                 ),
-                lastActivity: Number(room.last_activity || 0)
+                lastActivity: Number(room.last_activity || 0),
+                spaceLastActivity: Number(room.space_last_activity || 0)
             })
 
             if (root.backend &&
