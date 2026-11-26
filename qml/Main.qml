@@ -51,20 +51,8 @@ MainView {
                     astroBackend.resumeMatrixSync()
                 }
 
-                astroBackend.refreshLifecycleExemption()
-                console.info(
-                    "ASTRO_BACKGROUND_CAMERA: lifecycle exemption",
-                    astroBackend.lifecycleExemptionEnabled,
-                    "error:", astroBackend.lifecycleExemptionError
-                )
                 root.applicationWasBackgrounded = false
             } else {
-                astroBackend.refreshLifecycleExemption()
-                console.info(
-                    "ASTRO_BACKGROUND_CAMERA: lifecycle exemption",
-                    astroBackend.lifecycleExemptionEnabled,
-                    "error:", astroBackend.lifecycleExemptionError
-                )
                 if (root.matrixAuthenticated)
                     root.applicationWasBackgrounded = true
             }
