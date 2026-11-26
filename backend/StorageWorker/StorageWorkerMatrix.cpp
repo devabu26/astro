@@ -1987,6 +1987,30 @@ void StorageWorker::startRtcBackgroundCamera(
                                     << "cameraSettings:" << cameraSettings.size()
                                     << "surfaceCpuFormats:" << surfaceFormats;
 
+                            // Some Ubuntu Touch camera backends do not expose
+                            // supported viewfinder settings even though they can
+                            // negotiate a working format when given a surface.
+                            // In that case, leave the format at the backend default
+                            // and let QCamera negotiate with our CPU-only surface.
+                            // RtcCameraVideoSurface::start() still rejects any
+                            // non-CPU handle, and ActiveStatus below is not accepted
+                            // unless the surface actually started.
+                            if (cameraSettings.isEmpty()) {
+                                qWarning() << "ASTRO_BACKGROUND_CAMERA: camera backend"
+                                           << "exposes no viewfinder settings; trying"
+                                           << "automatic CPU surface negotiation"
+                                           << "device:"
+                                           << m_rtcBackgroundCameraPendingDeviceId;
+
+                                m_rtcCamera->setViewfinder(m_rtcVideoSurface);
+
+                                qInfo() << "ASTRO_BACKGROUND_CAMERA: starting camera"
+                                        << "with automatic viewfinder negotiation";
+
+                                m_rtcCamera->start();
+                                return;
+                            }
+
                             for (QVideoFrame::PixelFormat preferredFormat : formatPriority) {
                                 if (!surfaceFormats.contains(preferredFormat))
                                     continue;
