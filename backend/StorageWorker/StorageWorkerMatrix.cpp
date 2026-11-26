@@ -167,98 +167,6 @@ static void rgbaToChromaRowsNeon(
 
 #endif
 
-bool rgbaFrameToI420(
-    const QByteArray &rgba,
-    int width,
-    int height,
-    QByteArray &output
-)
-{
-    if (width < 2 || height < 2 ||
-        (width & 1) || (height & 1) ||
-        rgba.size() != width * height * 4) {
-        return false;
-    }
-
-    const QImage image(
-        reinterpret_cast<const uchar *>(rgba.constData()),
-        width,
-        height,
-        width * 4,
-        QImage::Format_RGBA8888
-    );
-    if (image.isNull())
-        return false;
-
-    const int ySize = width * height;
-    const int chromaSize = ySize / 4;
-    const int outputSize = ySize + chromaSize * 2;
-
-    // Keep the destination owned by StorageWorker. resize() does not
-    // allocate again while the frame dimensions remain unchanged.
-    if (output.size() != outputSize)
-        output.resize(outputSize);
-
-    uchar *yOut = reinterpret_cast<uchar *>(output.data());
-    uchar *uOut = yOut + ySize;
-    uchar *vOut = uOut + chromaSize;
-
-    auto clamp = [](int value) -> uchar {
-        return static_cast<uchar>(qBound(0, value, 255));
-    };
-
-    // Luma is independent per pixel and accounts for two thirds of the
-    // output samples. Use ARM NEON on Ubuntu Touch ARM64, retaining the
-    // scalar path for other architectures and row tails.
-    for (int row = 0; row < height; ++row) {
-        const uchar *sourceRow = image.constScanLine(row);
-#if defined(__aarch64__) || defined(__ARM_NEON)
-        rgbaToYRowNeon(sourceRow, yOut + row * width, width);
-#else
-        for (int col = 0; col < width; ++col) {
-            const uchar *pixel = sourceRow + col * 4;
-            yOut[row * width + col] = clamp(
-                ((66 * pixel[0] + 129 * pixel[1] + 25 * pixel[2] + 128) >> 8) + 16
-            );
-        }
-#endif
-    }
-
-    // Chroma is sampled once per 2x2 block using the same four-pixel
-    // average as the original converter, preserving its colour output.
-    for (int row = 0; row < height; row += 2) {
-        const uchar *row0 = image.constScanLine(row);
-        const uchar *row1 = image.constScanLine(row + 1);
-#if defined(__aarch64__) || defined(__ARM_NEON)
-        const int chromaOffset = (row / 2) * (width / 2);
-        rgbaToChromaRowsNeon(
-            row0, row1,
-            uOut + chromaOffset, vOut + chromaOffset,
-            width
-        );
-#else
-        for (int col = 0; col < width; col += 2) {
-            const uchar *p00 = row0 + col * 4;
-            const uchar *p01 = p00 + 4;
-            const uchar *p10 = row1 + col * 4;
-            const uchar *p11 = p10 + 4;
-            const int r = (p00[0] + p01[0] + p10[0] + p11[0] + 2) / 4;
-            const int g = (p00[1] + p01[1] + p10[1] + p11[1] + 2) / 4;
-            const int b = (p00[2] + p01[2] + p10[2] + p11[2] + 2) / 4;
-            const int chromaIndex = (row / 2) * (width / 2) + col / 2;
-            uOut[chromaIndex] = clamp(
-                ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128
-            );
-            vOut[chromaIndex] = clamp(
-                ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128
-            );
-        }
-#endif
-    }
-
-    return true;
-}
-
 bool transformI420Frame(
     const QByteArray &source,
     int sourceWidth,
@@ -392,6 +300,65 @@ bool transformI420Frame(
         cropX / 2, cropY / 2, cropWidth / 2, cropHeight / 2
     );
 
+    return true;
+}
+
+
+bool mirRgbaFrameToI420AndCopy(
+    const uchar *source, int sourceStride, int width, int height,
+    QByteArray &rgbaSnapshot,
+    uchar *yOut, int strideY, uchar *uOut, int strideU, uchar *vOut, int strideV
+)
+{
+    if (!source || width < 2 || height < 2 || (width & 1) || (height & 1) ||
+        sourceStride < width * 4 || !yOut || !uOut || !vOut ||
+        strideY < width || strideU < width / 2 || strideV < width / 2)
+        return false;
+
+    const int frameBytes = width * height * 4;
+    if (rgbaSnapshot.size() != frameBytes)
+        rgbaSnapshot.resize(frameBytes);
+    uchar *snapshot = reinterpret_cast<uchar *>(rgbaSnapshot.data());
+
+    auto clamp = [](int value) -> uchar {
+        return static_cast<uchar>(qBound(0, value, 255));
+    };
+
+    for (int row = 0; row < height; ++row) {
+        const uchar *sourceRow = source + (height - 1 - row) * sourceStride;
+        std::memcpy(snapshot + row * width * 4, sourceRow,
+                    static_cast<size_t>(width * 4));
+#if defined(__aarch64__) || defined(__ARM_NEON)
+        rgbaToYRowNeon(sourceRow, yOut + row * strideY, width);
+#else
+        for (int col = 0; col < width; ++col) {
+            const uchar *pixel = sourceRow + col * 4;
+            yOut[row * strideY + col] = clamp(
+                ((66 * pixel[0] + 129 * pixel[1] + 25 * pixel[2] + 128) >> 8) + 16);
+        }
+#endif
+    }
+
+    for (int row = 0; row < height; row += 2) {
+        const uchar *row0 = source + (height - 1 - row) * sourceStride;
+        const uchar *row1 = source + (height - 2 - row) * sourceStride;
+        uchar *uRow = uOut + (row / 2) * strideU;
+        uchar *vRow = vOut + (row / 2) * strideV;
+#if defined(__aarch64__) || defined(__ARM_NEON)
+        rgbaToChromaRowsNeon(row0, row1, uRow, vRow, width);
+#else
+        for (int col = 0; col < width; col += 2) {
+            const uchar *p00 = row0 + col * 4, *p01 = p00 + 4;
+            const uchar *p10 = row1 + col * 4, *p11 = p10 + 4;
+            const int r = (p00[0] + p01[0] + p10[0] + p11[0] + 2) / 4;
+            const int g = (p00[1] + p01[1] + p10[1] + p11[1] + 2) / 4;
+            const int b = (p00[2] + p01[2] + p10[2] + p11[2] + 2) / 4;
+            const int i = col / 2;
+            uRow[i] = clamp(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
+            vRow[i] = clamp(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+        }
+#endif
+    }
     return true;
 }
 
@@ -2816,8 +2783,7 @@ void StorageWorker::startRtcScreenShare(
     m_rtcScreenSharePerfFrames = 0;
     m_rtcScreenSharePerfMapUs = 0;
     m_rtcScreenSharePerfCompareUs = 0;
-    m_rtcScreenSharePerfCopyUs = 0;
-    m_rtcScreenSharePerfConvertUs = 0;
+    m_rtcScreenSharePerfCopyConvertUs = 0;
     m_rtcScreenSharePerfSubmitUs = 0;
     m_rtcScreenShareTimer = new QTimer(this);
     m_rtcScreenShareTimer->setInterval(33);
@@ -2896,45 +2862,50 @@ void StorageWorker::captureRtcScreenShareFrame()
     }
     stageClock.restart();
 
-    // Keep the previous-frame snapshot as the staging buffer. This avoids
-    // allocating and copying a second full RGBA frame on every changed tick.
-    if (m_rtcScreenShareLastFrame.size() != frameBytes)
-        m_rtcScreenShareLastFrame.resize(frameBytes);
-
-    for (int row = 0; row < height; ++row) {
-        const int sourceRow = height - 1 - row;
-        std::memcpy(m_rtcScreenShareLastFrame.data() + row * width * 4,
-                    region.vaddr + sourceRow * region.stride,
-                    static_cast<size_t>(width * 4));
-    }
-    mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
-    const qint64 copyUs = stageClock.nsecsElapsed() / 1000;
-
-    stageClock.restart();
-    const bool converted = rgbaFrameToI420(
-        m_rtcScreenShareLastFrame,
-        width,
-        height,
-        m_rtcScreenShareI420Frame
-    );
-    const qint64 convertUs = stageClock.nsecsElapsed() / 1000;
     const QByteArray roomBytes = roomId.toUtf8();
-    if (!converted) {
+    AstroRtcI420Frame *i420Frame = nullptr;
+    uint8_t *planeY = nullptr, *planeU = nullptr, *planeV = nullptr;
+    uint32_t strideY = 0, strideU = 0, strideV = 0;
+    char *frameError = nullptr;
+    const int32_t createResult = astro_matrix_create_rtc_screenshare_frame(
+        static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+        &i420Frame, &planeY, &strideY, &planeU, &strideU,
+        &planeV, &strideV, &frameError);
+    QString failure;
+    if (frameError) {
+        failure = QString::fromUtf8(frameError);
+        astro_string_free(frameError);
+        frameError = nullptr;
+    } else if (createResult < 0 || !i420Frame || !planeY || !planeU || !planeV) {
+        failure = QStringLiteral("Could not allocate a LiveKit I420 screen frame");
+    }
+    if (!failure.isEmpty()) {
+        mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
         stopRtcScreenShareCapture();
-        beginRtcScreenShareUnpublish(
-            roomId,
-            QStringLiteral("Could not convert the Mir screen frame to I420")
-        );
+        beginRtcScreenShareUnpublish(roomId, failure);
         return;
     }
 
     stageClock.restart();
-    char *frameError = nullptr;
-    const int32_t pushResult = astro_matrix_push_rtc_screenshare_frame(
-        m_matrixClient, roomBytes.constData(),
-        static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-        reinterpret_cast<const uint8_t *>(m_rtcScreenShareI420Frame.constData()),
-        static_cast<uint64_t>(m_rtcScreenShareI420Frame.size()), &frameError);
+    const bool converted = mirRgbaFrameToI420AndCopy(
+        region.vaddr, static_cast<int>(region.stride), width, height,
+        m_rtcScreenShareLastFrame,
+        planeY, static_cast<int>(strideY),
+        planeU, static_cast<int>(strideU),
+        planeV, static_cast<int>(strideV));
+    mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
+    const qint64 copyConvertUs = stageClock.nsecsElapsed() / 1000;
+    if (!converted) {
+        astro_matrix_free_rtc_screenshare_frame(i420Frame);
+        stopRtcScreenShareCapture();
+        beginRtcScreenShareUnpublish(
+            roomId, QStringLiteral("Could not convert the Mir screen frame to I420"));
+        return;
+    }
+
+    stageClock.restart();
+    const int32_t pushResult = astro_matrix_submit_rtc_screenshare_frame(
+        m_matrixClient, roomBytes.constData(), i420Frame, &frameError);
     QString failure;
     if (frameError) {
         failure = QString::fromUtf8(frameError);
@@ -2952,8 +2923,7 @@ void StorageWorker::captureRtcScreenShareFrame()
     ++m_rtcScreenSharePerfFrames;
     m_rtcScreenSharePerfMapUs += mapUs;
     m_rtcScreenSharePerfCompareUs += compareUs;
-    m_rtcScreenSharePerfCopyUs += copyUs;
-    m_rtcScreenSharePerfConvertUs += convertUs;
+    m_rtcScreenSharePerfCopyConvertUs += copyConvertUs;
     m_rtcScreenSharePerfSubmitUs += submitUs;
 
     if (m_rtcScreenSharePerfWindow.elapsed() >= 5000) {
@@ -2964,15 +2934,13 @@ void StorageWorker::captureRtcScreenShareFrame()
                     << "changedFrames:" << m_rtcScreenSharePerfFrames
                     << "avgMapMs:" << (m_rtcScreenSharePerfMapUs / count / 1000.0)
                     << "avgCompareMs:" << (m_rtcScreenSharePerfCompareUs / count / 1000.0)
-                    << "avgCopyMs:" << (m_rtcScreenSharePerfCopyUs / count / 1000.0)
-                    << "avgConvertMs:" << (m_rtcScreenSharePerfConvertUs / count / 1000.0)
+                    << "avgCopyConvertMs:" << (m_rtcScreenSharePerfCopyConvertUs / count / 1000.0)
                     << "avgLiveKitSubmitMs:" << (m_rtcScreenSharePerfSubmitUs / count / 1000.0);
         }
         m_rtcScreenSharePerfFrames = 0;
         m_rtcScreenSharePerfMapUs = 0;
         m_rtcScreenSharePerfCompareUs = 0;
-        m_rtcScreenSharePerfCopyUs = 0;
-        m_rtcScreenSharePerfConvertUs = 0;
+        m_rtcScreenSharePerfCopyConvertUs = 0;
         m_rtcScreenSharePerfSubmitUs = 0;
         m_rtcScreenSharePerfWindow.restart();
     }
