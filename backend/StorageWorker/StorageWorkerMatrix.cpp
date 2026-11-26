@@ -2864,6 +2864,16 @@ void StorageWorker::beginRtcScreenShareUnpublish(
     }
 
     if (!m_rtcScreenShareStopPendingRoomId.isEmpty()) {
+        if (m_rtcScreenShareStopPendingRoomId == roomId) {
+            // A queued capture callback or a second stop request can reach
+            // this function after the first asynchronous unpublish has begun.
+            // That is the same teardown, not a second operation: do not emit
+            // a competing completion that could clear QML's pending state.
+            qInfo() << "ASTRO_SCREEN_SHARE_STOP: duplicate unpublish ignored"
+                    << "room:" << roomId;
+            return;
+        }
+
         emit matrixRtcScreenShareActionFinished(
             roomId,
             QStringLiteral("Another screen-share teardown is already running")
