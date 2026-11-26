@@ -2230,9 +2230,11 @@ impl MatrixClientManager {
                     let Some(room) = client.get_room(&parsed_room_id) else {
                         return false;
                     };
-                    room.human_member_ids(RoomMemberships::JOIN).await
+                    let is_direct = room.is_direct().await.unwrap_or(false);
+                    let has_two_members = room.human_member_ids(RoomMemberships::JOIN).await
                         .map(|members| members.len() == 2)
-                        .unwrap_or(false)
+                        .unwrap_or(false);
+                    is_direct && has_two_members
                 });
 
                 if !is_one_to_one {
