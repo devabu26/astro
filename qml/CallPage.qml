@@ -169,7 +169,37 @@ Item {
     onParticipantsChanged: requestVisibleParticipantAvatars()
 
     onRoomIdChanged: {
+        participantAvatarCache = ({})
+        participantAvatarCache = ({})
         participantAvatarRequests = ({})
+        noAnswerTimer.stop()
+        ringbackAudio.stop()
+        remoteAnswered = false
+        if (backend && screenShareRoomId.length > 0)
+            backend.stopRtcScreenShare(screenShareRoomId)
+        screenShareRoomId = ""
+        screenShareAudioRequested = false
+        screenShareChoiceVisible = false
+
+        for (var i = 0; i < participants.length; ++i) {
+            remoteVideoCleared(participants[i].identity, "camera")
+            remoteVideoCleared(participants[i].identity, "screenshare")
+        }
+
+        actionError = ""
+        pendingOperation = ""
+
+        videoStarted = false
+        screenShareStarted = false
+
+        if (audioState.active === true) {
+            audioStarted = true
+            membershipJoined = true
+        } else {
+            audioStarted = false
+            membershipJoined = membershipState.joinedByMe === true
+            muted = false
+        }
     }
 
     Connections {
@@ -855,38 +885,7 @@ Item {
         }
     }
 
-    onRoomIdChanged: {
-        participantAvatarCache = ({})
-        participantAvatarRequests = ({})
-        noAnswerTimer.stop()
-        ringbackAudio.stop()
-        remoteAnswered = false
-        if (backend && screenShareRoomId.length > 0)
-            backend.stopRtcScreenShare(screenShareRoomId)
-        screenShareRoomId = ""
-        screenShareAudioRequested = false
-        screenShareChoiceVisible = false
 
-        for (var i = 0; i < participants.length; ++i) {
-            remoteVideoCleared(participants[i].identity, "camera")
-            remoteVideoCleared(participants[i].identity, "screenshare")
-        }
-
-        actionError = ""
-        pendingOperation = ""
-
-        videoStarted = false
-        screenShareStarted = false
-
-        if (audioState.active === true) {
-            audioStarted = true
-            membershipJoined = true
-        } else {
-            audioStarted = false
-            membershipJoined = membershipState.joinedByMe === true
-            muted = false
-        }
-    }
 
     Connections {
         target: root.backend
