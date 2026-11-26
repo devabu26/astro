@@ -2418,12 +2418,56 @@ impl MatrixClientManager {
                 }]
             });
 
-            room.send_state_event_raw(
+            let membership_response = room.send_state_event_raw(
                 "org.matrix.msc3401.call.member",
                 &state_key,
                 content
             ).await
                 .map_err(|error| format!("Could not publish MatrixRTC call presence: {error}"))?;
+
+            // MatrixRTC membership only advertises that this device has joined.
+            // Send a separate MSC4075 notification so the other room members'
+            // clients can treat this as an incoming call.
+            let notification_event_id = membership_response.event_id;
+            let recipients = room.human_member_ids(RoomMemberships::JOIN).await
+                .map_err(|error| format!("Could not load joined room members for call notification: {error}"))?
+                .into_iter()
+                .filter(|user_id| user_id != &client.user_id().expect("authenticated Matrix client"))
+                .map(|user_id| user_id.to_string())
+                .collect::<Vec<_>>();
+
+            if !recipients.is_empty() {
+                let sender_ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                let notification_content = serde_json::json!({
+                    "sender_ts": sender_ts,
+                    "lifetime": 30_000,
+                    "notification_type": "ring",
+                    "m.mentions": {
+                        "user_ids": recipients
+                    },
+                    "m.relates_to": {
+                        "rel_type": "m.reference",
+                        "event_id": notification_event_id
+                    }
+                });
+
+                match room.send_raw("m.rtc.notification", notification_content).await {
+                    Ok(response) => eprintln!(
+                        "ASTRO RTC CALL: sent incoming-call notification {} to {} other room member(s)",
+                        response.event_id,
+                        recipients.len()
+                    ),
+                    Err(error) => eprintln!(
+                        "ASTRO RTC CALL: failed to send incoming-call notification: {error}"
+                    ),
+                }
+            } else {
+                eprintln!("ASTRO RTC CALL: no other joined room members to notify");
+            }
 
             Ok::<(String, String), String>((state_key, livekit_service_url))
         });
