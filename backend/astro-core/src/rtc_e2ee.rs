@@ -83,9 +83,12 @@ impl RtcE2eeSession {
             let mut rotation = tokio::time::interval(Duration::from_secs(15 * 60));
             // Skip interval's immediate first tick; the first key was generated above.
             rotation.tick().await;
+            let mut initial_retry = tokio::time::interval(Duration::from_secs(5));
+            initial_retry.tick().await;
+            let mut initial_key_distributed = false;
             let mut pending = VecDeque::<PendingMediaKey>::new();
 
-            publish_local_key(
+            initial_key_distributed = publish_local_key(
                 &task_client,
                 &task_room,
                 &local_member_id,
@@ -114,9 +117,18 @@ impl RtcE2eeSession {
                         }
                     }
 
+                    _ = initial_retry.tick(), if !initial_key_distributed => {
+                        initial_key_distributed = publish_local_key(
+                            &task_client,
+                            &task_room,
+                            &local_member_id,
+                            &task_local_key,
+                        ).await;
+                    }
+
                     _ = rotation.tick() => {
                         rotate_local_key(&task_local_key);
-                        publish_local_key(
+                        initial_key_distributed = publish_local_key(
                             &task_client,
                             &task_room,
                             &local_member_id,
@@ -151,7 +163,7 @@ impl RtcE2eeSession {
 
                         if changed {
                             rotate_local_key(&task_local_key);
-                            publish_local_key(
+                            initial_key_distributed = publish_local_key(
                                 &task_client,
                                 &task_room,
                                 &local_member_id,
@@ -246,10 +258,10 @@ async fn publish_local_key(
     room: &Room,
     member_id: &str,
     local_key: &Arc<Mutex<MediaKey>>,
-) {
+) -> bool {
     let key = match local_key.lock() {
         Ok(key) => key.clone(),
-        Err(_) => return,
+        Err(_) => return false,
     };
 
     let own_user = client.user_id().map(ToString::to_string);
@@ -310,7 +322,7 @@ async fn publish_local_key(
     }
 
     if recipients.is_empty() {
-        return;
+        return false;
     }
 
     let content = serde_json::json!({
@@ -326,7 +338,7 @@ async fn publish_local_key(
         Ok(raw) => raw,
         Err(error) => {
             eprintln!("ASTRO RTC E2EE: could not encode media-key message: {error}");
-            return;
+            return false;
         }
     };
 
@@ -340,12 +352,15 @@ async fn publish_local_key(
     {
         Ok(failures) if failures.is_empty() => {
             eprintln!("ASTRO RTC E2EE: distributed media key index {} to active verified participants", key.index);
+            true
         }
         Ok(failures) => {
             eprintln!("ASTRO RTC E2EE: media-key delivery had {} recipient failure group(s)", failures.len());
+            false
         }
         Err(error) => {
             eprintln!("ASTRO RTC E2EE: encrypted media-key delivery failed: {error}");
+            false
         }
     }
 }
