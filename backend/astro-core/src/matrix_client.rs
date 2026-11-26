@@ -1567,6 +1567,32 @@ impl MatrixClientManager {
                                             ),
                                         }
                                     }
+
+                                    let modern_active = modern_renewals.lock()
+                                        .map(|items| items.clone())
+                                        .unwrap_or_default();
+                                    for (room_id, content) in modern_active {
+                                        let Some(room) = joined_rooms.iter().find(|room| {
+                                            room.room_id().as_str() == room_id
+                                        }) else {
+                                            if let Ok(mut items) = modern_renewals.lock() {
+                                                items.remove(&room_id);
+                                            }
+                                            continue;
+                                        };
+
+                                        if let Err(error) = room.send_raw("m.rtc.member", content)
+                                            .with_sticky_duration(Duration::from_secs(60 * 60))
+                                            .await {
+                                            eprintln!(
+                                                "ASTRO RTC: modern membership renewal failed in {room_id}: {error}"
+                                            );
+                                        } else {
+                                            eprintln!(
+                                                "ASTRO RTC: renewed modern MatrixRTC membership in {room_id}"
+                                            );
+                                        }
+                                    }
                                 }
 
                                 room_update = room_info_updates.recv() => {
