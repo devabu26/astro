@@ -1279,6 +1279,8 @@ public:
         // Keep native GL-camera diagnostics separate from the foreground QML
         // camera: both paths intentionally share this surface instance.
         if (glTextureFrame) {
+            if (m_worker)
+                m_worker->recordRtcNativeGlFrame();
             const int glFrameNumber = m_glFrameCount.fetchAndAddRelaxed(1) + 1;
             if (!m_glFrameDiagnosticTimer.isValid())
                 m_glFrameDiagnosticTimer.start();
@@ -1878,6 +1880,40 @@ void StorageWorker::startRtcBackgroundCamera(
 
                 m_rtcCamera = new QCamera(selected, this);
 
+                connect(
+                    m_rtcCamera,
+                    &QCamera::stateChanged,
+                    this,
+                    [this, roomId](QCamera::State state) {
+                        if (m_rtcCamera) {
+                            qInfo() << "ASTRO_BACKGROUND_CAMERA: native state changed"
+                                    << "room:" << roomId
+                                    << "state:" << static_cast<int>(state)
+                                    << "status:" << static_cast<int>(m_rtcCamera->status())
+                                    << "error:" << static_cast<int>(m_rtcCamera->error())
+                                    << "errorString:" << m_rtcCamera->errorString()
+                                    << "thread:" << QThread::currentThreadId();
+                        }
+                    }
+                );
+                connect(
+                    m_rtcCamera,
+                    QOverload<QCamera::Error>::of(&QCamera::error),
+                    this,
+                    [this, roomId](QCamera::Error error) {
+                        qWarning() << "ASTRO_BACKGROUND_CAMERA: native camera error signal"
+                                   << "room:" << roomId
+                                   << "error:" << static_cast<int>(error)
+                                   << "status:" << (m_rtcCamera
+                                       ? static_cast<int>(m_rtcCamera->status()) : -1)
+                                   << "state:" << (m_rtcCamera
+                                       ? static_cast<int>(m_rtcCamera->state()) : -1)
+                                   << "errorString:" << (m_rtcCamera
+                                       ? m_rtcCamera->errorString() : QString())
+                                   << "thread:" << QThread::currentThreadId();
+                    }
+                );
+
                 qInfo() << "ASTRO_BACKGROUND_CAMERA: native QCamera constructed"
                         << "camera:" << m_rtcCamera
                         << "status:" << static_cast<int>(m_rtcCamera->status())
@@ -1983,6 +2019,16 @@ void StorageWorker::startRtcBackgroundCamera(
 
                                 qInfo() << "ASTRO_BACKGROUND_CAMERA: starting camera"
                                         << "with GL texture readback enabled";
+
+                                m_rtcNativeGlFrameCount.storeRelease(0);
+                                m_rtcNativeGlWatchdogPreviousCount = 0;
+                                m_rtcNativeGlWatchdogTicks = 0;
+                                if (m_rtcBackgroundCameraWatchdogTimer)
+                                    m_rtcBackgroundCameraWatchdogTimer->start();
+                                qInfo() << "ASTRO_BACKGROUND_CAMERA: native camera watchdog started"
+                                        << "intervalMs:"
+                                        << (m_rtcBackgroundCameraWatchdogTimer
+                                            ? m_rtcBackgroundCameraWatchdogTimer->interval() : -1);
 
                                 m_rtcCamera->start();
                                 return;
@@ -2330,6 +2376,8 @@ void StorageWorker::finishRtcBackgroundCameraStop()
         }
 
         stoppedRoomId = m_rtcBackgroundCameraStopRoomId;
+        if (m_rtcBackgroundCameraWatchdogTimer)
+            m_rtcBackgroundCameraWatchdogTimer->stop();
         m_rtcCamera->setViewfinder(
             static_cast<QAbstractVideoSurface *>(nullptr)
         );
