@@ -63,6 +63,31 @@ Item {
         screenShareRenderRecoveryTimer.restart()
     }
 
+    Timer {
+        id: foregroundCameraRestartTimer
+        interval: 750
+        repeat: false
+
+        onTriggered: {
+            if (!root.applicationActive ||
+                    !root.videoStarted ||
+                    !root.waitingForForegroundCamera)
+                return
+
+            if (root.nativeBackgroundCameraDeviceId.length > 0 &&
+                    localCamera.deviceId !== root.nativeBackgroundCameraDeviceId) {
+                localCamera.deviceId = root.nativeBackgroundCameraDeviceId
+            }
+
+            root.nativeBackgroundCameraDeviceId = ""
+            root.waitingForForegroundCamera = false
+            console.info(
+                "ASTRO_BACKGROUND_CAMERA: restarting QML camera after graphics teardown settling period"
+            )
+            localCamera.start()
+        }
+    }
+
     signal backRequested()
     signal remoteVideoCleared(string identity, string source)
 
@@ -463,6 +488,7 @@ Item {
             return
 
         cameraFrameGrabPending = false
+        foregroundCameraRestartTimer.stop()
         if (active) {
             backgroundCameraStartTimer.stop()
             waitingForForegroundCamera = true
@@ -489,6 +515,7 @@ Item {
             }
         } else {
             backgroundCameraStartTimer.stop()
+            foregroundCameraRestartTimer.stop()
             waitingForForegroundCamera = false
             nativeBackgroundCameraRunning = false
             nativeBackgroundCameraDeviceId = ""
@@ -614,16 +641,13 @@ Item {
                        root.applicationActive &&
                        root.videoStarted &&
                        root.waitingForForegroundCamera) {
-                if (root.nativeBackgroundCameraDeviceId.length > 0 &&
-                        localCamera.deviceId !== root.nativeBackgroundCameraDeviceId) {
-                    localCamera.deviceId = root.nativeBackgroundCameraDeviceId
-                }
-                root.nativeBackgroundCameraDeviceId = ""
-                root.waitingForForegroundCamera = false
+                // Mir/Qt camera resources can still be settling immediately
+                // after QCamera reports UnloadedStatus. Defer the QML restart
+                // to the next event-loop window to avoid overlapping GL teardown.
                 console.info(
-                    "ASTRO_BACKGROUND_CAMERA: native device fully released; restarting QML camera"
+                    "ASTRO_BACKGROUND_CAMERA: native device released; scheduling QML camera restart"
                 )
-                localCamera.start()
+                foregroundCameraRestartTimer.restart()
             }
         }
     }
