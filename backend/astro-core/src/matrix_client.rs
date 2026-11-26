@@ -459,6 +459,7 @@ async fn discover_livekit_service_url(client: &Client) -> Result<String, String>
 pub struct MatrixClientManager {
     client: Option<Client>,
     rtc_livekit_audio_sessions: HashMap<String, LiveKitAudioSession>,
+    rtc_pending_screenshare_stops: HashMap<String, Arc<Mutex<Option<Result<(), String>>>>>,
     rtc_remote_video_frames: Arc<Mutex<VecDeque<RtcRemoteVideoFrame>>>,
     rtc_remote_video_tasks: HashMap<String, tokio::task::AbortHandle>,
     rtc_participant_profiles: HashMap<(String, String), RtcParticipantProfile>,
@@ -644,6 +645,7 @@ impl MatrixClientManager {
             last_verification_states: HashMap::new(),
             client: Some(client),
             rtc_livekit_audio_sessions: HashMap::new(),
+            rtc_pending_screenshare_stops: HashMap::new(),
             rtc_remote_video_frames: Arc::new(Mutex::new(VecDeque::new())),
             rtc_remote_video_tasks: HashMap::new(),
             rtc_participant_profiles: HashMap::new(),
@@ -3014,15 +3016,19 @@ impl MatrixClientManager {
     }
 
 
-    /// Unpublish the screen share track without stopping the microphone.
-    pub fn stop_rtc_screenshare(&mut self, room_id: &str) -> Result<(), String> {
+    /// Begin unpublishing screen-share tracks without blocking the Qt worker.
+    /// Returns true while LiveKit teardown is running on the existing Tokio runtime.
+    pub fn stop_rtc_screenshare(&mut self, room_id: &str) -> Result<bool, String> {
         let room_id = room_id.trim();
 
         if room_id.is_empty() {
             return Err("Room ID is empty".into());
         }
 
-        let runtime = Arc::clone(&self.runtime);
+        if self.rtc_pending_screenshare_stops.contains_key(room_id) {
+            return Ok(true);
+        }
+
         let session = self
             .rtc_livekit_audio_sessions
             .get_mut(room_id)
@@ -3031,44 +3037,76 @@ impl MatrixClientManager {
         let video_track = session.screen_share_track.clone();
         let audio_track = session.screen_share_audio_track.clone();
         if video_track.is_none() && audio_track.is_none() {
-            return Ok(());
+            session.screen_share_audio_sender = None;
+            session.screen_share_source = None;
+            session.screen_share_track = None;
+            session.screen_share_audio_source = None;
+            session.screen_share_audio_track = None;
+            return Ok(false);
         }
 
-        runtime.block_on(async {
-            if let Some(track) = video_track {
-                let track_sid = LocalTrack::Video(track).sid();
-                session
-                    .room
-                    .local_participant()
-                    .unpublish_track(&track_sid)
-                    .await
-                    .map_err(|error| {
-                        format!("Could not unpublish LiveKit screen share track: {error}")
-                    })?;
-            }
-
-            if let Some(track) = audio_track {
-                let track_sid = LocalTrack::Audio(track).sid();
-                session
-                    .room
-                    .local_participant()
-                    .unpublish_track(&track_sid)
-                    .await
-                    .map_err(|error| {
-                        format!("Could not unpublish LiveKit screen-share audio track: {error}")
-                    })?;
-            }
-
-            Ok::<(), String>(())
-        })?;
-
+        let participant = session.room.local_participant();
         session.screen_share_audio_sender = None;
         session.screen_share_track = None;
         session.screen_share_source = None;
         session.screen_share_audio_track = None;
         session.screen_share_audio_source = None;
 
-        Ok(())
+        let completion = Arc::new(Mutex::new(None));
+        let task_completion = Arc::clone(&completion);
+        self.runtime.spawn(async move {
+            let mut failures = Vec::new();
+
+            if let Some(track) = video_track {
+                let track_sid = LocalTrack::Video(track).sid();
+                if let Err(error) = participant.unpublish_track(&track_sid).await {
+                    failures.push(format!(
+                        "Could not unpublish LiveKit screen share track: {error}"
+                    ));
+                }
+            }
+
+            if let Some(track) = audio_track {
+                let track_sid = LocalTrack::Audio(track).sid();
+                if let Err(error) = participant.unpublish_track(&track_sid).await {
+                    failures.push(format!(
+                        "Could not unpublish LiveKit screen-share audio track: {error}"
+                    ));
+                }
+            }
+
+            let result = if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(failures.join("; "))
+            };
+
+            *task_completion.lock().unwrap() = Some(result);
+        });
+
+        self.rtc_pending_screenshare_stops
+            .insert(room_id.to_owned(), completion);
+
+        Ok(true)
+    }
+
+    /// Poll an asynchronous screen-share teardown. None means it is still running.
+    pub fn poll_rtc_screenshare_stop(
+        &mut self,
+        room_id: &str,
+    ) -> Result<Option<Result<(), String>>, String> {
+        let completion = self
+            .rtc_pending_screenshare_stops
+            .get(room_id)
+            .cloned()
+            .ok_or_else(|| "No pending screen-share teardown for this room".to_string())?;
+
+        let result = completion.lock().unwrap().take();
+        if result.is_some() {
+            self.rtc_pending_screenshare_stops.remove(room_id);
+        }
+
+        Ok(result)
     }
 
 
