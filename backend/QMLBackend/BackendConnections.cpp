@@ -425,6 +425,14 @@ Backend::Backend(QObject *parent)
         this,
     connect(
         this,
+    connect(
+        this,
+        &Backend::requestAcceptRtcCall,
+        m_storageWorker,
+        &StorageWorker::acceptRtcCall,
+        Qt::QueuedConnection
+    );
+
         &Backend::requestDeclineRtcCall,
         m_storageWorker,
         &StorageWorker::declineRtcCall,
