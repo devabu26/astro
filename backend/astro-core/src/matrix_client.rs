@@ -2782,6 +2782,24 @@ impl MatrixClientManager {
             return Err("An audio call is already active in this room".into());
         }
 
+        if !self.rtc_e2ee_sessions.contains_key(&room_id) {
+            let client = self.client.as_ref()
+                .ok_or_else(|| "No active Matrix session".to_string())?
+                .clone();
+            let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id.as_str())
+                .map_err(|error| format!("Invalid room ID: {error}"))?;
+            let encrypted = self.runtime.block_on(async {
+                let room = client.get_room(&parsed_room_id)
+                    .ok_or_else(|| "Matrix room is unavailable while checking call encryption".to_string())?;
+                room.latest_encryption_state().await
+                    .map(|state| state.is_encrypted())
+                    .map_err(|error| format!("Could not determine room encryption state: {error}"))
+            })?;
+            if encrypted {
+                return Err("This Matrix room is encrypted, but Astro has no active MatrixRTC key exchange; refusing to connect without LiveKit E2EE".into());
+            }
+        }
+
         // If this Matrix room is encrypted, wait for the MatrixRTC key grace
         // period and refuse to connect without a usable local key. This prevents
         // accidentally publishing media into an encrypted call without E2EE.
