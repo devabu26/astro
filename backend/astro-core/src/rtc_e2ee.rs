@@ -336,6 +336,7 @@ impl RtcE2eeSession {
         Ok(Self {
             task: handle.abort_handle(),
             local_key,
+            local_livekit_identity,
             received_keys,
         })
     }
@@ -851,7 +852,7 @@ async fn publish_local_key_legacy(
 async fn try_store_received_key_legacy(
     client: &Client,
     room: &Room,
-    received_keys: &Arc<Mutex<BTreeMap<(String, u8), Vec<u8>>>>,
+    received_keys: &Arc<Mutex<BTreeMap<(String, u8), ReceivedMediaKey>>>,
     candidate: &PendingMediaKey,
 ) -> bool {
     if candidate.room_id != room.room_id().as_str() {
