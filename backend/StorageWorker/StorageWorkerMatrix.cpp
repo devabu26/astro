@@ -2830,19 +2830,49 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
         return;
     }
 
-    // The screencast was created using the persistent Mir connection owned
-    // by this StorageWorker. Release it on the same thread rather than handing
-    // the connection-backed object to a detached thread. This avoids racing
-    // Mir connection operations across threads. StorageWorker is not the QML
-    // thread, and recent device diagnostics measured this release at ~3 ms.
-    qInfo() << "ASTRO_SCREEN_SHARE_STOP: releasing screencast on owner thread"
-            << "thread:" << quintptr(QThread::currentThreadId());
-    QElapsedTimer releaseTimer;
-    releaseTimer.start();
-    mir_screencast_release_sync(screencast);
-    qInfo() << "ASTRO_SCREEN_SHARE_STOP: owner-thread screencast release complete"
-            << "elapsedMs:" << releaseTimer.elapsed();
+    // Mir release is kept off the StorageWorker event loop. The synchronous
+    // release can enter compositor/driver teardown; doing that inline has
+    // caused device crashes on stop. Keep the object alive exclusively for
+    // this detached release task and let the worker poll its completion.
+    m_rtcMirReleasePendingRoomId = roomId;
+    m_rtcMirReleasePendingError.clear();
+    m_rtcMirReleaseComplete =
+        std::make_shared<std::atomic_bool>(false);
+    const std::shared_ptr<std::atomic_bool> releaseComplete =
+        m_rtcMirReleaseComplete;
 
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: releasing screencast in background"
+            << "workerThread:" << quintptr(QThread::currentThreadId());
+
+    try {
+        std::thread([screencast, releaseComplete]() {
+            QElapsedTimer releaseTimer;
+            releaseTimer.start();
+            mir_screencast_release_sync(screencast);
+            qInfo() << "ASTRO_SCREEN_SHARE_STOP: background screencast release complete"
+                    << "elapsedMs:" << releaseTimer.elapsed();
+            releaseComplete->store(true, std::memory_order_release);
+        }).detach();
+    } catch (const std::exception &exception) {
+        // If a worker thread cannot be created, do not call the Mir release
+        // inline: that is the path implicated in the device crash. Report the
+        // failure and retain the handle rather than risking another crash.
+        qCritical() << "ASTRO_SCREEN_SHARE_STOP: could not start background Mir release:"
+                    << exception.what();
+        m_rtcMirReleaseComplete.reset();
+        m_rtcMirReleasePendingRoomId.clear();
+        emit matrixRtcScreenShareActionFinished(
+            roomId,
+            QStringLiteral("Could not start safe Mir screencast teardown")
+        );
+        return;
+    }
+
+    if (m_rtcScreenShareStopPollTimer)
+        m_rtcScreenShareStopPollTimer->start();
+
+    // LiveKit unpublish can proceed independently while Mir releases its
+    // compositor resources.
     beginRtcScreenShareUnpublish(roomId, QString());
 }
 
