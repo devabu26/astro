@@ -1,5 +1,6 @@
 
 import QtQuick 2.7
+import QtQuick.Window 2.2
 import Qt.labs.settings 1.0
 import Lomiri.Components 1.3
 import Astro.Backend 1.0
@@ -33,6 +34,40 @@ MainView {
     property string pendingNotificationEventId: ""
     property string lastNotificationUrl: ""
     property double lastNotificationUrlAt: 0
+    property real renderProbeOpacity: 0.001
+
+    // Temporary diagnostics: request a tiny scenegraph update every second
+    // and log whether Qt Quick presents the resulting frame.
+    Timer {
+        interval: 1000
+        repeat: true
+        running: true
+
+        onTriggered: {
+            console.info("ASTRO_RENDER_DIAG: UI heartbeat", Date.now())
+            root.renderProbeOpacity =
+                    root.renderProbeOpacity === 0.001 ? 0.002 : 0.001
+        }
+    }
+
+    Rectangle {
+        width: 1
+        height: 1
+        x: 0
+        y: 0
+        color: "black"
+        opacity: root.renderProbeOpacity
+        z: 9999
+    }
+
+    Connections {
+        target: root.Window.window
+        ignoreUnknownSignals: true
+
+        onFrameSwapped: {
+            console.info("ASTRO_RENDER_DIAG: frame swapped", Date.now())
+        }
+    }
 
     Connections {
         target: Qt.application
