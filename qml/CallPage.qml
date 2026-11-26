@@ -1288,10 +1288,24 @@ Item {
                             onRemoteVideoCleared: {
                                 if (identity !== modelData.identity)
                                     return
-                                if (source === "camera")
-                                    remoteVideo.clearFrame()
-                                else if (source === "screenshare")
-                                    remoteScreenVideo.clearFrame()
+
+                                // A LiveKit track-unsubscribe can arrive while
+                                // Qt Quick is processing a frame from this item.
+                                // Defer texture/frame teardown until the current
+                                // signal delivery and scenegraph update have
+                                // unwound; clearing a video item re-entrantly can
+                                // leave the call page's render path stalled.
+                                if (source === "camera") {
+                                    Qt.callLater(function() {
+                                        if (remoteVideo)
+                                            remoteVideo.clearFrame()
+                                    })
+                                } else if (source === "screenshare") {
+                                    Qt.callLater(function() {
+                                        if (remoteScreenVideo)
+                                            remoteScreenVideo.clearFrame()
+                                    })
+                                }
                             }
                         }
 
