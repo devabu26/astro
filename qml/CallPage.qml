@@ -124,6 +124,7 @@ Item {
             screenShareRoomId = ""
             muted = false
             actionError = ""
+            backRequested()
         }
     }
 
@@ -694,6 +695,7 @@ Item {
                     root.screenShareAudioRequested = false
                     root.screenShareRoomId = ""
                     root.muted = false
+                    root.backRequested()
                 }
                 return
             }
@@ -728,6 +730,7 @@ Item {
                 root.screenShareRoomId = ""
                 root.muted = false
                 root.actionError = ""
+                root.backRequested()
             }
         }
 
