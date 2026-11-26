@@ -602,11 +602,14 @@ Item {
         onTriggered: root.tryStartBackgroundCamera()
     }
 
-    // Give Mir a short settling window after the native camera confirms
-    // UnloadedStatus before asking Qt Quick to reopen the foreground camera.
+    // The Ubuntu Touch Hybris camera service can still be tearing down
+    // its native capture pipeline after QCamera reports UnloadedStatus.
+    // Reopening the Qt Quick camera too soon can crash qmlscene inside the
+    // platform camera backend. Keep the handover asynchronous and allow the
+    // service a longer settling window before reopening the preview.
     Timer {
         id: foregroundCameraRestartTimer
-        interval: 250
+        interval: 1500
         repeat: false
         onTriggered: {
             if (!root.videoStarted ||
