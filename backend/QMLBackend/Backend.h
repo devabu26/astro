@@ -430,6 +430,7 @@ signals:
     void requestMarkRoomAsRead(const QString &roomId);
     void requestSendRoomMessage(const QString &roomId, const QString &message);
     void requestDeclineRtcCall(const QString &roomId, const QString &eventId);
+    void requestAcceptRtcCall(const QString &roomId);
     void requestJoinRtcRoom(const QString &roomId);
     void requestLeaveRtcRoom(const QString &roomId);
     void requestStartRtcAudio(const QString &roomId);
