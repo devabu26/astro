@@ -10,6 +10,7 @@
 #include <QVideoFrame>
 #include <QCameraInfo>
 #include <QCameraViewfinderSettings>
+#include <QStringList>
 #include <QImage>
 #include <QVideoSurfaceFormat>
 #include <QOpenGLContext>
