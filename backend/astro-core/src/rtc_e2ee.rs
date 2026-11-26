@@ -9,13 +9,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use livekit::{
-    e2ee::{
-        key_provider::{KeyDerivationAlgorithm, KeyProvider, KeyProviderOptions},
-        E2eeOptions, EncryptionType,
-    },
-    E2eeManager, Room as LiveKitRoom,
-};
 use matrix_sdk::{
     ruma::{
         events::{AnyToDeviceEventContent, ToDeviceEventType},
@@ -35,8 +28,6 @@ const RTC_KEY_EVENT: &str = "m.rtc.encryption_key";
 const RTC_KEY_BYTES: usize = 32;
 const RTC_KEY_ACTIVATION_DELAY: Duration = Duration::from_secs(5);
 const RTC_PENDING_KEY_LIMIT: usize = 128;
-const LIVEKIT_KEY_RING_SIZE: i32 = 256;
-const LIVEKIT_RATCHET_SALT: &[u8] = b"LKFrameEncryptionKey";
 
 #[derive(Clone)]
 struct MediaKey {
@@ -58,9 +49,6 @@ struct PendingMediaKey {
 pub(crate) struct RtcE2eeSession {
     task: AbortHandle,
     local_key: Arc<Mutex<MediaKey>>,
-    local_identity: String,
-    key_provider: KeyProvider,
-    livekit_manager: Arc<Mutex<Option<E2eeManager>>>,
     received_keys: Arc<Mutex<BTreeMap<(String, u8), Vec<u8>>>>,
 }
 
@@ -80,27 +68,9 @@ impl RtcE2eeSession {
             bytes: initial_bytes.to_vec(),
             activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
         }));
-        let own_user_id = client.user_id()
-            .ok_or_else(|| "Matrix user ID is unavailable for LiveKit E2EE".to_string())?
-            .to_string();
-        let local_identity = livekit_participant_identity(&own_user_id, &local_member_id)?;
-
-        let mut key_options = KeyProviderOptions::default();
-        key_options.key_ring_size = LIVEKIT_KEY_RING_SIZE;
-        key_options.ratchet_salt = LIVEKIT_RATCHET_SALT.to_vec();
-        key_options.key_derivation_algorithm = KeyDerivationAlgorithm::HKDF;
-        let key_provider = KeyProvider::new(key_options);
-        if !key_provider.set_key(local_identity.clone(), 0, initial_bytes.to_vec()) {
-            return Err("LiveKit rejected Astro's initial MatrixRTC media key".into());
-        }
-
-        let livekit_manager = Arc::new(Mutex::new(None));
         let received_keys = Arc::new(Mutex::new(BTreeMap::new()));
 
         let task_local_key = Arc::clone(&local_key);
-        let task_livekit_manager = Arc::clone(&livekit_manager);
-        let task_key_provider = key_provider.clone();
-        let task_local_identity = local_identity.clone();
         let task_received_keys = Arc::clone(&received_keys);
         let task_client = client.clone();
         let task_room = room.clone();
@@ -156,18 +126,7 @@ impl RtcE2eeSession {
                     }
 
                     _ = rotation.tick() => {
-                        let next_index = rotate_local_key(
-                            &task_local_key,
-                            &task_key_provider,
-                            &task_local_identity,
-                        );
-                        if let Some(index) = next_index {
-                            schedule_local_key_activation(
-                                Arc::clone(&task_livekit_manager),
-                                task_local_identity.clone(),
-                                index,
-                            );
-                        }
+                        rotate_local_key(&task_local_key);
                         initial_key_distributed = publish_local_key(
                             &task_client,
                             &task_room,
@@ -202,18 +161,7 @@ impl RtcE2eeSession {
                         };
 
                         if changed {
-                            let next_index = rotate_local_key(
-                                &task_local_key,
-                                &task_key_provider,
-                                &task_local_identity,
-                            );
-                            if let Some(index) = next_index {
-                                schedule_local_key_activation(
-                                    Arc::clone(&task_livekit_manager),
-                                    task_local_identity.clone(),
-                                    index,
-                                );
-                            }
+                            rotate_local_key(&task_local_key);
                             initial_key_distributed = publish_local_key(
                                 &task_client,
                                 &task_room,
@@ -243,9 +191,6 @@ impl RtcE2eeSession {
         Ok(Self {
             task: handle.abort_handle(),
             local_key,
-            local_identity,
-            key_provider,
-            livekit_manager,
             received_keys,
         })
     }
@@ -256,38 +201,6 @@ impl RtcE2eeSession {
         let key = self.local_key.lock().ok()?;
         (Instant::now() >= key.activate_at)
             .then(|| (key.index, key.bytes.clone()))
-    }
-
-    pub(crate) fn key_provider(&self) -> KeyProvider {
-        self.key_provider.clone()
-    }
-
-    pub(crate) fn manager_slot(&self) -> Arc<Mutex<Option<E2eeManager>>> {
-        Arc::clone(&self.livekit_manager)
-    }
-
-    pub(crate) fn activation_delay(&self) -> Duration {
-        self.local_key.lock()
-            .map(|key| key.activate_at.saturating_duration_since(Instant::now()))
-            .unwrap_or(Duration::from_secs(5))
-    }
-
-    pub(crate) fn attach_livekit_room(&self, room: &LiveKitRoom) {
-        let manager = room.e2ee_manager().clone();
-        manager.set_enabled(true);
-        if let Ok(mut slot) = self.livekit_manager.lock() {
-            *slot = Some(manager);
-        }
-    }
-
-    pub(crate) fn apply_local_key_index(&self, room: &LiveKitRoom) {
-        let Some((index, _)) = self.current_local_key() else { return };
-        let manager = room.e2ee_manager();
-        for ((identity, _), cryptor) in manager.frame_cryptors() {
-            if identity.to_string() == self.local_identity {
-                cryptor.set_key_index(index as i32);
-            }
-        }
     }
 
     /// Look up a received sender key by MatrixRTC member ID and key index.
@@ -307,57 +220,18 @@ impl Drop for RtcE2eeSession {
     }
 }
 
-fn rotate_local_key(
-    local_key: &Arc<Mutex<MediaKey>>,
-    provider: &KeyProvider,
-    local_identity: &str,
-) -> Option<u8> {
+fn rotate_local_key(local_key: &Arc<Mutex<MediaKey>>) {
     let mut bytes = [0u8; RTC_KEY_BYTES];
     if let Err(error) = getrandom::getrandom(&mut bytes) {
         eprintln!("ASTRO RTC E2EE: media-key rotation failed: {error}");
-        return None;
+        return;
     }
 
-    let next_index = {
-        let mut key = local_key.lock().ok()?;
-        let next_index = key.index.wrapping_add(1);
-        if !provider.set_key(local_identity.to_owned(), next_index as i32, bytes.to_vec()) {
-            eprintln!("ASTRO RTC E2EE: LiveKit rejected rotated media key index {next_index}");
-            return None;
-        }
-        key.index = next_index;
+    if let Ok(mut key) = local_key.lock() {
+        key.index = key.index.wrapping_add(1);
         key.bytes = bytes.to_vec();
         key.activate_at = Instant::now() + RTC_KEY_ACTIVATION_DELAY;
-        next_index
-    };
-
-    Some(next_index)
-}
-
-fn schedule_local_key_activation(
-    manager_slot: Arc<Mutex<Option<E2eeManager>>>,
-    local_identity: String,
-    index: u8,
-) {
-    tokio::spawn(async move {
-        tokio::time::sleep(RTC_KEY_ACTIVATION_DELAY).await;
-        let manager = manager_slot.lock().ok().and_then(|slot| slot.clone());
-        let Some(manager) = manager else { return };
-        for ((identity, _), cryptor) in manager.frame_cryptors() {
-            if identity.to_string() == local_identity {
-                cryptor.set_key_index(index as i32);
-            }
-        }
-        eprintln!("ASTRO RTC E2EE: activated local LiveKit key index {index}");
-    });
-}
-
-fn livekit_participant_identity(sender: &str, member_id: &str) -> Result<String, String> {
-    let canonical_array = serde_json::to_vec(&(sender, member_id))
-        .map_err(|error| format!("Could not serialize MatrixRTC LiveKit identity: {error}"))?;
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(canonical_array);
-    Ok(encode_base64_no_pad(&digest))
+    }
 }
 
 fn is_verified(info: &matrix_sdk::deserialized_responses::EncryptionInfo) -> bool {
@@ -570,27 +444,6 @@ async fn try_store_received_key(
 
         if !device_is_cross_signed(client, &candidate.sender, &candidate.sender_device).await {
             return true;
-        }
-
-        let identity = match livekit_participant_identity(
-            candidate.sender.as_str(),
-            &candidate.member_id,
-        ) {
-            Ok(identity) => identity,
-            Err(error) => {
-                eprintln!("ASTRO RTC E2EE: could not derive sender identity: {error}");
-                return true;
-            }
-        };
-        if !LIVEKIT_KEY_RING_SIZE.eq(&(256)) {
-            return true;
-        }
-
-        // MSC4195: pass the full MatrixRTC generic secret into LiveKit's
-        // HKDF-based per-participant provider. LiveKit derives the 128-bit
-        // AES-GCM frame key using the identity, key index and ratchet salt.
-        if !client_device_key_provider_placeholder() {
-            // replaced by the provider-aware path below
         }
 
         if let Ok(mut keys) = received_keys.lock() {
