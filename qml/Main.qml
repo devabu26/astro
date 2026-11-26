@@ -67,6 +67,14 @@ MainView {
         onFrameSwapped: {
             console.info("ASTRO_RENDER_DIAG: frame swapped", Date.now())
         }
+
+        onSceneGraphInitialized: {
+            console.info("ASTRO_RENDER_DIAG: scene graph initialized", Date.now())
+        }
+
+        onSceneGraphInvalidated: {
+            console.warn("ASTRO_RENDER_DIAG: scene graph invalidated", Date.now())
+        }
     }
 
     Connections {
