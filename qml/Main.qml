@@ -31,6 +31,8 @@ MainView {
     property string callRoomName: ""
     property string pendingNotificationRoomId: ""
     property string pendingNotificationEventId: ""
+    property string lastNotificationUrl: ""
+    property double lastNotificationUrlAt: 0
 
     Connections {
         target: Qt.application
@@ -115,7 +117,19 @@ MainView {
         console.warn("ASTRO PUSH TAP: argument:", String(argument))
         console.warn("ASTRO PUSH TAP: argument type:", typeof argument)
 
-        var url = String(argument)
+        var url = String(argument).trim()
+
+        // Lomiri can deliver the same URI through the desktop launch
+        // arguments and UriHandler during a cold start. Ignore only the
+        // immediate duplicate; a later deliberate tap must still work.
+        var now = new Date().getTime()
+        if (url === root.lastNotificationUrl
+            && now - root.lastNotificationUrlAt < 1500) {
+            console.warn("ASTRO PUSH TAP: ignoring duplicate launch URI")
+            return
+        }
+        root.lastNotificationUrl = url
+        root.lastNotificationUrlAt = now
 
         if (url.indexOf("astro://open") !== 0) {
             console.warn("ASTRO PUSH TAP: URL prefix not recognised")
@@ -174,6 +188,12 @@ MainView {
         console.warn("ASTRO PUSH TAP: opening room:", roomId)
         console.warn("ASTRO PUSH TAP: event:", eventId)
 
+        // A notification must always land in the chat UI, even if
+        // Astro was previously left on Settings or an active call page.
+        root.showingSettings = false
+        root.showingCallPage = false
+        root.callRoomId = ""
+        root.callRoomName = ""
         chatPage.openNotification(roomId, eventId)
     }
 
