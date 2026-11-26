@@ -2477,6 +2477,13 @@ void StorageWorker::startRtcScreenShare(
     m_rtcScreenShareLastFrame.clear();
     m_rtcScreenShareLastFrameSent.invalidate();
     m_rtcScreenShareStartPending = true;
+    m_rtcScreenSharePerfWindow.start();
+    m_rtcScreenSharePerfFrames = 0;
+    m_rtcScreenSharePerfMapUs = 0;
+    m_rtcScreenSharePerfCompareUs = 0;
+    m_rtcScreenSharePerfCopyUs = 0;
+    m_rtcScreenSharePerfConvertUs = 0;
+    m_rtcScreenSharePerfSubmitUs = 0;
     m_rtcScreenShareTimer = new QTimer(this);
     m_rtcScreenShareTimer->setInterval(33);
     connect(m_rtcScreenShareTimer, &QTimer::timeout,
@@ -2501,6 +2508,9 @@ void StorageWorker::captureRtcScreenShareFrame()
         !m_rtcScreenShareStream || m_rtcScreenShareRoomId.isEmpty())
         return;
 
+    QElapsedTimer stageClock;
+    stageClock.start();
+
     const QString roomId = m_rtcScreenShareRoomId;
     const int width = m_rtcScreenShareWidth;
     const int height = m_rtcScreenShareHeight;
@@ -2508,6 +2518,8 @@ void StorageWorker::captureRtcScreenShareFrame()
     MirGraphicsRegion region{};
     const bool mapped =
         mir_buffer_stream_get_graphics_region(m_rtcScreenShareStream, &region);
+    const qint64 mapUs = stageClock.nsecsElapsed() / 1000;
+    stageClock.restart();
     const bool validRegion = mapped && region.vaddr &&
         region.width >= static_cast<unsigned int>(width) &&
         region.height >= static_cast<unsigned int>(height) &&
@@ -2542,10 +2554,12 @@ void StorageWorker::captureRtcScreenShareFrame()
             }
         }
     }
+    const qint64 compareUs = stageClock.nsecsElapsed() / 1000;
     if (unchanged) {
         mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
         return;
     }
+    stageClock.restart();
 
     // Keep the previous-frame snapshot as the staging buffer. This avoids
     // allocating and copying a second full RGBA frame on every changed tick.
@@ -2559,10 +2573,13 @@ void StorageWorker::captureRtcScreenShareFrame()
                     static_cast<size_t>(width * 4));
     }
     mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
+    const qint64 copyUs = stageClock.nsecsElapsed() / 1000;
 
+    stageClock.restart();
     const QByteArray i420 = rgbaFrameToI420(
         m_rtcScreenShareLastFrame, width, height
     );
+    const qint64 convertUs = stageClock.nsecsElapsed() / 1000;
     const QByteArray roomBytes = roomId.toUtf8();
     if (i420.isEmpty()) {
         stopRtcScreenShareCapture();
@@ -2573,6 +2590,7 @@ void StorageWorker::captureRtcScreenShareFrame()
         return;
     }
 
+    stageClock.restart();
     char *frameError = nullptr;
     const int32_t pushResult = astro_matrix_push_rtc_screenshare_frame(
         m_matrixClient, roomBytes.constData(),
@@ -2590,6 +2608,35 @@ void StorageWorker::captureRtcScreenShareFrame()
         stopRtcScreenShareCapture();
         beginRtcScreenShareUnpublish(roomId, failure);
         return;
+    }
+
+    const qint64 submitUs = stageClock.nsecsElapsed() / 1000;
+    ++m_rtcScreenSharePerfFrames;
+    m_rtcScreenSharePerfMapUs += mapUs;
+    m_rtcScreenSharePerfCompareUs += compareUs;
+    m_rtcScreenSharePerfCopyUs += copyUs;
+    m_rtcScreenSharePerfConvertUs += convertUs;
+    m_rtcScreenSharePerfSubmitUs += submitUs;
+
+    if (m_rtcScreenSharePerfWindow.elapsed() >= 5000) {
+        const double count = static_cast<double>(m_rtcScreenSharePerfFrames);
+        if (count > 0.0) {
+            qInfo() << "ASTRO_SCREEN_SHARE_PERF:"
+                    << "resolution:" << width << "x" << height
+                    << "changedFrames:" << m_rtcScreenSharePerfFrames
+                    << "avgMapMs:" << (m_rtcScreenSharePerfMapUs / count / 1000.0)
+                    << "avgCompareMs:" << (m_rtcScreenSharePerfCompareUs / count / 1000.0)
+                    << "avgCopyMs:" << (m_rtcScreenSharePerfCopyUs / count / 1000.0)
+                    << "avgConvertMs:" << (m_rtcScreenSharePerfConvertUs / count / 1000.0)
+                    << "avgLiveKitSubmitMs:" << (m_rtcScreenSharePerfSubmitUs / count / 1000.0);
+        }
+        m_rtcScreenSharePerfFrames = 0;
+        m_rtcScreenSharePerfMapUs = 0;
+        m_rtcScreenSharePerfCompareUs = 0;
+        m_rtcScreenSharePerfCopyUs = 0;
+        m_rtcScreenSharePerfConvertUs = 0;
+        m_rtcScreenSharePerfSubmitUs = 0;
+        m_rtcScreenSharePerfWindow.restart();
     }
 
     m_rtcScreenShareLastFrameSent.restart();
