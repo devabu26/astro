@@ -2206,7 +2206,8 @@ impl MatrixClientManager {
     pub fn poll_room_timeline_updates_json(&mut self) -> String {
         // A decline ends an outgoing one-to-one call for the caller. In a
         // group room it only rejects that invite; other participants remain.
-        let declines = self.notification_queue.drain_incoming_call_declines();
+        let declines: Vec<(String, String, String)> =
+            self.notification_queue.drain_incoming_call_declines();
         if !declines.is_empty() {
             let client = self.client.as_ref().cloned();
             for (room_id, notification_event_id, sender) in declines {
