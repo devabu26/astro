@@ -81,7 +81,11 @@ Item {
     // MatrixRTC membership is present in its current state snapshot.
     function roomHasOngoingCall(roomId) {
         var memberships = root.rtcMembershipsByRoom[String(roomId)] || []
-        return Array.isArray(memberships) && memberships.length > 0
+        // The local joined state is authoritative for our own call
+        // presence. Membership snapshots can briefly lag behind it,
+        // especially while a parent Space is collapsed.
+        return roomCallJoinedByMe(roomId) ||
+               (Array.isArray(memberships) && memberships.length > 0)
     }
 
     // True only when the logged-in Matrix user has joined this room's call.
@@ -1075,7 +1079,9 @@ Item {
                                 radius: width / 2
                                 anchors.verticalCenter: parent.verticalCenter
                                 color: entryCallJoinedByMe ? "#ff354f" : "#35c759"
-                                visible: entryHasOngoingCall
+                                // Keep the local red indicator visible even
+                                // if the remote membership snapshot has not arrived.
+                                visible: entryHasOngoingCall || entryCallJoinedByMe
                                 z: 2
                             }
 
