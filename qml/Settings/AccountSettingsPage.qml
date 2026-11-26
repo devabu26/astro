@@ -95,18 +95,6 @@ Item {
 
         spacing: units.gu(2)
 
-        Label {
-            text: "Account"
-            fontSize: "x-large"
-            color: "white"
-        }
-
-        Label {
-            text: "Manage your Matrix account and session."
-            color: "#91a4b5"
-            wrapMode: Text.WordWrap
-        }
-
         Rectangle {
             width: parent.width
             height: Math.max(units.gu(17), accountProfileContent.height + units.gu(4))
