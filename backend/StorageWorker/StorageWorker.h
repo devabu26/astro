@@ -507,6 +507,10 @@ private:
     bool m_rtcBackgroundCameraRestartAfterStop = false;
     QString m_rtcBackgroundCameraRestartRoomId;
     QString m_rtcBackgroundCameraRestartDeviceId;
+    bool m_rtcStopVideoAfterBackgroundUnload = false;
+    QString m_rtcStopVideoAfterBackgroundUnloadRoomId;
+    bool m_rtcStopAudioAfterBackgroundUnload = false;
+    QString m_rtcStopAudioAfterBackgroundUnloadRoomId;
     RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
     QString m_rtcVideoRoomId;
     int m_rtcVideoWidth = 0;
