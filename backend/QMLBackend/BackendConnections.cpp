@@ -50,19 +50,37 @@ Backend::Backend(QObject *parent)
     m_notificationManager = new NotificationManager(this);
 
     if (qGuiApp) {
+        m_applicationState = static_cast<int>(qGuiApp->applicationState());
         m_applicationActive =
             qGuiApp->applicationState() == Qt::ApplicationActive;
+
+        qInfo() << "ASTRO_APP_LIFECYCLE: initial state"
+                << m_applicationState
+                << "active:" << m_applicationActive
+                << "applicationId:" << QCoreApplication::applicationName();
+
         connect(
             qGuiApp,
             &QGuiApplication::applicationStateChanged,
             this,
             [this](Qt::ApplicationState state) {
                 const bool active = state == Qt::ApplicationActive;
-                if (m_applicationActive == active)
+                const int stateValue = static_cast<int>(state);
+                if (m_applicationState == stateValue)
                     return;
 
-                m_applicationActive = active;
-                emit applicationActiveChanged(active);
+                const int previousState = m_applicationState;
+                m_applicationState = stateValue;
+                qInfo() << "ASTRO_APP_LIFECYCLE: state transition"
+                        << previousState << "->" << stateValue
+                        << "active:" << active
+                        << "thread:" << QThread::currentThreadId();
+
+                emit applicationStateChanged(stateValue);
+                if (m_applicationActive != active) {
+                    m_applicationActive = active;
+                    emit applicationActiveChanged(active);
+                }
             }
         );
     }
