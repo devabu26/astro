@@ -623,11 +623,11 @@ MainView {
 
         onAnswerRequested: {
             root.showingSettings = false
-            root.openCallPage(
-                roomId,
-                chatPage.roomNameForId(roomId),
-                true
-            )
+            var roomName = chatPage.roomNameForId(roomId)
+            // Select the room first so CallPage receives the correct
+            // room kind (DM vs. group) before it starts joining.
+            chatPage.openNotification(roomId, eventId)
+            root.openCallPage(roomId, roomName, true)
         }
     }
 
