@@ -315,9 +315,15 @@ Item {
         actionError = ""
         if (screenShareStarted) {
             pendingOperation = "stopScreenShare"
-            // Begin requesting Qt Quick frames immediately; waiting for the
-            // backend completion is too late if compositor teardown stalls
-            // presentation while the asynchronous Mir release is underway.
+
+            // Reflect the local stop immediately. Mir release and LiveKit
+            // unpublish are asynchronous; keeping the button in its active
+            // state until both finish makes the control appear unresponsive.
+            screenShareStarted = false
+            screenShareAudioRequested = false
+            screenShareRoomId = ""
+
+            // Request Qt Quick frames throughout compositor teardown.
             refreshAfterScreenShareStop()
             backend.stopRtcScreenShare(roomId)
         } else {
