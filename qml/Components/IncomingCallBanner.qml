@@ -12,7 +12,7 @@ Item {
     signal openRequested(string roomId, string eventId)
 
     visible: roomId !== ""
-    height: visible ? banner.implicitHeight : 0
+    height: visible ? banner.height : 0
 
     function showIncomingCall(sender, incomingRoomId, incomingEventId, intent) {
         caller = sender || "Someone"
