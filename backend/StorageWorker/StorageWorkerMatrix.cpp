@@ -2110,15 +2110,9 @@ void StorageWorker::startRtcScreenShare(
     // width/height are retained as a caller hint for API compatibility.
     // The actual capture and LiveKit dimensions are selected from Mir below.
     const QByteArray roomIdBytes = roomId.toUtf8();
-    auto failStart = [this, &roomIdBytes, &roomId](const QString &message) {
+    auto failStart = [this, &roomId](const QString &message) {
         stopRtcScreenShareCapture();
-        if (m_matrixClient) {
-            char *stopError = nullptr;
-            astro_matrix_stop_rtc_screenshare(
-                m_matrixClient, roomIdBytes.constData(), &stopError);
-            if (stopError) astro_string_free(stopError);
-        }
-        emit matrixRtcScreenShareActionFinished(roomId, message);
+        beginRtcScreenShareUnpublish(roomId, message);
     };
 
     if (includeDeviceAudio) {
@@ -2280,15 +2274,11 @@ void StorageWorker::startRtcScreenShare(
     QTimer::singleShot(5000, this, [this, roomId]() {
         if (!m_rtcScreenShareStartPending || m_rtcScreenShareRoomId != roomId)
             return;
-        const QByteArray roomBytes = roomId.toUtf8();
         stopRtcScreenShareCapture();
-        if (m_matrixClient) {
-            char *stopError = nullptr;
-            astro_matrix_stop_rtc_screenshare(m_matrixClient, roomBytes.constData(), &stopError);
-            if (stopError) astro_string_free(stopError);
-        }
-        emit matrixRtcScreenShareActionFinished(roomId,
-            QStringLiteral("Mir connected, but no screen frame was delivered within 5 seconds"));
+        beginRtcScreenShareUnpublish(
+            roomId,
+            QStringLiteral("Mir connected, but no screen frame was delivered within 5 seconds")
+        );
     });
     qInfo() << "In-process Mir screen capture started:" << width << "x" << height;
 }
@@ -2313,15 +2303,11 @@ void StorageWorker::captureRtcScreenShareFrame()
     if (!validRegion) {
         if (mapped)
             mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
-        const QByteArray roomBytes = roomId.toUtf8();
         stopRtcScreenShareCapture();
-        if (m_matrixClient) {
-            char *stopError = nullptr;
-            astro_matrix_stop_rtc_screenshare(m_matrixClient, roomBytes.constData(), &stopError);
-            if (stopError) astro_string_free(stopError);
-        }
-        emit matrixRtcScreenShareActionFinished(roomId,
-            QStringLiteral("Could not access the Mir screencast buffer stream"));
+        beginRtcScreenShareUnpublish(
+            roomId,
+            QStringLiteral("Could not access the Mir screencast buffer stream")
+        );
         return;
     }
 
@@ -2362,11 +2348,10 @@ void StorageWorker::captureRtcScreenShareFrame()
     const QByteArray roomBytes = roomId.toUtf8();
     if (i420.isEmpty()) {
         stopRtcScreenShareCapture();
-        char *stopError = nullptr;
-        astro_matrix_stop_rtc_screenshare(m_matrixClient, roomBytes.constData(), &stopError);
-        if (stopError) astro_string_free(stopError);
-        emit matrixRtcScreenShareActionFinished(roomId,
-            QStringLiteral("Could not convert the Mir screen frame to I420"));
+        beginRtcScreenShareUnpublish(
+            roomId,
+            QStringLiteral("Could not convert the Mir screen frame to I420")
+        );
         return;
     }
 
@@ -2385,10 +2370,7 @@ void StorageWorker::captureRtcScreenShareFrame()
     }
     if (!failure.isEmpty()) {
         stopRtcScreenShareCapture();
-        char *stopError = nullptr;
-        astro_matrix_stop_rtc_screenshare(m_matrixClient, roomBytes.constData(), &stopError);
-        if (stopError) astro_string_free(stopError);
-        emit matrixRtcScreenShareActionFinished(roomId, failure);
+        beginRtcScreenShareUnpublish(roomId, failure);
         return;
     }
 
