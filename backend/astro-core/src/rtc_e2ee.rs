@@ -886,6 +886,19 @@ async fn try_store_received_key_legacy(
     true
 }
 
+#[cfg(test)]
+mod tests {
+    use super::matrix_livekit_identity_from_parts;
+
+    #[test]
+    fn msc4195_participant_identity_matches_spec_vector() {
+        assert_eq!(
+            matrix_livekit_identity_from_parts("@alice:example.com", "memberABC"),
+            "M3VnsLXrkbxIDINXO64u8PZzFyD9ZYFiQULR2dshWYs",
+        );
+    }
+}
+
 fn encode_base64_no_pad(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
