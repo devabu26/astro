@@ -2636,6 +2636,7 @@ impl MatrixClientManager {
                 .map(|user_id| user_id.to_string())
                 .collect::<Vec<_>>();
 
+            let mut outgoing_notification: Option<(String, Vec<String>)> = None;
             if !recipients.is_empty() {
                 let sender_ts = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -2663,11 +2664,17 @@ impl MatrixClientManager {
                     "org.matrix.msc4075.rtc.notification",
                     notification_content
                 ).await {
-                    Ok(response) => eprintln!(
-                        "ASTRO RTC CALL: sent MSC4075 incoming-call notification {} to {} other room member(s)",
-                        response.response.event_id,
-                        recipients.len()
-                    ),
+                    Ok(response) => {
+                        outgoing_notification = Some((
+                            response.response.event_id.to_string(),
+                            recipients.iter().map(ToString::to_string).collect()
+                        ));
+                        eprintln!(
+                            "ASTRO RTC CALL: sent MSC4075 incoming-call notification {} to {} other room member(s)",
+                            response.response.event_id,
+                            recipients.len()
+                        );
+                    },
                     Err(error) => eprintln!(
                         "ASTRO RTC CALL: failed to send MSC4075 incoming-call notification: {error}"
                     ),
@@ -2700,11 +2707,14 @@ impl MatrixClientManager {
                 eprintln!("ASTRO RTC CALL: no other joined room members to notify");
             }
 
-            Ok::<(String, String, Option<String>, Option<serde_json::Value>, bool), String>((state_key, livekit_service_url, member_id, modern_membership, encrypted))
+            Ok::<(String, String, Option<String>, Option<serde_json::Value>, bool, Option<(String, Vec<String>)>), String>((state_key, livekit_service_url, member_id, modern_membership, encrypted, outgoing_notification))
         });
 
-        let (state_key, livekit_service_url, member_id, modern_membership, encrypted) = result?;
+        let (state_key, livekit_service_url, member_id, modern_membership, encrypted, outgoing_notification) = result?;
         self.rtc_local_memberships.insert(room_id.to_owned(), state_key.clone());
+        if let Some(notification) = outgoing_notification {
+            self.rtc_outgoing_call_notifications.insert(room_id.to_owned(), notification);
+        }
         if let (Some(member_id), Some(modern_membership)) = (member_id, modern_membership) {
             self.rtc_modern_memberships.insert(room_id.to_owned(), (member_id.clone(), modern_membership.clone()));
             if let Ok(mut renewals) = self.rtc_modern_renewals.lock() {
