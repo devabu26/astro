@@ -16,6 +16,6 @@
         }
     },
     "version": "@PROJECT_VERSION@",
-    "maintainer": "Madabu <email@domain.org>",
+    "maintainer": "Madabu <Devabu@tuta.io>",
     "framework": "$ENV{CLICK_FRAMEWORK}"
 }
