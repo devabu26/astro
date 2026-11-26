@@ -3,6 +3,7 @@
 
 #include <QMutexLocker>
 #include <thread>
+#include <exception>
 #include <QDebug>
 #include <QAbstractVideoSurface>
 #include <QAbstractVideoBuffer>
