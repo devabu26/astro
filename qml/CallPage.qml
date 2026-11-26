@@ -592,9 +592,13 @@ Item {
             return
         }
 
-        ringbackRequested = true
+        // Restart the player without clearing the request flag. Calling
+        // stopRingback() here also clears ringbackRequested; if the WAV is
+        // still loading, onStatusChanged then never starts playback.
         if (restartPlayback === true)
-            root.stopRingback()
+            ringbackAudio.stop()
+
+        ringbackRequested = true
 
         console.info(
             "ASTRO_CALL_RINGBACK: requested",
