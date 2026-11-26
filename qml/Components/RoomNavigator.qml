@@ -138,8 +138,16 @@ Item {
     }
 
     function activityForRoom(room) {
-        if (room.kind === "space")
+        if (room.kind === "space") {
+            // Prefer the timestamp computed by Matrix SpaceService from
+            // every descendant room. Fall back to the local graph walk for
+            // spaces the SDK graph has not indexed yet.
+            var aggregate = Number(room.spaceLastActivity || 0)
+            if (aggregate > 0)
+                return aggregate
+
             return latestActivityForSpace(room.roomId, [])
+        }
 
         return Number(room.lastActivity || 0)
     }
