@@ -195,6 +195,138 @@ impl RtcE2eeSession {
         })
     }
 
+
+    /// Start the legacy MSC3401 room-state key exchange used when MSC4354
+    /// sticky memberships are unavailable. Legacy member IDs are the
+    /// Element Call convention: `sender_user_id:device_id`, unless the
+    /// membership explicitly supplies a custom `membershipID`.
+    pub(crate) fn start_legacy(
+        runtime: &Runtime,
+        client: Client,
+        room: Room,
+        local_member_id: String,
+    ) -> Result<Self, String> {
+        let mut initial_bytes = [0u8; RTC_KEY_BYTES];
+        getrandom::getrandom(&mut initial_bytes)
+            .map_err(|error| format!("Could not generate a MatrixRTC media key: {error}"))?;
+
+        let local_key = Arc::new(Mutex::new(MediaKey {
+            index: 0,
+            bytes: initial_bytes.to_vec(),
+            activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
+        }));
+        let received_keys = Arc::new(Mutex::new(BTreeMap::new()));
+
+        let task_local_key = Arc::clone(&local_key);
+        let task_received_keys = Arc::clone(&received_keys);
+        let task_client = client.clone();
+        let task_room = room.clone();
+
+        let handle = runtime.spawn(async move {
+            let event_type = ToDeviceEventType::from(RTC_KEY_EVENT);
+            let mut incoming = task_client
+                .subscribe_to_custom_to_device_messages(vec![event_type]);
+            let mut poll = tokio::time::interval(Duration::from_secs(5));
+            let mut rotation = tokio::time::interval(Duration::from_secs(15 * 60));
+            poll.tick().await;
+            rotation.tick().await;
+
+            let mut pending = VecDeque::<PendingMediaKey>::new();
+            let mut previous_members = HashSet::<String>::new();
+            let mut initial_key_distributed = false;
+
+            // Poll immediately after subscription so the local legacy state
+            // membership and other participants are visible before key send.
+            if let Some(members) = legacy_memberships(&task_room).await {
+                previous_members = members.iter()
+                    .map(|member| member.member_id.clone())
+                    .collect();
+                initial_key_distributed = publish_local_key_legacy(
+                    &task_client,
+                    &task_room,
+                    &local_member_id,
+                    &task_local_key,
+                    &members,
+                ).await;
+            }
+
+            loop {
+                tokio::select! {
+                    message = incoming.next() => {
+                        let Some(message) = message else { break };
+                        if let Some(candidate) = parse_incoming_key(message) {
+                            if try_store_received_key_legacy(
+                                &task_client,
+                                &task_room,
+                                &task_received_keys,
+                                &candidate,
+                            ).await {
+                                continue;
+                            }
+                            if pending.len() == RTC_PENDING_KEY_LIMIT {
+                                pending.pop_front();
+                            }
+                            pending.push_back(candidate);
+                        }
+                    }
+
+                    _ = poll.tick() => {
+                        let Some(members) = legacy_memberships(&task_room).await else {
+                            continue;
+                        };
+                        let current_members = members.iter()
+                            .map(|member| member.member_id.clone())
+                            .collect::<HashSet<_>>();
+                        if !initial_key_distributed || current_members != previous_members {
+                            if initial_key_distributed {
+                                rotate_local_key(&task_local_key);
+                            }
+                            initial_key_distributed = publish_local_key_legacy(
+                                &task_client,
+                                &task_room,
+                                &local_member_id,
+                                &task_local_key,
+                                &members,
+                            ).await;
+                            previous_members = current_members;
+                        }
+
+                        let mut still_pending = VecDeque::new();
+                        while let Some(candidate) = pending.pop_front() {
+                            if !try_store_received_key_legacy(
+                                &task_client,
+                                &task_room,
+                                &task_received_keys,
+                                &candidate,
+                            ).await {
+                                still_pending.push_back(candidate);
+                            }
+                        }
+                        pending = still_pending;
+                    }
+
+                    _ = rotation.tick() => {
+                        rotate_local_key(&task_local_key);
+                        let members = legacy_memberships(&task_room).await.unwrap_or_default();
+                        initial_key_distributed = publish_local_key_legacy(
+                            &task_client,
+                            &task_room,
+                            &local_member_id,
+                            &task_local_key,
+                            &members,
+                        ).await;
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            task: handle.abort_handle(),
+            local_key,
+            received_keys,
+        })
+    }
+
     /// The active sender key, available only after the MSC4143 delivery grace.
     #[allow(dead_code)]
     pub(crate) fn current_local_key(&self) -> Option<(u8, Vec<u8>)> {
@@ -453,6 +585,197 @@ async fn try_store_received_key(
     }
 
     false
+}
+
+
+#[derive(Clone)]
+struct LegacyRtcMember {
+    member_id: String,
+    user_id: OwnedUserId,
+    device_id: OwnedDeviceId,
+}
+
+async fn legacy_memberships(room: &Room) -> Option<Vec<LegacyRtcMember>> {
+    let events = room.get_state_events(
+        matrix_sdk::ruma::events::StateEventType::from(
+            "org.matrix.msc3401.call.member"
+        )
+    ).await.ok()?;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let mut members = Vec::new();
+    let mut seen = HashSet::<(String, String)>::new();
+
+    for event in events {
+        let raw = match event {
+            matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState::Sync(raw) => raw,
+            matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState::Stripped(_) => continue,
+        };
+        let value: Value = match serde_json::from_str(raw.json().get()) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let Some(sender) = value.get("sender").and_then(Value::as_str) else { continue };
+        let Ok(user_id) = matrix_sdk::ruma::UserId::parse(sender) else { continue };
+        let content = match value.get("content") {
+            Some(content) if content.is_object() => content,
+            _ => continue,
+        };
+        let entries: Vec<&Value> = content.get("memberships")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().collect())
+            .unwrap_or_else(|| vec![content]);
+
+        for entry in entries {
+            let application = entry.get("application").and_then(Value::as_str)
+                .or_else(|| content.get("application").and_then(Value::as_str))
+                .unwrap_or("");
+            let call_id = entry.get("call_id").and_then(Value::as_str).unwrap_or("");
+            let scope = entry.get("scope").and_then(Value::as_str).unwrap_or("");
+            if application != "m.call" || !call_id.is_empty()
+                || (!scope.is_empty() && scope != "m.room") {
+                continue;
+            }
+
+            let Some(device_id_str) = entry.get("device_id").and_then(Value::as_str)
+                .filter(|value| !value.is_empty()) else { continue };
+            let Ok(device_id) = matrix_sdk::ruma::DeviceId::parse(device_id_str) else { continue };
+
+            let expiry = entry.get("expires_ts").and_then(Value::as_u64).or_else(|| {
+                let duration = entry.get("expires").and_then(Value::as_u64)?;
+                let base = entry.get("created_ts").and_then(Value::as_u64)
+                    .or_else(|| value.get("origin_server_ts").and_then(Value::as_u64))?;
+                base.checked_add(duration)
+            });
+            if expiry.is_some_and(|expiry| now_ms > expiry) {
+                continue;
+            }
+
+            let member_id = entry.get("membershipID").and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("{sender}:{device_id_str}"));
+            if !seen.insert((sender.to_owned(), device_id_str.to_owned())) {
+                continue;
+            }
+
+            members.push(LegacyRtcMember {
+                member_id,
+                user_id: user_id.to_owned(),
+                device_id: device_id.to_owned(),
+            });
+        }
+    }
+
+    Some(members)
+}
+
+async fn publish_local_key_legacy(
+    client: &Client,
+    room: &Room,
+    member_id: &str,
+    local_key: &Arc<Mutex<MediaKey>>,
+    members: &[LegacyRtcMember],
+) -> bool {
+    let key = match local_key.lock() {
+        Ok(key) => key.clone(),
+        Err(_) => return false,
+    };
+
+    let own_user = client.user_id().map(ToString::to_string);
+    let own_device = client.device_id().map(ToString::to_string);
+    let mut recipients: BTreeMap<OwnedUserId, Vec<DeviceIdOrAllDevices>> = BTreeMap::new();
+    let mut seen = HashSet::<(String, String)>::new();
+
+    for member in members {
+        if own_user.as_deref() == Some(member.user_id.as_str())
+            && own_device.as_deref() == Some(member.device_id.as_str()) {
+            continue;
+        }
+        let pair = (member.user_id.to_string(), member.device_id.to_string());
+        if !seen.insert(pair) {
+            continue;
+        }
+        if !device_is_cross_signed(client, &member.user_id, &member.device_id).await {
+            continue;
+        }
+        let Ok(device) = DeviceIdOrAllDevices::try_from(member.device_id.as_str()) else {
+            continue;
+        };
+        recipients.entry(member.user_id.clone()).or_default().push(device);
+    }
+
+    if recipients.is_empty() {
+        return false;
+    }
+
+    let content = serde_json::json!({
+        "room_id": room.room_id().as_str(),
+        "member_id": member_id,
+        "media_key": {
+            "index": key.index,
+            "key": encode_base64_no_pad(&key.bytes)
+        }
+    });
+    let raw = match Raw::<AnyToDeviceEventContent>::from_json_string(content.to_string()) {
+        Ok(raw) => raw,
+        Err(error) => {
+            eprintln!("ASTRO RTC E2EE legacy: could not encode media-key message: {error}");
+            return false;
+        }
+    };
+
+    match client.send_encrypted_to_device(
+        &ToDeviceEventType::from(RTC_KEY_EVENT),
+        recipients,
+        raw,
+    ).await {
+        Ok(failures) if failures.is_empty() => {
+            eprintln!("ASTRO RTC E2EE legacy: distributed key index {} to verified legacy members", key.index);
+            true
+        }
+        Ok(failures) => {
+            eprintln!("ASTRO RTC E2EE legacy: key delivery had {} recipient failure group(s)", failures.len());
+            false
+        }
+        Err(error) => {
+            eprintln!("ASTRO RTC E2EE legacy: encrypted key delivery failed: {error}");
+            false
+        }
+    }
+}
+
+async fn try_store_received_key_legacy(
+    client: &Client,
+    room: &Room,
+    received_keys: &Arc<Mutex<BTreeMap<(String, u8), Vec<u8>>>>,
+    candidate: &PendingMediaKey,
+) -> bool {
+    if candidate.room_id != room.room_id().as_str() {
+        return true;
+    }
+
+    let Some(members) = legacy_memberships(room).await else { return false };
+    let matching = members.iter().any(|member| {
+        member.member_id == candidate.member_id
+            && member.user_id == candidate.sender
+            && member.device_id == candidate.sender_device
+    });
+    if !matching {
+        return false;
+    }
+
+    if !device_is_cross_signed(client, &candidate.sender, &candidate.sender_device).await {
+        return true;
+    }
+
+    if let Ok(mut keys) = received_keys.lock() {
+        keys.insert((candidate.member_id.clone(), candidate.index), candidate.bytes.clone());
+    }
+    true
 }
 
 fn encode_base64_no_pad(bytes: &[u8]) -> String {
