@@ -33,6 +33,24 @@ MainView {
     property string pendingNotificationEventId: ""
     property string lastNotificationUrl: ""
     property double lastNotificationUrlAt: 0
+
+    function openCallPage(roomId, roomName, startImmediately) {
+        if (!roomId)
+            return
+
+        root.callRoomId = roomId
+        root.callRoomName = roomName || ""
+        root.showingCallPage = true
+
+        if (startImmediately) {
+            // Let CallPage receive its room, audio and membership bindings
+            // before asking it to join and start the LiveKit audio session.
+            Qt.callLater(function() {
+                if (root.showingCallPage && root.callRoomId === roomId)
+                    callPage.startCall()
+            })
+        }
+    }
     Connections {
         target: Qt.application
 
