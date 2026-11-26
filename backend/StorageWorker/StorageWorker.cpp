@@ -36,6 +36,44 @@ StorageWorker::StorageWorker(QObject *parent)
         &StorageWorker::pollRtcRemoteVideoFrames
     );
 
+    // Diagnose native background camera stalls without changing capture cadence.
+    m_rtcBackgroundCameraWatchdogTimer = new QTimer(this);
+    m_rtcBackgroundCameraWatchdogTimer->setInterval(5000);
+    connect(
+        m_rtcBackgroundCameraWatchdogTimer,
+        &QTimer::timeout,
+        this,
+        [this]() {
+            const int frameCount = m_rtcNativeGlFrameCount.loadAcquire();
+            const int newFrames = frameCount - m_rtcNativeGlWatchdogPreviousCount;
+            ++m_rtcNativeGlWatchdogTicks;
+            m_rtcNativeGlWatchdogPreviousCount = frameCount;
+
+            qInfo() << "ASTRO_BACKGROUND_CAMERA: native capture watchdog"
+                    << "tick:" << m_rtcNativeGlWatchdogTicks
+                    << "newGlFrames:" << newFrames
+                    << "totalGlFrames:" << frameCount
+                    << "camera:" << m_rtcCamera
+                    << "status:" << (m_rtcCamera
+                        ? static_cast<int>(m_rtcCamera->status()) : -1)
+                    << "state:" << (m_rtcCamera
+                        ? static_cast<int>(m_rtcCamera->state()) : -1)
+                    << "error:" << (m_rtcCamera
+                        ? static_cast<int>(m_rtcCamera->error()) : -1)
+                    << "errorString:" << (m_rtcCamera
+                        ? m_rtcCamera->errorString() : QString())
+                    << "workerThread:" << QThread::currentThreadId();
+
+            if (newFrames == 0) {
+                qWarning() << "ASTRO_BACKGROUND_CAMERA: watchdog detected no new native GL frames"
+                           << "intervalMs:"
+                           << m_rtcBackgroundCameraWatchdogTimer->interval()
+                           << "cameraActive:" << (m_rtcCamera &&
+                               m_rtcCamera->status() == QCamera::ActiveStatus);
+            }
+        }
+    );
+
     // Poll asynchronous LiveKit screen-share unpublishing without blocking
     // the worker's event loop on network signalling.
     m_rtcScreenShareStopPollTimer = new QTimer(this);
