@@ -504,37 +504,57 @@ fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMed
     }
 
     let value: Value = serde_json::from_str(message.raw.json().get()).ok()?;
-    if value.get("type").and_then(Value::as_str) != Some(RTC_KEY_EVENT)
-        || value.get("sender").and_then(Value::as_str) != Some(info.sender.as_str())
-    {
+    let event_type = value.get("type").and_then(Value::as_str)?;
+    if event_type != RTC_KEY_EVENT && event_type != LEGACY_RTC_KEY_EVENT {
+        return None;
+    }
+    if value.get("sender").and_then(Value::as_str) != Some(info.sender.as_str()) {
         return None;
     }
 
+    let sender_device = info.sender_device.clone()?;
     let content = value.get("content")?;
     let room_id = content.get("room_id")?.as_str()?.to_owned();
-    let member_id = content.get("member_id")?.as_str()?.to_owned();
-    if room_id.is_empty() || member_id.is_empty() {
-        return None;
-    }
+    if room_id.is_empty() { return None; }
 
-    let media_key = content.get("media_key")?;
-    let index = u8::try_from(media_key.get("index")?.as_u64()?).ok()?;
-    let encoded_key = media_key.get("key")?.as_str()?;
+    let (member_id, index, encoded_key) = if event_type == RTC_KEY_EVENT {
+        let member_id = content.get("member_id")?.as_str()?.to_owned();
+        let media_key = content.get("media_key")?;
+        (
+            member_id,
+            u8::try_from(media_key.get("index")?.as_u64()?).ok()?,
+            media_key.get("key")?.as_str()?,
+        )
+    } else {
+        let member = content.get("member")?;
+        let claimed_device_id = member.get("claimed_device_id")?.as_str()?;
+        // Claimed device metadata is only a consistency check; Olm metadata
+        // and the legacy room-state membership establish the trusted identity.
+        if claimed_device_id != sender_device.as_str() { return None; }
+        let member_id = member.get("id").and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("{}:{claimed_device_id}", info.sender));
+        let keys = content.get("keys")?;
+        (
+            member_id,
+            u8::try_from(keys.get("index")?.as_u64()?).ok()?,
+            keys.get("key")?.as_str()?,
+        )
+    };
+
+    if member_id.is_empty() { return None; }
     let bytes = decode_base64_no_pad(encoded_key)?;
-    if bytes.len() != RTC_KEY_BYTES {
-        return None;
-    }
+    if bytes.len() != RTC_KEY_BYTES { return None; }
 
     Some(PendingMediaKey {
         room_id,
         member_id,
         sender: info.sender.clone(),
-        sender_device: info.sender_device.clone()?,
+        sender_device,
         index,
         bytes,
     })
 }
-
 async fn try_store_received_key(
     client: &Client,
     room: &Room,
@@ -713,13 +733,21 @@ async fn publish_local_key_legacy(
         return false;
     }
 
+    let own_device = match client.device_id() {
+        Some(device_id) => device_id.to_string(),
+        None => return false,
+    };
+    let sent_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    // Pre-sticky Element Call clients use the legacy event name and envelope.
     let content = serde_json::json!({
         "room_id": room.room_id().as_str(),
-        "member_id": member_id,
-        "media_key": {
-            "index": key.index,
-            "key": encode_base64_no_pad(&key.bytes)
-        }
+        "keys": { "index": key.index, "key": encode_base64_no_pad(&key.bytes) },
+        "member": { "id": member_id, "claimed_device_id": own_device },
+        "session": { "application": "m.call", "call_id": "", "scope": "m.room" },
+        "sent_ts": sent_ts
     });
     let raw = match Raw::<AnyToDeviceEventContent>::from_json_string(content.to_string()) {
         Ok(raw) => raw,
@@ -728,9 +756,8 @@ async fn publish_local_key_legacy(
             return false;
         }
     };
-
     match client.send_encrypted_to_device(
-        &ToDeviceEventType::from(RTC_KEY_EVENT),
+        &ToDeviceEventType::from(LEGACY_RTC_KEY_EVENT),
         recipients,
         raw,
     ).await {
