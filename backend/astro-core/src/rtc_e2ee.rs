@@ -876,7 +876,7 @@ async fn try_store_received_key_legacy(
         keys.insert(
             (candidate.member_id.clone(), candidate.index),
             ReceivedMediaKey {
-                livekit_identity: format!("{}:{}", candidate.sender, candidate.sender_device),
+                livekit_identity: candidate.member_id.clone(),
                 bytes: candidate.bytes.clone(),
                 activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
             },
