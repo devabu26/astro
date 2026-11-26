@@ -2678,10 +2678,7 @@ impl MatrixClientManager {
             livekit_service_url,
         );
 
-        if encrypted && self.rtc_modern_memberships.contains_key(room_id) {
-            let member_id = self.rtc_modern_memberships.get(room_id)
-                .map(|(member_id, _)| member_id.clone())
-                .ok_or_else(|| "Modern MatrixRTC membership disappeared before E2EE startup".to_string())?;
+        if encrypted {
             let client = self.client.as_ref()
                 .ok_or_else(|| "No active Matrix session".to_string())?
                 .clone();
@@ -2691,14 +2688,33 @@ impl MatrixClientManager {
                 client.get_room(&parsed_room_id)
                     .ok_or_else(|| "Matrix room disappeared before E2EE key exchange could start".to_string())
             })?;
-            let session = RtcE2eeSession::start(
-                self.runtime.as_ref(),
-                client,
-                room,
-                member_id,
-            )?;
+
+            let session = if let Some((member_id, _)) = self.rtc_modern_memberships.get(room_id) {
+                RtcE2eeSession::start(
+                    self.runtime.as_ref(),
+                    client,
+                    room,
+                    member_id.clone(),
+                )?
+            } else {
+                // Legacy MatrixRTC identifies the LiveKit participant as
+                // `$user_id:$device_id` unless a custom membershipID is set.
+                // Astro does not set a custom membershipID in its state event.
+                let user_id = client.user_id()
+                    .ok_or_else(|| "Matrix user ID is unavailable for legacy RTC E2EE".to_string())?;
+                let device_id = client.device_id()
+                    .ok_or_else(|| "Matrix device ID is unavailable for legacy RTC E2EE".to_string())?;
+                let legacy_member_id = format!("{user_id}:{device_id}");
+                RtcE2eeSession::start_legacy(
+                    self.runtime.as_ref(),
+                    client,
+                    room,
+                    legacy_member_id,
+                )?
+            };
             self.rtc_e2ee_sessions.insert(room_id.to_owned(), session);
-            eprintln!("ASTRO RTC E2EE: per-member media-key exchange started in {room_id}");
+            eprintln!("ASTRO RTC E2EE: {} media-key exchange started in {room_id}",
+                if self.rtc_modern_memberships.contains_key(room_id) { "MSC4354" } else { "legacy MSC3401" });
         }
 
         if let Ok(mut renewals) = self.rtc_renewals.lock() {
