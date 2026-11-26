@@ -1726,7 +1726,6 @@ Item {
                                         color: "white"
                                     }
                                     cached: true
-                                    hideSource: true
                                     visible: participantAvatarImage.status === Image.Ready
                                 }
                             }
