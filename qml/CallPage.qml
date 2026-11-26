@@ -284,7 +284,10 @@ Item {
             startAudio()
         } else {
             pendingOperation = "join"
-            backend.joinRtcRoom(roomId)
+            if (incomingCall)
+                backend.acceptRtcCall(roomId)
+            else
+                backend.joinRtcRoom(roomId)
         }
     }
 
