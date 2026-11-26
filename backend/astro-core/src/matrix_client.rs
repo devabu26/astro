@@ -3147,30 +3147,46 @@ impl MatrixClientManager {
         let completion = Arc::new(Mutex::new(None));
         let task_completion = Arc::clone(&completion);
         self.runtime.spawn(async move {
-            let mut failures = Vec::new();
+            // LiveKit signalling can stall during shutdown on a weak or
+            // disconnected mobile network. Bound the whole unpublish phase so
+            // the Qt Stop action always receives a completion instead of
+            // remaining pending forever.
+            let unpublish = async {
+                let mut failures = Vec::new();
 
-            if let Some(track) = video_track {
-                let track_sid = LocalTrack::Video(track).sid();
-                if let Err(error) = participant.unpublish_track(&track_sid).await {
-                    failures.push(format!(
-                        "Could not unpublish LiveKit screen share track: {error}"
-                    ));
+                if let Some(track) = video_track {
+                    let track_sid = LocalTrack::Video(track).sid();
+                    if let Err(error) = participant.unpublish_track(&track_sid).await {
+                        failures.push(format!(
+                            "Could not unpublish LiveKit screen share track: {error}"
+                        ));
+                    }
                 }
-            }
 
-            if let Some(track) = audio_track {
-                let track_sid = LocalTrack::Audio(track).sid();
-                if let Err(error) = participant.unpublish_track(&track_sid).await {
-                    failures.push(format!(
-                        "Could not unpublish LiveKit screen-share audio track: {error}"
-                    ));
+                if let Some(track) = audio_track {
+                    let track_sid = LocalTrack::Audio(track).sid();
+                    if let Err(error) = participant.unpublish_track(&track_sid).await {
+                        failures.push(format!(
+                            "Could not unpublish LiveKit screen-share audio track: {error}"
+                        ));
+                    }
                 }
-            }
 
-            let result = if failures.is_empty() {
-                Ok(())
-            } else {
-                Err(failures.join("; "))
+                if failures.is_empty() {
+                    Ok(())
+                } else {
+                    Err(failures.join("; "))
+                }
+            };
+
+            let result = match tokio::time::timeout(
+                Duration::from_secs(12),
+                unpublish,
+            ).await {
+                Ok(result) => result,
+                Err(_) => Err(
+                    "Timed out after 12 seconds while unpublishing the LiveKit screen share".into()
+                ),
             };
 
             *task_completion.lock().unwrap() = Some(result);
