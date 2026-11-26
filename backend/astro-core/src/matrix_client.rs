@@ -2204,6 +2204,57 @@ impl MatrixClientManager {
 
     /// Drain timeline changes and report changed unread counts.
     pub fn poll_room_timeline_updates_json(&mut self) -> String {
+        // A decline ends an outgoing one-to-one call for the caller. In a
+        // group room it only rejects that invite; other participants remain.
+        let declines = self.notification_queue.drain_incoming_call_declines();
+        if !declines.is_empty() {
+            let client = self.client.as_ref().cloned();
+            for (room_id, notification_event_id, sender) in declines {
+                let Some((expected_event_id, recipients)) =
+                    self.rtc_outgoing_call_notifications.get(&room_id).cloned()
+                else {
+                    continue;
+                };
+                if expected_event_id != notification_event_id
+                    || !recipients.iter().any(|recipient| recipient == &sender)
+                {
+                    continue;
+                }
+
+                let Some(client) = client.as_ref() else { continue; };
+                let parsed_room_id = match matrix_sdk::ruma::RoomId::parse(&room_id) {
+                    Ok(id) => id,
+                    Err(_) => continue,
+                };
+                let is_one_to_one = self.runtime.block_on(async {
+                    let Some(room) = client.get_room(&parsed_room_id) else {
+                        return false;
+                    };
+                    room.human_member_ids(RoomMemberships::JOIN).await
+                        .map(|members| members.len() == 2)
+                        .unwrap_or(false)
+                });
+
+                if !is_one_to_one {
+                    eprintln!(
+                        "ASTRO RTC CALL: decline from {sender} in {room_id}; leaving group call active"
+                    );
+                    continue;
+                }
+
+                eprintln!(
+                    "ASTRO RTC CALL: one-to-one call declined by {sender}; ending local call in {room_id}"
+                );
+                if let Err(error) = self.stop_rtc_audio(&room_id) {
+                    eprintln!("ASTRO RTC CALL: could not close LiveKit after decline: {error}");
+                }
+                if let Err(error) = self.leave_rtc_room(&room_id) {
+                    eprintln!("ASTRO RTC CALL: could not withdraw membership after decline: {error}");
+                }
+                self.rtc_outgoing_call_notifications.remove(&room_id);
+            }
+        }
+
         let own_user_id = self
             .client
             .as_ref()
