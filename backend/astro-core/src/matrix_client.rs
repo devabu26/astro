@@ -3685,16 +3685,53 @@ impl MatrixClientManager {
                         if let Ok(user_id) =
                             matrix_sdk::ruma::UserId::parse(sender)
                         {
-                            if let Ok(Some(profile)) =
-                                self.runtime.block_on(room.get_member_no_sync(&user_id))
-                            {
-                                self.rtc_participant_profiles.insert(
-                                    cache_key.clone(),
-                                    RtcParticipantProfile {
-                                        display_name: profile.display_name().map(str::to_owned),
-                                        avatar_url: profile.avatar_url().map(ToString::to_string),
-                                    },
-                                );
+                            // MatrixRTC can advertise a participant before this
+                            // client's lazy-loaded room-member cache contains their
+                            // m.room.member event. get_member() ensures that member
+                            // state is fetched when needed; get_member_no_sync()
+                            // silently returns None in that situation.
+                            let profile_result = self.runtime.block_on(
+                                room.get_member(&user_id)
+                            );
+
+                            match profile_result {
+                                Ok(Some(profile)) => {
+                                    let display_name =
+                                        profile.display_name().map(str::to_owned);
+                                    let avatar_url =
+                                        profile.avatar_url().map(ToString::to_string);
+
+                                    eprintln!(
+                                        "ASTRO RTC PROFILE: room={} user={} member_found=true display_name={} avatar={}",
+                                        room_id,
+                                        sender,
+                                        display_name.is_some(),
+                                        avatar_url.is_some()
+                                    );
+
+                                    self.rtc_participant_profiles.insert(
+                                        cache_key.clone(),
+                                        RtcParticipantProfile {
+                                            display_name,
+                                            avatar_url,
+                                        },
+                                    );
+                                }
+                                Ok(None) => {
+                                    eprintln!(
+                                        "ASTRO RTC PROFILE: room={} user={} member_found=false",
+                                        room_id,
+                                        sender
+                                    );
+                                }
+                                Err(error) => {
+                                    eprintln!(
+                                        "ASTRO RTC PROFILE: room={} user={} lookup_failed={}",
+                                        room_id,
+                                        sender,
+                                        error
+                                    );
+                                }
                             }
                         }
                     }
