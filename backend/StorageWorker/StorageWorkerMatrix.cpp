@@ -1273,6 +1273,28 @@ public:
         const int width = frame.width();
         const int height = frame.height();
         const QVideoFrame::PixelFormat format = frame.pixelFormat();
+        const bool glTextureFrame =
+            frame.handleType() == QAbstractVideoBuffer::GLTextureHandle;
+
+        // Keep native GL-camera diagnostics separate from the foreground QML
+        // camera: both paths intentionally share this surface instance.
+        if (glTextureFrame) {
+            const int glFrameNumber = m_glFrameCount.fetchAndAddRelaxed(1) + 1;
+            if (!m_glFrameDiagnosticTimer.isValid())
+                m_glFrameDiagnosticTimer.start();
+            if (glFrameNumber <= 3 || glFrameNumber % 30 == 0) {
+                const qint64 elapsedMs = m_glFrameDiagnosticTimer.elapsed();
+                qInfo() << "ASTRO_RTC_CAMERA: native GL frame received"
+                        << "frames:" << glFrameNumber
+                        << "elapsedMs:" << elapsedMs
+                        << "averageFps:" << (elapsedMs > 0
+                            ? (glFrameNumber * 1000.0 / elapsedMs) : 0.0)
+                        << "size:" << width << "x" << height
+                        << "format:" << format
+                        << "pending:" << m_pending->loadAcquire()
+                        << "thread:" << QThread::currentThreadId();
+            }
+        }
 
         const int frameNumber = m_loggedFrameCount.fetchAndAddRelaxed(1) + 1;
         if (!m_frameDiagnosticTimer.isValid())
@@ -1315,8 +1337,6 @@ public:
         if (m_pending->loadAcquire() != 0)
             return true;
 
-        const bool glTextureFrame =
-            frame.handleType() == QAbstractVideoBuffer::GLTextureHandle;
         QVideoFrame mapped(frame);
 
         if (glTextureFrame) {
@@ -1664,6 +1684,8 @@ private:
     QAtomicInt m_surfaceStarted{0};
     QAtomicInt m_loggedFrameCount{0};
     QElapsedTimer m_frameDiagnosticTimer;
+    QAtomicInt m_glFrameCount{0};
+    QElapsedTimer m_glFrameDiagnosticTimer;
     QAtomicInt m_loggedInvalidFrame{0};
     QAtomicInt m_loggedInvalidDimensions{0};
     QAtomicInt m_loggedMapFailure{0};
