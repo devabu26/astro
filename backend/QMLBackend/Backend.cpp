@@ -249,6 +249,12 @@ bool Backend::storageReady() const
 }
 
 
+int Backend::applicationState() const
+{
+    return m_applicationState;
+}
+
+
 void Backend::setStorageReady(bool ready)
 {
     if (m_storageReady == ready) {
