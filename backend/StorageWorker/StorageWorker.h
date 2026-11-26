@@ -512,9 +512,6 @@ private:
     int m_rtcVideoWidth = 0;
     int m_rtcVideoHeight = 0;
     QString m_rtcScreenShareRoomId;
-    // Keep the app's Mir client connection alive across screen-share sessions.
-    // Releasing it during capture teardown has coincided with Qt Quick render stalls.
-    MirConnection *m_rtcMirConnection = nullptr;
     MirConnection *m_rtcScreenShareConnection = nullptr;
     MirScreencast *m_rtcScreenCast = nullptr;
     MirBufferStream *m_rtcScreenShareStream = nullptr;
