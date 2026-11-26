@@ -1071,32 +1071,48 @@ Item {
                             width: parent.width
                             spacing: units.gu(0.6)
 
-                            Rectangle {
-                                id: activeCallIndicator
-
+                            // Keep the indicator's layout footprint fixed.
+                            // The red glow is drawn with lightweight QML
+                            // rectangles instead of DropShadow, which creates
+                            // an off-screen effect layer for every delegate.
+                            Item {
                                 width: units.gu(0.9)
                                 height: width
-                                radius: width / 2
                                 anchors.verticalCenter: parent.verticalCenter
-                                color: entryCallJoinedByMe ? "#ff354f" : "#35c759"
-                                // Keep the local red indicator visible even
-                                // if the remote membership snapshot has not arrived.
                                 visible: entryHasOngoingCall || entryCallJoinedByMe
-                                z: 2
-                            }
 
-                            DropShadow {
-                                anchors.fill: activeCallIndicator
-                                source: activeCallIndicator
-                                horizontalOffset: 0
-                                verticalOffset: 0
-                                radius: 9
-                                samples: 17
-                                spread: 0.35
-                                color: "#ffff354f"
-                                opacity: entryCallJoinedByMe ? 0.9 : 0
-                                visible: entryCallJoinedByMe
-                                z: 1
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: entryCallJoinedByMe
+                                           ? units.gu(1.8) : 0
+                                    height: width
+                                    radius: width / 2
+                                    color: "#ff354f"
+                                    opacity: 0.16
+                                    visible: entryCallJoinedByMe
+                                }
+
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: entryCallJoinedByMe
+                                           ? units.gu(1.35) : 0
+                                    height: width
+                                    radius: width / 2
+                                    color: "#ff354f"
+                                    opacity: 0.28
+                                    visible: entryCallJoinedByMe
+                                }
+
+                                Rectangle {
+                                    id: activeCallIndicator
+
+                                    anchors.centerIn: parent
+                                    width: units.gu(0.9)
+                                    height: width
+                                    radius: width / 2
+                                    color: entryCallJoinedByMe
+                                           ? "#ff354f" : "#35c759"
+                                }
                             }
 
                             Text {
