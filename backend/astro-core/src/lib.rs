@@ -6,6 +6,7 @@ pub mod ffi;
 pub mod matrix_client;
 pub mod media;
 pub mod notifications;
+pub mod rtc_e2ee;
 pub mod session_storage;
 pub mod storage;
 
