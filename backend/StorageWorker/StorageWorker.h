@@ -1,571 +1,487 @@
 
-#pragma once
+#include "StorageWorker.h"
 
-#include <QObject>
-#include <memory>
-#include <atomic>
-#include <QString>
-#include <QByteArray>
-#include <QTimer>
-#include <QElapsedTimer>
-#include <QMutex>
-#include <QCamera>
-#include <QAudioInput>
-#include <QAudioDeviceInfo>
-#include <QAudioFormat>
-#include <QIODevice>
-#include <cstdint>
+#include <QDir>
+#include <QFileInfo>
+#include <QStandardPaths>
+#include <QDebug>
 
-class RtcCameraVideoSurface;
-class QVideoFrame;
-class QImage;
-class QOpenGLContext;
-class QOffscreenSurface;
+// =============================================================
+// Construction and destruction
+// =============================================================
 
-#include "../astro_core_ffi.h"
-
-#include <mir_toolkit/mir_client_library.h>
-#include <mir_toolkit/mir_screencast.h>
-#include <mir_toolkit/mir_buffer_stream.h>
-
-/*
- * Background worker responsible for encrypted storage, Matrix operations,
- * device management, timeline updates and media retrieval.
- *
- * Backend owns this object and moves it to a dedicated QThread.
- * Operations should therefore be dispatched through queued connections
- * rather than called directly from the QML/UI thread.
- *
- * The Rust Matrix client is managed by this class through the FFI.
- */
-class StorageWorker : public QObject
+StorageWorker::StorageWorker(QObject *parent)
+    : QObject(parent)
 {
-    Q_OBJECT
+    // Timeline updates are polled on the worker thread, keeping
+    // Matrix SDK operations away from the QML-facing thread.
+    m_timelinePollTimer = new QTimer(this);
+    m_timelinePollTimer->setInterval(100);
 
-public:
-    explicit StorageWorker(QObject *parent = nullptr);
-    ~StorageWorker() override;
-
-    void setRtcCameraOpenGLContext(
-        QOpenGLContext *context,
-        QOffscreenSurface *surface
-    );
-    bool makeRtcCameraOpenGLContextCurrent();
-    void releaseRtcCameraOpenGLContext();
-
-public slots:
-
-    // ---------------------------------------------------------
-    // Encrypted storage operations
-    // ---------------------------------------------------------
-
-    void openStorage(const QString &passphrase);
-    void closeStorage();
-
-    // The implementation must validate the deletion target before
-    // performing recursive filesystem operations.
-    void deleteAllData(const QString &path);
-
-
-    // ---------------------------------------------------------
-    // Matrix account operations
-    // ---------------------------------------------------------
-
-    void loginMatrix(
-        const QString &homeserver,
-        const QString &username,
-        const QString &password
+    connect(
+        m_timelinePollTimer,
+        &QTimer::timeout,
+        this,
+        &StorageWorker::pollRoomTimelineUpdates
     );
 
-    void logoutMatrix();
-
-    void setPushToken(const QString &token);
-    void setPushPrivacyLevel(const QString &privacyLevel);
-    void setPushNotificationsEnabled(bool enabled);
-
-
-    // ---------------------------------------------------------
-    // Matrix devices, rooms and timelines
-    // ---------------------------------------------------------
-
-    void fetchMatrixAccountProfile();
-    void fetchMatrixDevices();
-    void requestDeviceVerification(const QString &deviceId);
-    void renameMatrixDevice(
-        const QString &deviceId,
-        const QString &displayName
-    );
-    void checkMatrixDeviceManagementUrl(const QString &deviceId);
-    void revokeMatrixDevice(
-        const QString &deviceId,
-        const QString &password
+    // Remote video is polled independently so timeline polling does not
+    // cap incoming video refresh to its slower interval.
+    m_rtcVideoPollTimer = new QTimer(this);
+    m_rtcVideoPollTimer->setInterval(33);
+    connect(
+        m_rtcVideoPollTimer,
+        &QTimer::timeout,
+        this,
+        &StorageWorker::pollRtcRemoteVideoFrames
     );
 
-    void fetchMatrixRooms();
-    void syncMatrixRooms();
-    void resumeMatrixSync();
-
-    void fetchRoomTimeline(const QString &roomId);
-    void refreshRoomTimeline(const QString &roomId);
-    void paginateRoomTimeline(const QString &roomId);
-    void markRoomAsRead(const QString &roomId);
-    void sendRoomMessage(const QString &roomId, const QString &message);
-    void joinRtcRoom(const QString &roomId);
-    void leaveRtcRoom(const QString &roomId);
-    void startRtcAudio(const QString &roomId);
-    void stopRtcAudio(const QString &roomId);
-    void setRtcAudioMuted(const QString &roomId, bool muted);
-
-    // ASTRO_RTC_VIDEO_STAGE3
-    void startRtcVideo(const QString &roomId, int width, int height);
-    void startRtcBackgroundCamera(const QString &roomId, const QString &deviceId);
-    void stopRtcBackgroundCamera(const QString &roomId);
-    void startRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
-    void stopRtcScreenShare(const QString &roomId);
-    void pollRtcScreenShareStop();
-    // Called directly by the Qt Quick video-filter render thread while its GL context is current.
-    void processRtcCameraFrame(const QVideoFrame &frame);
-    void processRtcCameraImage(const QString &roomId, const QImage &image);
-    void switchRtcCamera(const QString &roomId);
-    void pushRtcVideoFrame(
-        const QString &roomId,
-        int width,
-        int height,
-        const QByteArray &i420
+    // Poll asynchronous LiveKit screen-share unpublishing without blocking
+    // the worker's event loop on network signalling.
+    m_rtcScreenShareStopPollTimer = new QTimer(this);
+    m_rtcScreenShareStopPollTimer->setInterval(50);
+    connect(
+        m_rtcScreenShareStopPollTimer,
+        &QTimer::timeout,
+        this,
+        &StorageWorker::pollRtcScreenShareStop
     );
-    void stopRtcVideo(const QString &roomId);
+}
 
-    void sendRoomAttachment(
-        const QString &requestKey,
-        const QString &roomId,
-        const QString &fileUrl,
-        const QString &caption
-    );
+StorageWorker::~StorageWorker()
+{
+    if (m_rtcScreenShareStopPollTimer)
+        m_rtcScreenShareStopPollTimer->stop();
+    stopRtcScreenShareCapture();
+    if (m_timelinePollTimer) {
+        m_timelinePollTimer->stop();
+    }
+    if (m_rtcVideoPollTimer) {
+        m_rtcVideoPollTimer->stop();
+    }
 
-    void toggleRoomReaction(
-        const QString &roomId,
-        const QString &eventId,
-        const QString &reactionKey
-    );
+    // Clear retained credentials before releasing the worker.
+    m_storagePassphrase.fill('\0');
+    m_pushToken.fill('\0');
 
-    void sendRoomReply(
-        const QString &roomId,
-        const QString &eventId,
-        const QString &message
-    );
-    void editRoomMessage(
-        const QString &roomId,
-        const QString &eventId,
-        const QString &message
-    );
-    void redactRoomEvent(
-        const QString &roomId,
-        const QString &eventId
-    );
+    if (m_matrixClient) {
+        astro_matrix_close(m_matrixClient);
+        m_matrixClient = nullptr;
+    }
+}
 
+// =============================================================
+// Encrypted storage operations
+// =============================================================
 
-    // ---------------------------------------------------------
-    // Matrix end-to-end device verification
-    // ---------------------------------------------------------
+void StorageWorker::openStorage(const QString &passphrase)
+{
+    if (m_matrixClient || !m_storagePassphrase.isEmpty()) {
+        emit storageFailed(
+            QStringLiteral("Encrypted storage is already open")
+        );
+        return;
+    }
 
-    void acceptVerificationRequest(
-        const QString &userId,
-        const QString &flowId
-    );
+    const QString dataPath =
+        QStandardPaths::writableLocation(
+            QStandardPaths::AppDataLocation
+        );
 
-    void cancelVerificationRequest(
-        const QString &userId,
-        const QString &flowId
-    );
+    if (dataPath.isEmpty()) {
+        emit storageFailed(
+            QStringLiteral(
+                "Could not determine the application data directory"
+            )
+        );
+        return;
+    }
 
-    void confirmVerification(
-        const QString &userId,
-        const QString &flowId
-    );
+    QDir directory;
 
-    void mismatchVerification(
-        const QString &userId,
-        const QString &flowId
-    );
+    if (!directory.mkpath(dataPath)) {
+        emit storageFailed(
+            QStringLiteral(
+                "Could not create the application data directory"
+            )
+        );
+        return;
+    }
 
+    const QByteArray pathBytes = dataPath.toUtf8();
+    QByteArray passphraseBytes = passphrase.toUtf8();
 
-    // Called by the worker-thread timer to process retained
-    // Matrix timeline subscriptions.
-    void pollRoomTimelineUpdates();
-    void pollRtcRemoteVideoFrames();
+    if (passphraseBytes.isEmpty()) {
+        passphraseBytes.fill('\0');
 
+        emit storageFailed(
+            QStringLiteral("The storage passphrase must not be empty")
+        );
+        return;
+    }
 
-    // ---------------------------------------------------------
-    // Matrix media and avatar retrieval
-    // ---------------------------------------------------------
+    // Open the encrypted storage database.
+    char *error = nullptr;
 
-    void fetchRoomAvatar(
-        const QString &roomId,
-        const QString &mxcUri,
-        quint32 width,
-        quint32 height
+    AstroStorageManager *storage = astro_storage_open(
+        pathBytes.constData(),
+        passphraseBytes.constData(),
+        &error
     );
 
-    void fetchSenderAvatar(
-        const QString &requestKey,
-        const QString &mxcUri,
-        quint32 width,
-        quint32 height
+    if (!storage) {
+        QString message =
+            QStringLiteral("Could not open encrypted storage");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+        }
+
+        if (error) {
+            astro_string_free(error);
+        }
+
+        passphraseBytes.fill('\0');
+        emit storageFailed(message);
+        return;
+    }
+
+    // The storage handle is only needed to verify the passphrase.
+    astro_storage_close(storage);
+
+    // Restore the previously saved Matrix session, if one exists.
+    AstroMatrixClient *client = nullptr;
+    error = nullptr;
+
+    const int result = astro_matrix_restore(
+        pathBytes.constData(),
+        passphraseBytes.constData(),
+        &client,
+        &error
     );
 
-    void fetchMessageImage(
-        const QString &requestKey,
-        const QString &mediaSourceJson
+    if (result < 0) {
+        QString message =
+            QStringLiteral("Could not restore Matrix session");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+        }
+
+        if (error) {
+            astro_string_free(error);
+        }
+
+        passphraseBytes.fill('\0');
+        emit storageFailed(message);
+        return;
+    }
+
+    // Release any unexpected error string returned on success.
+    if (error) {
+        astro_string_free(error);
+    }
+
+    // Retain the passphrase only while encrypted storage is unlocked.
+    m_storagePassphrase = passphraseBytes;
+    passphraseBytes.fill('\0');
+
+    m_matrixClient = client;
+    m_matrixSessionActive = (result == 1);
+
+    if (m_rtcVideoPollTimer) {
+        m_rtcVideoPollTimer->start();
+    }
+
+    registerPushTokenIfReady();
+
+    if (m_timelinePollTimer) {
+        if (m_matrixSessionActive) {
+            m_timelinePollTimer->start();
+        } else {
+            m_timelinePollTimer->stop();
+        }
+    }
+
+    emit storageOpened();
+    emit sessionRestored(result == 1);
+}
+
+void StorageWorker::closeStorage()
+{
+    stopRtcScreenShareCapture();
+    stopRtcCamera();
+    if (m_timelinePollTimer) {
+        m_timelinePollTimer->stop();
+    }
+    if (m_rtcVideoPollTimer) {
+        m_rtcVideoPollTimer->stop();
+    }
+
+    // Clear the retained passphrase before closing the session.
+    m_storagePassphrase.fill('\0');
+    m_storagePassphrase.clear();
+    m_matrixSessionActive = false;
+
+    if (m_matrixClient) {
+        astro_matrix_close(m_matrixClient);
+        m_matrixClient = nullptr;
+    }
+
+    emit storageClosed();
+}
+
+// =============================================================
+// Delete all local application data
+// =============================================================
+
+void StorageWorker::deleteAllData(const QString &path)
+{
+    const bool storageWasUnlocked = !m_storagePassphrase.isEmpty();
+
+    // Never allow this operation to recursively delete an arbitrary
+    // directory supplied by another part of the application.
+    const QString appDataPath =
+        QStandardPaths::writableLocation(
+            QStandardPaths::AppDataLocation
+        );
+
+    const QString expectedPath =
+        appDataPath.isEmpty()
+            ? QString()
+            : QDir(appDataPath).canonicalPath();
+
+    const QString requestedPath =
+        path.isEmpty()
+            ? QString()
+            : QFileInfo(path).canonicalFilePath();
+
+    if (expectedPath.isEmpty() ||
+        requestedPath.isEmpty() ||
+        requestedPath != expectedPath ||
+        expectedPath == QDir::rootPath()) {
+
+        emit dataDeletionFinished(
+            false,
+            storageWasUnlocked,
+            false,
+            false,
+            QString(),
+            QStringLiteral("Refused to delete an invalid application data path")
+        );
+        return;
+    }
+
+    const bool logoutAttempted = m_matrixSessionActive;
+
+    bool logoutSucceeded = false;
+    QString logoutError;
+
+    // Attempt remote logout before removing the local session.
+    if (logoutAttempted) {
+        if (!m_matrixClient) {
+            logoutError = QStringLiteral(
+                "The active Matrix client is unavailable"
+            );
+        } else {
+            char *error = nullptr;
+
+            const int result = astro_matrix_logout(
+                m_matrixClient,
+                &error
+            );
+
+            if (result == 0) {
+                logoutSucceeded = true;
+            } else {
+                logoutError = QStringLiteral(
+                    "Matrix logout could not be confirmed"
+                );
+
+                if (error) {
+                    logoutError = QString::fromUtf8(error);
+                }
+            }
+
+            if (error) {
+                astro_string_free(error);
+            }
+        }
+    }
+
+    // Close Rust-side resources before deleting their storage files.
+    closeStorage();
+
+    QDir directory(expectedPath);
+    const bool deleted = directory.removeRecursively();
+
+    const QString deletionError =
+        deleted
+            ? QString()
+            : QStringLiteral("Could not delete Astro local data");
+
+    emit dataDeletionFinished(
+        deleted,
+        storageWasUnlocked,
+        logoutAttempted,
+        logoutSucceeded,
+        logoutError,
+        deletionError
+    );
+}
+
+// =============================================================
+// Matrix account operations
+// =============================================================
+
+void StorageWorker::loginMatrix(
+    const QString &homeserver,
+    const QString &username,
+    const QString &password
+)
+{
+    if (m_storagePassphrase.isEmpty()) {
+        emit storageFailed(
+            QStringLiteral("Encrypted storage is not unlocked")
+        );
+        return;
+    }
+
+    if (m_matrixClient) {
+        emit storageFailed(
+            QStringLiteral("A Matrix session is already active")
+        );
+        return;
+    }
+
+    const QString dataPath =
+        QStandardPaths::writableLocation(
+            QStandardPaths::AppDataLocation
+        );
+
+    if (dataPath.isEmpty()) {
+        emit storageFailed(
+            QStringLiteral(
+                "Could not determine the application data directory"
+            )
+        );
+        return;
+    }
+
+    const QByteArray pathBytes = dataPath.toUtf8();
+    const QByteArray homeserverBytes = homeserver.toUtf8();
+    const QByteArray usernameBytes = username.toUtf8();
+
+    QByteArray passwordBytes = password.toUtf8();
+
+    if (homeserverBytes.isEmpty() ||
+        usernameBytes.isEmpty() ||
+        passwordBytes.isEmpty()) {
+
+        passwordBytes.fill('\0');
+
+        emit storageFailed(
+            QStringLiteral(
+                "Enter your homeserver, username and password"
+            )
+        );
+        return;
+    }
+
+    // Authenticate through the Rust Matrix backend.
+    char *error = nullptr;
+
+    AstroMatrixClient *client = astro_matrix_login(
+        pathBytes.constData(),
+        m_storagePassphrase.constData(),
+        homeserverBytes.constData(),
+        usernameBytes.constData(),
+        passwordBytes.constData(),
+        &error
     );
 
-    void exportMessageImage(
-        const QString &requestKey,
-        const QString &mediaSourceJson,
-        const QString &mimeType,
-        const QString &fileName
+    // The password is no longer needed after the FFI call.
+    passwordBytes.fill('\0');
+
+    if (!client) {
+        QString message =
+            QStringLiteral("Matrix login failed");
+
+        if (error) {
+            message = QString::fromUtf8(error);
+        }
+
+        if (error) {
+            astro_string_free(error);
+        }
+
+        emit storageFailed(message);
+        return;
+    }
+
+    if (error) {
+        astro_string_free(error);
+    }
+
+    m_matrixClient = client;
+    m_matrixSessionActive = true;
+
+    registerPushTokenIfReady();
+
+    if (m_timelinePollTimer) {
+        m_timelinePollTimer->start();
+    }
+
+    emit matrixLoginSucceeded();
+}
+
+void StorageWorker::logoutMatrix()
+{
+    if (!m_matrixClient) {
+        emit storageFailed(
+            QStringLiteral("No Matrix session is active")
+        );
+        return;
+    }
+
+    char *error = nullptr;
+
+    const int result = astro_matrix_logout(
+        m_matrixClient,
+        &error
     );
 
-    void fetchMessageThumbnail(
-        const QString &requestKey,
-        const QString &mediaSourceJson,
-        quint32 width,
-        quint32 height
-    );
+    if (result != 0) {
+        QString message =
+            QStringLiteral("Matrix logout failed");
 
-    void fetchMessageVideo(
-        const QString &requestKey,
-        const QString &mediaSourceJson,
-        const QString &mimeType
-    );
+        if (error) {
+            message = QString::fromUtf8(error);
+        }
 
+        if (error) {
+            astro_string_free(error);
+        }
 
-signals:
+        emit storageFailed(message);
+        return;
+    }
 
-    // ---------------------------------------------------------
-    // Encrypted storage results
-    // ---------------------------------------------------------
+    if (error) {
+        astro_string_free(error);
+    }
 
-    void storageOpened();
-    void storageClosed();
-    void storageFailed(const QString &error);
-    void sessionRestored(bool restored);
+    // Stop screen capture before releasing the LiveKit client.
+    stopRtcScreenShareCapture();
 
-    void dataDeletionFinished(
-        bool deleted,
-        bool storageWasUnlocked,
-        bool logoutAttempted,
-        bool logoutSucceeded,
-        const QString &logoutError,
-        const QString &deletionError
-    );
+    // Stop polling before releasing the logged-out client.
+    if (m_timelinePollTimer) {
+        m_timelinePollTimer->stop();
+    }
 
+    astro_matrix_close(m_matrixClient);
+    m_matrixClient = nullptr;
+    m_matrixSessionActive = false;
 
-    // ---------------------------------------------------------
-    // Matrix account results
-    // ---------------------------------------------------------
-
-    void matrixLoginSucceeded();
-    void matrixLogoutSucceeded();
-
-
-    // ---------------------------------------------------------
-    // Matrix device and room results
-    // ---------------------------------------------------------
-
-    void matrixAccountProfileUpdated(const QString &json, const QString &error);
-    void matrixDevicesUpdated(const QString &json, const QString &error);
-
-    /*
-     * finished distinguishes the cached room response from the
-     * completed homeserver synchronisation response.
-     * Backend relies on this cached-first loading sequence.
-     */
-    void matrixRoomsUpdated(const QString &json, bool finished);
-    void matrixRoomsFailed(const QString &error);
-    void matrixSyncResumeFinished(const QString &error);
-
-    void matrixTimelineUpdated(
-        const QString &roomId,
-        const QString &json,
-        const QString &error
-    );
-
-    void matrixOlderTimelineUpdated(
-        const QString &roomId,
-        const QString &json,
-        const QString &error
-    );
-
-    void matrixMessageSent(
-        const QString &roomId,
-        const QString &eventId,
-        const QString &error
-    );
-
-    void matrixAttachmentSent(
-        const QString &requestKey,
-        const QString &roomId,
-        const QString &eventId,
-        const QString &error
-    );
-
-    void matrixAttachmentProgress(
-        const QString &requestKey,
-        const QString &roomId,
-        quint64 current,
-        quint64 total
-    );
-
-    void matrixReactionToggled(
-        const QString &roomId,
-        const QString &eventId,
-        const QString &reactionKey,
-        bool added,
-        const QString &error
-    );
-
-    void matrixMessageActionFinished(
-        const QString &roomId,
-        const QString &eventId,
-        const QString &action,
-        const QString &error
-    );
-
-    // Live subscription updates are forwarded to Backend, which
-    // also passes relevant events to NotificationManager.
-    void matrixLiveTimelineUpdated(const QString &json);
-
-    // MatrixRTC membership changes are forwarded separately from timeline events.
-    void matrixRtcMembershipsUpdated(const QString &json);
-    void matrixRtcActionFinished(const QString &roomId, const QString &error);
-
-    // LiveKit audio events and audio-session actions are separate from MatrixRTC presence.
-    void matrixRtcAudioEventsUpdated(const QString &json);
-    void matrixRtcAudioActionFinished(const QString &roomId, const QString &error);
-    void matrixRtcVideoActionFinished(const QString &roomId, const QString &error);
-    void matrixRtcBackgroundCameraActionFinished(
-        const QString &roomId,
-        bool running,
-        const QString &deviceId,
-        const QString &error
-    );
-    void matrixRtcScreenShareActionFinished(const QString &roomId, const QString &error);
-    void matrixRtcRemoteVideoFrame(
-        const QString &roomId,
-        const QString &identity,
-        const QString &source,
-        int width,
-        int height,
-        const QByteArray &i420
-    );
-
-    void matrixDeviceVerificationFinished(
-        const QString &deviceId,
-        const QString &error
-    );
-
-    void matrixDeviceRenameFinished(
-        const QString &deviceId,
-        const QString &error
-    );
-
-    void matrixDeviceRevocationFinished(
-        const QString &deviceId,
-        const QString &error
-    );
-
-    void matrixDeviceManagementUrlReady(
-        const QString &deviceId,
-        const QString &url,
-        const QString &error
-    );
-
-    void matrixVerificationActionFinished(
-        const QString &userId,
-        const QString &flowId,
-        const QString &action,
-        const QString &error
-    );
-
-
-    // ---------------------------------------------------------
-    // Matrix media results
-    // ---------------------------------------------------------
-
-    void roomAvatarRetrieved(
-        const QString &roomId,
-        const QString &dataUrl
-    );
-
-    void roomAvatarFailed(
-        const QString &roomId,
-        const QString &error
-    );
-
-    void senderAvatarRetrieved(
-        const QString &requestKey,
-        const QString &dataUrl
-    );
-
-    void senderAvatarFailed(
-        const QString &requestKey,
-        const QString &error
-    );
-
-    void messageImageRetrieved(
-        const QString &requestKey,
-        const QString &dataUrl
-    );
-
-    void messageImageFailed(
-        const QString &requestKey,
-        const QString &error
-    );
-
-    void messageImageExported(
-        const QString &requestKey,
-        const QString &fileUrl,
-        const QString &fileName
-    );
-
-    void messageImageExportFailed(
-        const QString &requestKey,
-        const QString &error
-    );
-
-    void messageThumbnailRetrieved(
-        const QString &requestKey,
-        const QString &dataUrl
-    );
-
-    void messageThumbnailFailed(
-        const QString &requestKey,
-        const QString &error
-    );
-
-    void messageVideoRetrieved(
-        const QString &requestKey,
-        const QString &fileUrl
-    );
-
-    void messageVideoFailed(
-        const QString &requestKey,
-        const QString &error
-    );
-
-
-private:
-    void stopRtcCamera();
-    void finishRtcBackgroundCameraStop();
-    void stopRtcScreenShareCapture();
-    void beginRtcScreenShareUnpublish(const QString &roomId, const QString &completionError);
-    bool startRtcScreenShareAudioCapture(const QString &roomId, QString *error);
-    void captureRtcScreenShareAudio();
-    void captureRtcScreenShareFrame();
-
-    /*
-     * Common signature for Rust verification actions.
-     * The final argument receives a Rust-allocated error string,
-     * which must be released using the appropriate FFI function.
-     */
-    using VerificationAction = int32_t (*)(
-        AstroMatrixClient *,
-        const char *,
-        const char *,
-        char **
-    );
-
-    void runVerificationAction(
-        const QString &userId,
-        const QString &flowId,
-        const QString &actionName,
-        VerificationAction action
-    );
-
-
-    // Register the retained push token when the Matrix client
-    // and authenticated session are ready.
-    void registerPushTokenIfReady();
-
-
-    // ---------------------------------------------------------
-    // Worker-owned state
-    // ---------------------------------------------------------
-
-    // Rust Matrix client; its lifecycle is managed through the FFI.
-    AstroMatrixClient *m_matrixClient = nullptr;
-    QOpenGLContext *m_rtcCameraOpenGLContext = nullptr;
-    QOffscreenSurface *m_rtcCameraOffscreenSurface = nullptr;
-    QMutex m_rtcCameraFrameMutex;
-    QCamera *m_rtcCamera = nullptr;
-    bool m_rtcBackgroundCameraStartPending = false;
-    QString m_rtcBackgroundCameraPendingRoomId;
-    QString m_rtcBackgroundCameraPendingDeviceId;
-    bool m_rtcBackgroundCameraStopPending = false;
-    QString m_rtcBackgroundCameraStopRoomId;
-    bool m_rtcBackgroundCameraRestartAfterStop = false;
-    QString m_rtcBackgroundCameraRestartRoomId;
-    QString m_rtcBackgroundCameraRestartDeviceId;
-    RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
-    QString m_rtcVideoRoomId;
-    int m_rtcVideoWidth = 0;
-    int m_rtcVideoHeight = 0;
-    QString m_rtcScreenShareRoomId;
-    // Keep the app's Mir client connection alive across screen-share sessions.
-    // Releasing it during capture teardown has coincided with Qt Quick render stalls.
-    MirConnection *m_rtcMirConnection = nullptr;
-    MirConnection *m_rtcScreenShareConnection = nullptr;
-    MirScreencast *m_rtcScreenCast = nullptr;
-    MirBufferStream *m_rtcScreenShareStream = nullptr;
-    QTimer *m_rtcScreenShareTimer = nullptr;
-    QTimer *m_rtcScreenShareStopPollTimer = nullptr;
-    // Covers the complete stop operation, including both LiveKit
-    // unpublish and asynchronous Mir screencast release.
-    QString m_rtcScreenShareStopPendingRoomId;
-    QString m_rtcScreenShareStopCompletionError;
-    bool m_rtcScreenShareUnpublishStarted = false;
-    bool m_rtcScreenShareUnpublishFinished = false;
-    QString m_rtcMirReleasePendingRoomId;
-    QString m_rtcMirReleasePendingError;
-    std::shared_ptr<std::atomic_bool> m_rtcMirReleaseComplete;
-    int m_rtcScreenShareWidth = 0;
-    int m_rtcScreenShareHeight = 0;
-    bool m_rtcScreenShareStartPending = false;
-    QByteArray m_rtcScreenShareLastFrame;
-    // Reuse packed Y/U/V output across screen-share frames and sessions.
-    QByteArray m_rtcScreenShareI420Frame;
-    QElapsedTimer m_rtcScreenShareLastFrameSent;
-    // Aggregate screen-share stage timings; emitted every five seconds.
-    QElapsedTimer m_rtcScreenSharePerfWindow;
-    quint64 m_rtcScreenSharePerfFrames = 0;
-    qint64 m_rtcScreenSharePerfMapUs = 0;
-    qint64 m_rtcScreenSharePerfCompareUs = 0;
-    qint64 m_rtcScreenSharePerfCopyUs = 0;
-    qint64 m_rtcScreenSharePerfConvertUs = 0;
-    qint64 m_rtcScreenSharePerfSubmitUs = 0;
-    QAudioInput *m_rtcScreenShareAudioInput = nullptr;
-    QIODevice *m_rtcScreenShareAudioDevice = nullptr;
-    QByteArray m_rtcScreenShareAudioBuffer;
-    QString m_rtcScreenShareAudioRoomId;
-    QElapsedTimer m_rtcScreenShareAudioDiagnosticsTimer;
-    quint64 m_rtcScreenShareAudioDiagnosticBytes = 0;
-    quint64 m_rtcScreenShareAudioDiagnosticFrames = 0;
-    long double m_rtcScreenShareAudioDiagnosticSquares = 0.0L;
-    quint64 m_rtcScreenShareAudioDiagnosticSamples = 0;
-
-    // Retained push notification configuration.
-    QByteArray m_pushToken;
-    QString m_pushPrivacyLevel = "sender_room";
-    bool m_pushNotificationsEnabled = true;
-
-    // Polls retained timeline subscriptions on this worker's thread.
-    QTimer *m_timelinePollTimer = nullptr;
-    QTimer *m_rtcVideoPollTimer = nullptr;
-    bool m_loggedFirstRemoteRtcFrame = false;
-
-    // Retained only while encrypted storage is unlocked.
-    QByteArray m_storagePassphrase;
-
-    // Storage may be unlocked without an authenticated Matrix session.
-    bool m_matrixSessionActive = false;
-};
+    emit matrixLogoutSucceeded();
+}
