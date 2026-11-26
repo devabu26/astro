@@ -380,7 +380,9 @@ Item {
         if (active) {
             backgroundCameraStartTimer.stop()
             waitingForForegroundCamera = true
-            localCamera.stop()
+            // Keep the QML camera unloaded until native capture confirms it
+            // has released the hardware. Calling stop() here would move it
+            // back to LoadedState and reopen the device too early.
             backend.stopRtcBackgroundCamera(roomId)
         } else {
             waitingForForegroundCamera = false
@@ -404,7 +406,7 @@ Item {
             waitingForForegroundCamera = false
             nativeBackgroundCameraRunning = false
             nativeBackgroundCameraDeviceId = ""
-            localCamera.stop()
+            localCamera.cameraState = Camera.UnloadedState
             if (backend && roomId)
                 backend.stopRtcBackgroundCamera(roomId)
         }
@@ -414,6 +416,9 @@ Item {
         noAnswerTimer.stop()
         ringbackAudio.stop()
         backgroundCameraStartTimer.stop()
+        localCamera.cameraState = Camera.UnloadedState
+        if (backend && roomId)
+            backend.stopRtcBackgroundCamera(roomId)
         if (backend && screenShareRoomId.length > 0)
             backend.stopRtcScreenShare(screenShareRoomId)
     }
