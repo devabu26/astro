@@ -7,6 +7,7 @@
 #include <QString>
 #include <QByteArray>
 #include <QTimer>
+#include <QAtomicInt>
 #include <QElapsedTimer>
 #include <QMutex>
 #include <QCamera>
@@ -52,6 +53,7 @@ public:
     );
     bool makeRtcCameraOpenGLContextCurrent();
     void releaseRtcCameraOpenGLContext();
+    void recordRtcNativeGlFrame() { m_rtcNativeGlFrameCount.fetchAndAddRelaxed(1); }
 
 public slots:
 
@@ -500,6 +502,10 @@ private:
     QOffscreenSurface *m_rtcCameraOffscreenSurface = nullptr;
     QMutex m_rtcCameraFrameMutex;
     QCamera *m_rtcCamera = nullptr;
+    QTimer *m_rtcBackgroundCameraWatchdogTimer = nullptr;
+    QAtomicInt m_rtcNativeGlFrameCount{0};
+    int m_rtcNativeGlWatchdogPreviousCount = 0;
+    int m_rtcNativeGlWatchdogTicks = 0;
     bool m_rtcBackgroundCameraStartPending = false;
     QString m_rtcBackgroundCameraPendingRoomId;
     QString m_rtcBackgroundCameraPendingDeviceId;
