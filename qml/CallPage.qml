@@ -773,12 +773,6 @@ Item {
 
             var operation = root.pendingOperation
             root.pendingOperation = ""
-            if (operation === "stopScreenShare" ||
-                    operation === "stopScreenShareForHangup") {
-                screenShareStopDrainTimer.stop()
-                root.screenShareStopRoomId = ""
-                root.screenShareStopDispatched = false
-            }
 
             if (error && error.length > 0) {
                 root.actionError = error
@@ -899,6 +893,12 @@ Item {
             }
 
             root.pendingOperation = ""
+            if (operation === "stopScreenShare" ||
+                    operation === "stopScreenShareForHangup") {
+                screenShareStopDrainTimer.stop()
+                root.screenShareStopRoomId = ""
+                root.screenShareStopDispatched = false
+            }
 
             if (error && error.length > 0) {
                 root.actionError = error
