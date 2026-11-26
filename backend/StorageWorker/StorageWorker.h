@@ -529,6 +529,14 @@ private:
     bool m_rtcScreenShareStartPending = false;
     QByteArray m_rtcScreenShareLastFrame;
     QElapsedTimer m_rtcScreenShareLastFrameSent;
+    // Aggregate screen-share stage timings; emitted every five seconds.
+    QElapsedTimer m_rtcScreenSharePerfWindow;
+    quint64 m_rtcScreenSharePerfFrames = 0;
+    qint64 m_rtcScreenSharePerfMapUs = 0;
+    qint64 m_rtcScreenSharePerfCompareUs = 0;
+    qint64 m_rtcScreenSharePerfCopyUs = 0;
+    qint64 m_rtcScreenSharePerfConvertUs = 0;
+    qint64 m_rtcScreenSharePerfSubmitUs = 0;
     QAudioInput *m_rtcScreenShareAudioInput = nullptr;
     QIODevice *m_rtcScreenShareAudioDevice = nullptr;
     QByteArray m_rtcScreenShareAudioBuffer;
