@@ -112,6 +112,7 @@ public slots:
     void paginateRoomTimeline(const QString &roomId);
     void markRoomAsRead(const QString &roomId);
     void sendRoomMessage(const QString &roomId, const QString &message);
+    void declineRtcCall(const QString &roomId, const QString &eventId);
     void joinRtcRoom(const QString &roomId);
     void leaveRtcRoom(const QString &roomId);
     void startRtcAudio(const QString &roomId);
