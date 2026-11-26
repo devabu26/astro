@@ -530,6 +530,11 @@ private:
     QIODevice *m_rtcScreenShareAudioDevice = nullptr;
     QByteArray m_rtcScreenShareAudioBuffer;
     QString m_rtcScreenShareAudioRoomId;
+    QElapsedTimer m_rtcScreenShareAudioDiagnosticsTimer;
+    quint64 m_rtcScreenShareAudioDiagnosticBytes = 0;
+    quint64 m_rtcScreenShareAudioDiagnosticFrames = 0;
+    long double m_rtcScreenShareAudioDiagnosticSquares = 0.0L;
+    quint64 m_rtcScreenShareAudioDiagnosticSamples = 0;
 
     // Retained push notification configuration.
     QByteArray m_pushToken;
