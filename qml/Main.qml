@@ -191,9 +191,8 @@ MainView {
         // A notification must always land in the chat UI, even if
         // Astro was previously left on Settings or an active call page.
         root.showingSettings = false
-        root.showingCallPage = false
-        root.callRoomId = ""
-        root.callRoomName = ""
+        // Do not tear down or hide an active call just because a
+        // message notification was tapped.
         chatPage.openNotification(roomId, eventId)
     }
 
