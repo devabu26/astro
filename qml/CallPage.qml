@@ -54,6 +54,7 @@ Item {
     property string nativeBackgroundCameraDeviceId: ""
     property bool remoteAnswered: false
     property string ringbackSource: ""
+    property bool ringbackRequested: false
 
     signal backRequested()
     signal remoteVideoCleared(string identity, string source)
@@ -184,7 +185,7 @@ Item {
         participantAvatarCache = ({})
         participantAvatarRequests = ({})
         noAnswerTimer.stop()
-        ringbackAudio.stop()
+        root.stopRingback()
         remoteAnswered = false
         if (backend && screenShareRoomId.length > 0)
             backend.stopRtcScreenShare(screenShareRoomId)
@@ -294,7 +295,7 @@ Item {
         // this page. Once the shared membership snapshot confirms that leave,
         // close the associated LiveKit session and clear all local media UI.
         noAnswerTimer.stop()
-        ringbackAudio.stop()
+        root.stopRingback()
         localCamera.stop()
         waitingForForegroundCamera = false
 
@@ -476,7 +477,7 @@ Item {
 
         actionError = ""
         noAnswerTimer.stop()
-        ringbackAudio.stop()
+        root.stopRingback()
         screenShareChoiceVisible = false
 
         // Stop local capture immediately, but do not make leaving depend on
@@ -570,17 +571,38 @@ Item {
                 : "P"
     }
 
-    function startRingback() {
-        if (!directCall || remoteAnswered || ringbackSource.length === 0)
+    function stopRingback() {
+        ringbackRequested = false
+        ringbackAudio.stop()
+    }
+
+    function startRingback(restartPlayback) {
+        if (!directCall || remoteAnswered)
             return
 
-        if (ringbackAudio.playbackState !== Audio.PlayingState) {
-            console.info(
-                "ASTRO_CALL_RINGBACK: starting",
-                "sourceAvailable:", true,
-                "audioStatus:", ringbackAudio.status,
-                "playbackState:", ringbackAudio.playbackState
-            )
+        if (ringbackSource.length === 0 && backend)
+            ringbackSource = backend.rtcRingbackToneUrl()
+
+        if (ringbackSource.length === 0) {
+            console.warn("ASTRO_CALL_RINGBACK: no ringback audio source is available")
+            return
+        }
+
+        ringbackRequested = true
+        if (restartPlayback === true)
+            root.stopRingback()
+
+        console.info(
+            "ASTRO_CALL_RINGBACK: requested",
+            "source:", ringbackSource,
+            "audioStatus:", ringbackAudio.status,
+            "playbackState:", ringbackAudio.playbackState,
+            "restart:", restartPlayback === true
+        )
+
+        if ((ringbackAudio.status === Audio.Loaded ||
+             ringbackAudio.status === Audio.Buffered) &&
+                ringbackAudio.playbackState !== Audio.PlayingState) {
             ringbackAudio.play()
         }
 
@@ -590,10 +612,12 @@ Item {
 
     Audio {
         id: ringbackAudio
-        // Set the role before the source. Qt uses it when configuring
-        // the output stream's routing and volume policy.
-        audioRole: Audio.RingtoneRole
+        // Prefer the ringtone route when advertised; fall back to the
+        // generic music role on Ubuntu Touch backends with limited roles.
+        audioRole: supportedAudioRoles().indexOf(Audio.RingtoneRole) >= 0
+                   ? Audio.RingtoneRole : Audio.MusicRole
         source: root.ringbackSource
+        autoLoad: true
         loops: Audio.Infinite
         volume: 1.0
 
@@ -603,8 +627,16 @@ Item {
                 status,
                 "source:", source,
                 "hasAudio:", hasAudio,
-                "duration:", duration
+                "duration:", duration,
+                "requested:", root.ringbackRequested
             )
+
+            if (root.ringbackRequested &&
+                    (status === Audio.Loaded || status === Audio.Buffered) &&
+                    playbackState !== Audio.PlayingState) {
+                console.info("ASTRO_CALL_RINGBACK: source ready; starting playback")
+                play()
+            }
         }
 
         onPlaybackStateChanged: {
@@ -634,8 +666,9 @@ Item {
         onTriggered: {
             if (!root.directCall || root.remoteAnswered)
                 return
-            ringbackAudio.stop()
+            root.stopRingback()
             if (root.pendingOperation.length > 0) {
+                root.startRingback(true)
                 restart()
                 return
             }
@@ -807,10 +840,13 @@ Item {
             "ASTRO_CALL_RINGBACK: audio capabilities",
             "availability:", ringbackAudio.availability,
             "supportedRoles:", ringbackAudio.supportedAudioRoles(),
-            "selectedRole:", ringbackAudio.audioRole
+            "selectedRole:", ringbackAudio.audioRole,
+            "source:", ringbackSource
         )
-        if (backend && directCall)
+        if (backend && directCall) {
             ringbackSource = backend.rtcRingbackToneUrl()
+            console.info("ASTRO_CALL_RINGBACK: resolved source", ringbackSource)
+        }
     }
 
     onDirectCallChanged: {
@@ -927,7 +963,7 @@ Item {
 
     Component.onDestruction: {
         noAnswerTimer.stop()
-        ringbackAudio.stop()
+        root.stopRingback()
         localCamera.cameraState = Camera.UnloadedState
         if (backend && roomId)
             backend.stopRtcBackgroundCamera(roomId)
@@ -1091,7 +1127,7 @@ Item {
                 root.actionError = error
                 if (operation === "join" || operation === "start") {
                     noAnswerTimer.stop()
-                    ringbackAudio.stop()
+                    root.stopRingback()
                 }
                 if (operation === "stop") {
                     // Even if LiveKit shutdown reports an error, withdraw
@@ -1122,8 +1158,10 @@ Item {
             if (operation === "start") {
                 root.audioStarted = true
                 root.muted = false
+                // LiveKit may reconfigure the platform audio route while
+                // connecting. Restart ringback after that transition.
                 if (root.directCall && !root.remoteAnswered)
-                    root.startRingback();
+                    root.startRingback(true);
 
             } else if (operation === "mute") {
                 root.muted = root.pendingMuted
@@ -1285,7 +1323,7 @@ Item {
                             event.type === "participant_active") {
                         root.remoteAnswered = true
                         noAnswerTimer.stop()
-                        ringbackAudio.stop()
+                        root.stopRingback()
                     }
 
                     if (event.type === "track_unsubscribed") {
