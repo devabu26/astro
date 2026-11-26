@@ -38,6 +38,12 @@ Item {
     property int screenShareStopDrainElapsedMs: 0
     property string screenShareStopRoomId: ""
     property bool applicationActive: Qt.application.state === Qt.ApplicationActive
+    property int applicationState: backend
+                                  ? backend.applicationState
+                                  : Qt.application.state
+    property int cameraFrameGrabAttempts: 0
+    property int cameraFrameGrabCompletions: 0
+    property int cameraFrameGrabFailures: 0
     property bool waitingForForegroundCamera: false
     property bool nativeBackgroundCameraRunning: false
     property string nativeBackgroundCameraDeviceId: ""
@@ -489,13 +495,25 @@ Item {
                 return
 
             root.cameraFrameGrabPending = true
+            root.cameraFrameGrabAttempts += 1
             var accepted = localCameraPreview.grabToImage(function(result) {
                 root.cameraFrameGrabPending = false
-                if (result && root.videoStarted && root.backend &&
+                root.cameraFrameGrabCompletions += 1
+                if (result && result.image &&
+                        root.videoStarted && root.backend &&
                         root.pendingOperation !== "stopScreenShare") {
                     root.backend.processRtcCameraImage(
                         root.roomId,
                         result.image
+                    )
+                } else {
+                    root.cameraFrameGrabFailures += 1
+                    console.warn(
+                        "ASTRO_BACKGROUND_CAMERA: frame grab produced no usable image",
+                        "attempts:", root.cameraFrameGrabAttempts,
+                        "completed:", root.cameraFrameGrabCompletions,
+                        "failed:", root.cameraFrameGrabFailures,
+                        "applicationState:", root.applicationState
                     )
                 }
 
@@ -509,6 +527,12 @@ Item {
 
             if (!accepted) {
                 root.cameraFrameGrabPending = false
+                root.cameraFrameGrabFailures += 1
+                console.warn(
+                    "ASTRO_BACKGROUND_CAMERA: grabToImage was rejected",
+                    "attempts:", root.cameraFrameGrabAttempts,
+                    "applicationState:", root.applicationState
+                )
             }
         }
     }
@@ -556,6 +580,19 @@ Item {
 
     function updateCameraForApplicationState(active) {
         applicationActive = active
+        applicationState = backend
+                ? backend.applicationState : Qt.application.state
+        console.info(
+            "ASTRO_BACKGROUND_CAMERA: CallPage lifecycle update",
+            "state:", applicationState,
+            "active:", active,
+            "videoStarted:", videoStarted,
+            "qmlCameraStatus:", localCamera.cameraStatus,
+            "qmlCameraState:", localCamera.cameraState,
+            "grabAttempts:", cameraFrameGrabAttempts,
+            "grabCompletions:", cameraFrameGrabCompletions,
+            "grabFailures:", cameraFrameGrabFailures
+        )
         if (!videoStarted || !backend || !roomId)
             return
 
@@ -572,6 +609,12 @@ Item {
             // is the source of the background-transition crash.
             waitingForForegroundCamera = false
             localCamera.cameraState = Camera.UnloadedState
+            console.info(
+                "ASTRO_BACKGROUND_CAMERA: foreground QML camera unload requested",
+                "state:", applicationState,
+                "status:", localCamera.cameraStatus,
+                "cameraState:", localCamera.cameraState
+            )
         }
     }
 
@@ -678,6 +721,15 @@ Item {
 
         onApplicationActiveChanged: {
             root.updateCameraForApplicationState(active)
+        }
+
+        onApplicationStateChanged: {
+            root.applicationState = state
+            console.info(
+                "ASTRO_BACKGROUND_CAMERA: backend application state changed:",
+                state,
+                "active:", state === Qt.ApplicationActive
+            )
         }
 
         onMatrixRtcBackgroundCameraActionFinished: {
@@ -1002,9 +1054,13 @@ Item {
         onCameraStatusChanged: {
             console.info(
                 "ASTRO_BACKGROUND_CAMERA: QML camera status:",
-                cameraStatus
+                cameraStatus,
+                "cameraState:", cameraState,
+                "applicationState:", root.applicationState,
+                "active:", root.applicationActive,
+                "videoStarted:", root.videoStarted,
+                "error:", errorString
             )
-
         }
 
         onError: {
