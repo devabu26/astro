@@ -2555,6 +2555,19 @@ impl MatrixClientManager {
 
     /// Publish Astro's membership-only presence using Element Call compatibility state.
     pub fn join_rtc_room(&mut self, room_id: &str) -> Result<(), String> {
+        self.join_rtc_room_internal(room_id, true)
+    }
+
+    /// Accept an incoming ring without sending another ring notification.
+    pub fn accept_rtc_call(&mut self, room_id: &str) -> Result<(), String> {
+        self.join_rtc_room_internal(room_id, false)
+    }
+
+    fn join_rtc_room_internal(
+        &mut self,
+        room_id: &str,
+        notify_recipients: bool,
+    ) -> Result<(), String> {
         let room_id = room_id.trim();
         if room_id.is_empty() {
             return Err("Room ID is empty".into());
@@ -2688,7 +2701,7 @@ impl MatrixClientManager {
                 .collect::<Vec<_>>();
 
             let mut outgoing_notification: Option<(String, Vec<String>)> = None;
-            if !recipients.is_empty() {
+            if notify_recipients && !recipients.is_empty() {
                 let sender_ts = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
