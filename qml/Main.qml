@@ -410,6 +410,14 @@ MainView {
             if (Qt.application.state === Qt.ApplicationActive) {
                 for (var callIndex = 0; callIndex < incomingCalls.length; callIndex++) {
                     var incomingCall = incomingCalls[callIndex]
+
+                    // Do not cover an active call with a duplicate ring
+                    // generated when another participant joins the room.
+                    if (root.showingCallPage
+                        && root.callRoomId === incomingCall.room_id) {
+                        continue
+                    }
+
                     incomingCallBanner.showIncomingCall(
                         incomingCall.sender,
                         incomingCall.room_id,
@@ -621,13 +629,9 @@ MainView {
         width: parent.width - units.gu(4)
         z: 2100
 
-        onAnswerRequested: {
+        onOpenRequested: {
             root.showingSettings = false
-            var roomName = chatPage.roomNameForId(roomId)
-            // Select the room first so CallPage receives the correct
-            // room kind (DM vs. group) before it starts joining.
             chatPage.openNotification(roomId, eventId)
-            root.openCallPage(roomId, roomName, true)
         }
     }
 
