@@ -2906,16 +2906,16 @@ void StorageWorker::captureRtcScreenShareFrame()
     stageClock.restart();
     const int32_t pushResult = astro_matrix_submit_rtc_screenshare_frame(
         m_matrixClient, roomBytes.constData(), i420Frame, &frameError);
-    QString failure;
+    QString submitFailure;
     if (frameError) {
-        failure = QString::fromUtf8(frameError);
+        submitFailure = QString::fromUtf8(frameError);
         astro_string_free(frameError);
     } else if (pushResult < 0) {
-        failure = QStringLiteral("LiveKit rejected the screen-share frame");
+        submitFailure = QStringLiteral("LiveKit rejected the screen-share frame");
     }
-    if (!failure.isEmpty()) {
+    if (!submitFailure.isEmpty()) {
         stopRtcScreenShareCapture();
-        beginRtcScreenShareUnpublish(roomId, failure);
+        beginRtcScreenShareUnpublish(roomId, submitFailure);
         return;
     }
 
