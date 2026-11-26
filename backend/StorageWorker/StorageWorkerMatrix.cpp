@@ -2866,49 +2866,14 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
         return;
     }
 
-    // Mir release is kept off the StorageWorker event loop. The synchronous
-    // release can enter compositor/driver teardown; doing that inline has
-    // caused device crashes on stop. Keep the object alive exclusively for
-    // this detached release task and let the worker poll its completion.
-    m_rtcMirReleasePendingRoomId = roomId;
-    m_rtcMirReleasePendingError.clear();
-    m_rtcMirReleaseComplete =
-        std::make_shared<std::atomic_bool>(false);
-    const std::shared_ptr<std::atomic_bool> releaseComplete =
-        m_rtcMirReleaseComplete;
+    // DIAGNOSTIC ONLY: deliberately do not release this screencast.
+    // The previous release path has been associated with a UI presentation
+    // freeze. Keep the Mir resource allocated until Astro exits so this test
+    // can determine whether mir_screencast_release_sync() triggers the freeze.
+    // Do not use this build for repeated screen-share sessions.
+    qWarning() << "ASTRO_SCREEN_SHARE_STOP: DIAGNOSTIC - skipping Mir screencast release"
+               << "resource retained until process exit";
 
-    qInfo() << "ASTRO_SCREEN_SHARE_STOP: releasing screencast in background"
-            << "workerThread:" << quintptr(QThread::currentThreadId());
-
-    try {
-        std::thread([screencast, releaseComplete]() {
-            QElapsedTimer releaseTimer;
-            releaseTimer.start();
-            mir_screencast_release_sync(screencast);
-            qInfo() << "ASTRO_SCREEN_SHARE_STOP: background screencast release complete"
-                    << "elapsedMs:" << releaseTimer.elapsed();
-            releaseComplete->store(true, std::memory_order_release);
-        }).detach();
-    } catch (const std::exception &exception) {
-        // If a worker thread cannot be created, do not call the Mir release
-        // inline: that is the path implicated in the device crash. Report the
-        // failure and retain the handle rather than risking another crash.
-        qCritical() << "ASTRO_SCREEN_SHARE_STOP: could not start background Mir release:"
-                    << exception.what();
-        m_rtcMirReleaseComplete.reset();
-        m_rtcMirReleasePendingRoomId.clear();
-        emit matrixRtcScreenShareActionFinished(
-            roomId,
-            QStringLiteral("Could not start safe Mir screencast teardown")
-        );
-        return;
-    }
-
-    if (m_rtcScreenShareStopPollTimer)
-        m_rtcScreenShareStopPollTimer->start();
-
-    // LiveKit unpublish can proceed independently while Mir releases its
-    // compositor resources.
     beginRtcScreenShareUnpublish(roomId, QString());
 }
 
