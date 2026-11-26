@@ -632,14 +632,22 @@ Item {
         id: cameraFrameGrabTimer
         interval: 33
         repeat: true
+        // Do not request Qt Quick frame readback while the platform camera
+        // backend is still opening. On Ubuntu Touch, grabToImage() against a
+        // VideoOutput whose QCamera is only in StartingStatus can race the
+        // native camera handover and crash qmlscene.
         running: root.videoStarted &&
                  root.applicationActive &&
                  !root.waitingForForegroundCamera &&
                  !root.nativeBackgroundCameraRunning &&
+                 localCamera.cameraStatus === Camera.ActiveStatus &&
+                 localCamera.cameraState === Camera.ActiveState &&
                  root.pendingOperation !== "stopScreenShare"
 
         onTriggered: {
             if (!root.applicationActive ||
+                    localCamera.cameraStatus !== Camera.ActiveStatus ||
+                    localCamera.cameraState !== Camera.ActiveState ||
                     !localCameraPreview.visible ||
                     !root.backend ||
                     !root.roomId)
