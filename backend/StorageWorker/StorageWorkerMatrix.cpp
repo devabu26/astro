@@ -1376,7 +1376,7 @@ public:
             m_frameDiagnosticTimer.start();
         if (frameNumber % 60 == 0) {
             const qint64 elapsedMs = m_frameDiagnosticTimer.elapsed();
-            qInfo() << "ASTRO_BACKGROUND_CAMERA: native frame throughput"
+            qInfo() << "ASTRO_RTC_CAMERA: shared frame throughput"
                     << "frames:" << frameNumber
                     << "elapsedMs:" << elapsedMs
                     << "averageFps:" << (elapsedMs > 0
@@ -2181,6 +2181,10 @@ void StorageWorker::finishRtcBackgroundCameraStop()
     QString stoppedRoomId;
     QString restartRoomId;
     QString restartDeviceId;
+    QString stopVideoRoomId;
+    QString stopAudioRoomId;
+    bool stopVideoAfterUnload = false;
+    bool stopAudioAfterUnload = false;
     bool restart = false;
 
     {
@@ -2202,7 +2206,19 @@ void StorageWorker::finishRtcBackgroundCameraStop()
         m_rtcBackgroundCameraStopPending = false;
         m_rtcBackgroundCameraStopRoomId.clear();
 
-        restart = m_rtcBackgroundCameraRestartAfterStop;
+        stopVideoAfterUnload = m_rtcStopVideoAfterBackgroundUnload;
+        stopVideoRoomId = m_rtcStopVideoAfterBackgroundUnloadRoomId;
+        m_rtcStopVideoAfterBackgroundUnload = false;
+        m_rtcStopVideoAfterBackgroundUnloadRoomId.clear();
+
+        stopAudioAfterUnload = m_rtcStopAudioAfterBackgroundUnload;
+        stopAudioRoomId = m_rtcStopAudioAfterBackgroundUnloadRoomId;
+        m_rtcStopAudioAfterBackgroundUnload = false;
+        m_rtcStopAudioAfterBackgroundUnloadRoomId.clear();
+
+        restart = m_rtcBackgroundCameraRestartAfterStop &&
+                  !stopVideoAfterUnload &&
+                  !stopAudioAfterUnload;
         restartRoomId = m_rtcBackgroundCameraRestartRoomId;
         restartDeviceId = m_rtcBackgroundCameraRestartDeviceId;
         m_rtcBackgroundCameraRestartAfterStop = false;
@@ -2218,6 +2234,21 @@ void StorageWorker::finishRtcBackgroundCameraStop()
         stoppedRoomId, false, QString(), QString()
     );
 
+    if (stopVideoAfterUnload || stopAudioAfterUnload) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, stopVideoAfterUnload, stopVideoRoomId,
+             stopAudioAfterUnload, stopAudioRoomId]() {
+                if (stopVideoAfterUnload)
+                    stopRtcVideo(stopVideoRoomId);
+                if (stopAudioAfterUnload)
+                    stopRtcAudio(stopAudioRoomId);
+            },
+            Qt::QueuedConnection
+        );
+        return;
+    }
+
     if (restart && !restartRoomId.isEmpty()) {
         QMetaObject::invokeMethod(
             this,
@@ -2231,6 +2262,16 @@ void StorageWorker::finishRtcBackgroundCameraStop()
 
 void StorageWorker::stopRtcVideo(const QString &roomId)
 {
+    // Native QCamera unload is asynchronous. Do not let stopRtcCamera()
+    // delete the QCamera while its backend still owns the capture device.
+    if (m_rtcCamera &&
+        (roomId.isEmpty() || roomId == m_rtcVideoRoomId)) {
+        m_rtcStopVideoAfterBackgroundUnload = true;
+        m_rtcStopVideoAfterBackgroundUnloadRoomId = roomId;
+        stopRtcBackgroundCamera(roomId);
+        return;
+    }
+
     stopRtcCamera();
     m_rtcVideoWidth = 0;
     m_rtcVideoHeight = 0;
@@ -3335,6 +3376,17 @@ void StorageWorker::stopRtcScreenShareCapture(const QString &releaseRoomId)
 
 void StorageWorker::stopRtcAudio(const QString &roomId)
 {
+    // A call can be ended while the background QCamera is still unloading
+    // after the app returns to the foreground. Defer the audio teardown until
+    // QCamera reports UnloadedStatus, just as we do for video teardown.
+    if (m_rtcCamera &&
+        (roomId.isEmpty() || roomId == m_rtcVideoRoomId)) {
+        m_rtcStopAudioAfterBackgroundUnload = true;
+        m_rtcStopAudioAfterBackgroundUnloadRoomId = roomId;
+        stopRtcBackgroundCamera(roomId);
+        return;
+    }
+
     if ((m_rtcScreenShareTimer &&
          m_rtcScreenShareRoomId == roomId) ||
         (m_rtcScreenShareAudioInput &&
