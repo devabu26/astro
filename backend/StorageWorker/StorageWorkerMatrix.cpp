@@ -2880,6 +2880,8 @@ void StorageWorker::captureRtcScreenShareFrame()
         failure = QStringLiteral("Could not allocate a LiveKit I420 screen frame");
     }
     if (!failure.isEmpty()) {
+        if (i420Frame)
+            astro_matrix_free_rtc_screenshare_frame(i420Frame);
         mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
         stopRtcScreenShareCapture();
         beginRtcScreenShareUnpublish(roomId, failure);
