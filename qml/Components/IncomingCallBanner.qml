@@ -79,7 +79,7 @@ Item {
 
                 Button {
                     text: "Answer"
-                    color: LomiriColors.green
+                    color: UbuntuColors.green
                     onClicked: {
                         root.answerRequested(root.roomId, root.eventId)
                         root.clear()
