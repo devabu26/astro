@@ -456,6 +456,7 @@ signals:
 
 private:
     void stopRtcCamera();
+    void finishRtcBackgroundCameraStop();
     void stopRtcScreenShareCapture();
     void beginRtcScreenShareUnpublish(const QString &roomId, const QString &completionError);
     bool startRtcScreenShareAudioCapture(const QString &roomId, QString *error);
@@ -500,6 +501,11 @@ private:
     bool m_rtcBackgroundCameraStartPending = false;
     QString m_rtcBackgroundCameraPendingRoomId;
     QString m_rtcBackgroundCameraPendingDeviceId;
+    bool m_rtcBackgroundCameraStopPending = false;
+    QString m_rtcBackgroundCameraStopRoomId;
+    bool m_rtcBackgroundCameraRestartAfterStop = false;
+    QString m_rtcBackgroundCameraRestartRoomId;
+    QString m_rtcBackgroundCameraRestartDeviceId;
     RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
     QString m_rtcVideoRoomId;
     int m_rtcVideoWidth = 0;
