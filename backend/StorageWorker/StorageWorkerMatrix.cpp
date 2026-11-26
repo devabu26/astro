@@ -2572,10 +2572,15 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
     qInfo() << "ASTRO_SCREEN_SHARE_STOP: starting non-blocking Mir release";
     try {
         std::thread([screencast, connection, releaseComplete]() {
+            qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release begin"
+                    << "thread:" << quintptr(QThread::currentThreadId());
             if (screencast)
                 mir_screencast_release_sync(screencast);
+            qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release complete";
+            qInfo() << "ASTRO_SCREEN_SHARE_STOP: connection release begin";
             if (connection)
                 mir_connection_release(connection);
+            qInfo() << "ASTRO_SCREEN_SHARE_STOP: connection release complete";
             releaseComplete->store(true, std::memory_order_release);
         }).detach();
     } catch (const std::exception &exception) {
