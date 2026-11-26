@@ -70,7 +70,18 @@ Item {
 
         for (var i = 0; i < memberships.length; ++i) {
             var membership = memberships[i]
-            if (membership && String(membership.sender || "") === identity)
+            if (!membership)
+                continue
+
+            var sender = String(membership.sender || "")
+            if (!sender)
+                continue
+
+            // The legacy MatrixRTC /sfu/get flow gives LiveKit the
+            // identity "<matrix_user_id>:<device_id>". Membership
+            // profiles are keyed by the Matrix user ID alone.
+            if (identity === sender ||
+                    identity.indexOf(sender + ":") === 0)
                 return membership
         }
 
@@ -169,7 +180,6 @@ Item {
     onParticipantsChanged: requestVisibleParticipantAvatars()
 
     onRoomIdChanged: {
-        participantAvatarCache = ({})
         participantAvatarCache = ({})
         participantAvatarRequests = ({})
         noAnswerTimer.stop()
