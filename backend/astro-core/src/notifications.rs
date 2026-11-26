@@ -28,11 +28,20 @@ struct IncomingCallEvent {
     call_intent: String,
 }
 
+/// A decline referencing one of Astro's outgoing MSC4075 notifications.
+#[derive(Debug)]
+struct IncomingCallDecline {
+    room_id: String,
+    notification_event_id: String,
+    sender: String,
+}
+
 /// Thread-safe queues shared by Matrix sync handlers and polling code.
 #[derive(Clone, Default)]
 pub struct NotificationQueue {
     events: Arc<Mutex<Vec<NotificationEvent>>>,
     incoming_calls: Arc<Mutex<Vec<IncomingCallEvent>>>,
+    incoming_call_declines: Arc<Mutex<Vec<IncomingCallDecline>>>,
 }
 
 impl NotificationQueue {
@@ -63,6 +72,25 @@ impl NotificationQueue {
                             "body": event.body
                         })
                     })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn push_incoming_call_decline(&self, event: IncomingCallDecline) {
+        if let Ok(mut events) = self.incoming_call_declines.lock() {
+            events.push(event);
+        }
+    }
+
+    /// Take declines that refer to an outgoing call notification.
+    pub fn drain_incoming_call_declines(&self) -> Vec<(String, String, String)> {
+        self.incoming_call_declines
+            .lock()
+            .map(|mut events| {
+                std::mem::take(&mut *events)
+                    .into_iter()
+                    .map(|event| (event.room_id, event.notification_event_id, event.sender))
                     .collect()
             })
             .unwrap_or_default()
@@ -197,3 +225,27 @@ pub fn register_incoming_call_handler(client: &Client, queue: NotificationQueue)
         },
     );
 }
+
+    
+    // MSC4310 declines are relations to the exact MSC4075 notification event.
+    // The caller uses this to stop ringing, and for one-to-one calls to end
+    // its LiveKit session and withdraw its MatrixRTC membership.
+    client.add_event_handler(
+        move |event: AnySyncMessageLikeEvent, room: Room| {
+            let queue = queue.clone();
+
+            async move {
+                let AnySyncMessageLikeEvent::RtcDecline(
+                    SyncMessageLikeEvent::Original(event)
+                ) = event else {
+                    return;
+                };
+
+                queue.push_incoming_call_decline(IncomingCallDecline {
+                    room_id: room.room_id().to_string(),
+                    notification_event_id: event.content.relates_to.event_id.to_string(),
+                    sender: event.sender.to_string(),
+                });
+            }
+        },
+    );
