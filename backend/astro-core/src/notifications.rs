@@ -1,7 +1,8 @@
 use matrix_sdk::{
     ruma::events::{
         room::message::{MessageType, OriginalSyncRoomMessageEvent},
-        rtc::notification::{CallIntent, NotificationType, OriginalSyncRtcNotificationEvent},
+        AnySyncMessageLikeEvent, SyncMessageLikeEvent,
+        rtc::notification::{CallIntent, NotificationType},
     },
     Client, Room,
 };
@@ -125,10 +126,22 @@ pub fn register_notification_handler(client: &Client, queue: NotificationQueue) 
 /// Only live ring events explicitly mentioning this account are surfaced.
 pub fn register_incoming_call_handler(client: &Client, queue: NotificationQueue) {
     client.add_event_handler(
-        move |event: OriginalSyncRtcNotificationEvent, room: Room, client: Client| {
+        // Use the catch-all message-like event type and filter by variant.
+        // matrix-sdk 0.19.1's typed handler dispatch matches the canonical
+        // event type string exactly, so a typed m.rtc.notification handler
+        // does not receive the MSC4075 unstable org.matrix.msc4075.* alias.
+        // AnySyncMessageLikeEvent has no single static event type and lets us
+        // accept both the stable and unstable names.
+        move |event: AnySyncMessageLikeEvent, room: Room, client: Client| {
             let queue = queue.clone();
 
             async move {
+                let AnySyncMessageLikeEvent::RtcNotification(
+                    SyncMessageLikeEvent::Original(event)
+                ) = event else {
+                    return;
+                };
+
                 if event.content.notification_type != NotificationType::Ring {
                     return;
                 }
