@@ -2604,19 +2604,27 @@ void StorageWorker::startRtcScreenShare(
                             : QStringLiteral("Room ID is empty"));
         return;
     }
-    if (!m_rtcScreenShareStopPendingRoomId.isEmpty() ||
-        !m_rtcMirReleasePendingRoomId.isEmpty()) {
+    if (m_rtcScreenShareTimer) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId, QStringLiteral("Screen sharing is already running"));
+        return;
+    }
+    if (m_rtcScreenShareConnection || m_rtcScreenCast ||
+        m_rtcScreenShareStream) {
         emit matrixRtcScreenShareActionFinished(
             roomId,
-            QStringLiteral("The previous screen share is still stopping")
+            QStringLiteral("The previous Mir screen-share session is retained to avoid the UI freeze; restart Astro before sharing again")
         );
         return;
     }
-    if (m_rtcScreenShareTimer || m_rtcScreenShareConnection) {
-        emit matrixRtcScreenShareActionFinished(roomId,
-            QStringLiteral("Screen sharing is already running"));
-        return;
-    }
+
+    // Each accepted start owns a unique generation. Any delayed callbacks
+    // from a previous attempt become harmless, even when the same room starts
+    // another share before an old timeout would otherwise fire.
+    const quint64 generation = ++m_rtcScreenShareGeneration;
+    qInfo() << "ASTRO_SCREEN_SHARE: starting capture session"
+            << "generation:" << generation
+            << "room:" << roomId;
     // width/height are retained as a caller hint for API compatibility.
     // The actual capture and LiveKit dimensions are selected from Mir below.
     const QByteArray roomIdBytes = roomId.toUtf8();
@@ -2788,12 +2796,26 @@ void StorageWorker::startRtcScreenShare(
     m_rtcScreenShareTimer = new QTimer(this);
     m_rtcScreenShareTimer->setInterval(33);
     connect(m_rtcScreenShareTimer, &QTimer::timeout,
-            this, &StorageWorker::captureRtcScreenShareFrame);
-    m_rtcScreenShareTimer->start();
-    QTimer::singleShot(0, this, &StorageWorker::captureRtcScreenShareFrame);
-    QTimer::singleShot(5000, this, [this, roomId]() {
-        if (!m_rtcScreenShareStartPending || m_rtcScreenShareRoomId != roomId)
+            this, [this, generation]() {
+        if (generation != m_rtcScreenShareGeneration)
             return;
+        captureRtcScreenShareFrame();
+    });
+    m_rtcScreenShareTimer->start();
+    QTimer::singleShot(0, this, [this, generation]() {
+        if (generation != m_rtcScreenShareGeneration)
+            return;
+        captureRtcScreenShareFrame();
+    });
+    QTimer::singleShot(5000, this, [this, roomId, generation]() {
+        if (generation != m_rtcScreenShareGeneration ||
+            !m_rtcScreenShareStartPending ||
+            m_rtcScreenShareRoomId != roomId)
+            return;
+
+        qWarning() << "ASTRO_SCREEN_SHARE: capture startup timed out"
+                   << "generation:" << generation
+                   << "room:" << roomId;
         stopRtcScreenShareCapture();
         beginRtcScreenShareUnpublish(
             roomId,
@@ -2992,6 +3014,11 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
         );
         return;
     }
+
+    // Invalidate queued capture/timeout callbacks before stopping producers.
+    ++m_rtcScreenShareGeneration;
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: invalidated capture generation"
+            << "generation:" << m_rtcScreenShareGeneration;
 
     // Stop frame/audio producers first. Record each synchronous stage so a
     // device-side stall can be attributed to audio shutdown, timer shutdown,
@@ -3430,6 +3457,11 @@ void StorageWorker::releaseRtcScreenShareMirConnection(const QString &roomId)
 
 void StorageWorker::stopRtcScreenShareCapture(const QString &releaseRoomId)
 {
+    // Also invalidate the startup timeout and any already-queued frame tick.
+    ++m_rtcScreenShareGeneration;
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: invalidated capture generation"
+            << "generation:" << m_rtcScreenShareGeneration;
+
     if (m_rtcScreenShareAudioInput) {
         m_rtcScreenShareAudioInput->stop();
         m_rtcScreenShareAudioInput->deleteLater();
