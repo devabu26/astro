@@ -556,6 +556,7 @@ MainView {
                      root.matrixAuthenticated &&
                      !root.showingSettings &&
                      !root.showingCallPage
+            z: root.showingCallPage ? 0 : 1
         }
 
         // =====================================================
@@ -575,9 +576,17 @@ MainView {
             membershipState: chatPage.rtcCallStatesByRoom[root.callRoomId] || ({})
             memberships: chatPage.rtcMembershipsByRoom[root.callRoomId] || []
 
+            // Keep CallPage instantiated and rendered while it is behind
+            // ChatPage. Its VideoOutput is also the source for the outgoing
+            // camera-frame grabToImage() pipeline; making the whole page
+            // invisible stops that pipeline even though MatrixRTC remains
+            // connected. ChatPage is stacked above it when the call UI is
+            // dismissed, so the camera keeps publishing without showing the
+            // call interface.
             visible: astroBackend.storageReady &&
-                     root.matrixAuthenticated &&
-                     root.showingCallPage
+                     root.matrixAuthenticated
+            enabled: root.showingCallPage
+            z: root.showingCallPage ? 1 : 0
 
             onBackRequested: {
                 root.showingCallPage = false
