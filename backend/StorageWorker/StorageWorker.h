@@ -2,6 +2,8 @@
 #pragma once
 
 #include <QObject>
+#include <memory>
+#include <atomic>
 #include <QString>
 #include <QByteArray>
 #include <QTimer>
@@ -510,6 +512,9 @@ private:
     QTimer *m_rtcScreenShareStopPollTimer = nullptr;
     QString m_rtcScreenShareStopPendingRoomId;
     QString m_rtcScreenShareStopCompletionError;
+    QString m_rtcMirReleasePendingRoomId;
+    QString m_rtcMirReleasePendingError;
+    std::shared_ptr<std::atomic_bool> m_rtcMirReleaseComplete;
     int m_rtcScreenShareWidth = 0;
     int m_rtcScreenShareHeight = 0;
     bool m_rtcScreenShareStartPending = false;
