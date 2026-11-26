@@ -2937,73 +2937,36 @@ impl MatrixClientManager {
         Ok(())
     }
 
-    pub fn push_rtc_screenshare_frame(
+    pub fn push_rtc_screenshare_i420_buffer(
         &mut self,
         room_id: &str,
-        width: u32,
-        height: u32,
-        bytes: &[u8],
+        buffer: I420Buffer,
     ) -> Result<(), String> {
         let room_id = room_id.trim();
-
         if room_id.is_empty() {
             return Err("Room ID is empty".into());
         }
 
         let runtime = Arc::clone(&self.runtime);
-
-        let frame_pixels = (width as u64).checked_mul(height as u64);
+        let width = buffer.width();
+        let height = buffer.height();
         if width < 2 || height < 2
             || width > 1920 || height > 1920
             || width % 2 != 0 || height % 2 != 0
-            || frame_pixels.is_none_or(|pixels| pixels > 2_073_600)
+            || (width as u64).checked_mul(height as u64)
+                .is_none_or(|pixels| pixels > 2_073_600)
         {
             return Err("Screen-share frame dimensions must be even, no larger than 1920 pixels per side, and within a 1080p pixel budget".into());
-        }
-
-        let y_size = (width as usize)
-            .checked_mul(height as usize)
-            .ok_or_else(|| "Video frame dimensions overflow".to_string())?;
-        let chroma_size = y_size / 4;
-        let expected_size = y_size
-            .checked_add(chroma_size.checked_mul(2)
-                .ok_or_else(|| "Video frame size overflow".to_string())?)
-            .ok_or_else(|| "Video frame size overflow".to_string())?;
-
-        if bytes.len() != expected_size {
-            return Err(format!(
-                "Invalid I420 frame size: expected {expected_size} bytes, received {}",
-                bytes.len()
-            ));
         }
 
         let session = self
             .rtc_livekit_audio_sessions
             .get_mut(room_id)
             .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
-
         let source = session
             .screen_share_source
             .as_ref()
             .ok_or_else(|| "Screen-share video is not active in this room".to_string())?;
-
-        let mut buffer = I420Buffer::new(width, height);
-        let (plane_y, plane_u, plane_v) = buffer.data_mut();
-
-        if plane_y.len() < y_size
-            || plane_u.len() < chroma_size
-            || plane_v.len() < chroma_size
-        {
-            return Err("LiveKit allocated an unexpectedly small I420 buffer".into());
-        }
-
-        plane_y[..y_size].copy_from_slice(&bytes[..y_size]);
-        plane_u[..chroma_size].copy_from_slice(
-            &bytes[y_size..y_size + chroma_size]
-        );
-        plane_v[..chroma_size].copy_from_slice(
-            &bytes[y_size + chroma_size..expected_size]
-        );
 
         let source_resolution = source.video_resolution();
         if source_resolution.width != width || source_resolution.height != height {
@@ -3013,15 +2976,15 @@ impl MatrixClientManager {
             ));
         }
 
+        // The I420 allocation is transferred from the C++ capture stage.
+        // capture_frame may retain it asynchronously, so never recycle or
+        // mutate this buffer after handing it to LiveKit.
         let frame = VideoFrame::new(VideoRotation::VideoRotation0, buffer);
-
         let captured = {
             let _runtime_guard = runtime.enter();
             source.capture_frame(&frame)
         };
 
-        // Record the source's acceptance result. A false return can be a
-        // normal adapter drop, so keep it diagnostic rather than fatal.
         session.screen_share_frames_submitted =
             session.screen_share_frames_submitted.saturating_add(1);
         if captured {
@@ -3032,12 +2995,6 @@ impl MatrixClientManager {
                 session.screen_share_frames_rejected.saturating_add(1);
         }
 
-        // Do not call LocalTrack::get_stats() here. The pinned libwebrtc
-        // 0.4.2 implementation unwraps serde_json::from_str() inside its
-        // native FFI callback. A malformed/unsupported native stats report
-        // therefore panics across the FFI boundary and aborts the process.
-        // Frame-source counters are safe diagnostics and are sufficient for
-        // monitoring capture acceptance without invoking that crash path.
         if session.screen_share_stats_last_report.elapsed() >= Duration::from_secs(5) {
             session.screen_share_stats_last_report = Instant::now();
             eprintln!(
