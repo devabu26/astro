@@ -34,7 +34,6 @@ use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
 use livekit::webrtc::video_frame::{VideoBuffer, VideoBufferType};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
-use livekit::webrtc::stats::RtcStats;
 use livekit::webrtc::video_frame::{
     I420Buffer, VideoFrame, VideoRotation,
 };
@@ -3015,68 +3014,20 @@ impl MatrixClientManager {
                 session.screen_share_frames_rejected.saturating_add(1);
         }
 
-        // Query WebRTC's outbound stats asynchronously every five seconds.
-        // Never wait for get_stats() on the Qt capture thread.
+        // Do not call LocalTrack::get_stats() here. The pinned libwebrtc
+        // 0.4.2 implementation unwraps serde_json::from_str() inside its
+        // native FFI callback. A malformed/unsupported native stats report
+        // therefore panics across the FFI boundary and aborts the process.
+        // Frame-source counters are safe diagnostics and are sufficient for
+        // monitoring capture acceptance without invoking that crash path.
         if session.screen_share_stats_last_report.elapsed() >= Duration::from_secs(5) {
             session.screen_share_stats_last_report = Instant::now();
-
-            let submitted = session.screen_share_frames_submitted;
-            let accepted = session.screen_share_frames_accepted;
-            let rejected = session.screen_share_frames_rejected;
-            let track = session
-                .screen_share_track
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| "Screen-share track is no longer active".to_string())?;
-
-            drop(session);
-            runtime.spawn(async move {
-                match LocalTrack::Video(track).get_stats().await {
-                    Ok(stats) => {
-                        let mut found_outbound_video = false;
-
-                        for stat in stats {
-                            if let RtcStats::OutboundRtp(outbound) = stat {
-                                if outbound.stream.kind == "video" {
-                                    found_outbound_video = true;
-                                    eprintln!(
-                                        "ASTRO_SCREEN_SHARE_RTC: submitted={} accepted={} rejected={} encoded={} sent={} bytesSent={} fps={:.1} resolution={}x{} encoder={} active={}",
-                                        submitted,
-                                        accepted,
-                                        rejected,
-                                        outbound.outbound.frames_encoded,
-                                        outbound.outbound.frames_sent,
-                                        outbound.sent.bytes_sent,
-                                        outbound.outbound.frames_per_second,
-                                        outbound.outbound.frame_width,
-                                        outbound.outbound.frame_height,
-                                        outbound.outbound.encoder_implementation,
-                                        outbound.outbound.active
-                                    );
-                                }
-                            }
-                        }
-
-                        if !found_outbound_video {
-                            eprintln!(
-                                "ASTRO_SCREEN_SHARE_RTC: submitted={} accepted={} rejected={} outboundVideoStats=missing",
-                                submitted,
-                                accepted,
-                                rejected
-                            );
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!(
-                            "ASTRO_SCREEN_SHARE_RTC: submitted={} accepted={} rejected={} statsError={}",
-                            submitted,
-                            accepted,
-                            rejected,
-                            error
-                        );
-                    }
-                }
-            });
+            eprintln!(
+                "ASTRO_SCREEN_SHARE_RTC: submitted={} accepted={} rejected={} stats=disabled",
+                session.screen_share_frames_submitted,
+                session.screen_share_frames_accepted,
+                session.screen_share_frames_rejected
+            );
         }
 
         Ok(())
