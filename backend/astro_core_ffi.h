@@ -278,6 +278,12 @@ int32_t astro_matrix_stop_rtc_screenshare(
     const char *room_id,
     char **error_out
 );
+/* Returns 1 while teardown is pending, 0 when complete, -1 on error. */
+int32_t astro_matrix_poll_rtc_screenshare_stop(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    char **error_out
+);
 int32_t astro_matrix_stop_rtc_audio(
     AstroMatrixClient *handle,
     const char *room_id,
