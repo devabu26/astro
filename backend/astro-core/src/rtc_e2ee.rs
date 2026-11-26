@@ -85,18 +85,24 @@ impl RtcE2eeSession {
         let task_room = room.clone();
 
         let handle = runtime.spawn(async move {
-            let event_type = ToDeviceEventType::from(RTC_KEY_EVENT);
-            // Matrix SDK returns a stream that is not Unpin; pin it so
-            // StreamExt::next can be used inside tokio::select!.
+            // Listen to both the current MatrixRTC key event and the legacy
+            // Element Call event. Astro publishes both memberships while it
+            // uses the legacy /sfu/get token flow, so mixed-version clients
+            // need to receive the key format they understand.
+            let event_types = vec![
+                ToDeviceEventType::from(RTC_KEY_EVENT),
+                ToDeviceEventType::from(LEGACY_RTC_KEY_EVENT),
+            ];
             let mut incoming = Box::pin(
-                task_client.subscribe_to_custom_to_device_messages(vec![event_type]),
+                task_client.subscribe_to_custom_to_device_messages(event_types),
             );
             let mut sticky_updates = task_room.sticky_events().subscribe();
             let mut rotation = tokio::time::interval(Duration::from_secs(15 * 60));
-            // Skip interval's immediate first tick; the first key was generated above.
             rotation.tick().await;
             let mut initial_retry = tokio::time::interval(Duration::from_secs(5));
             initial_retry.tick().await;
+            let mut legacy_poll = tokio::time::interval(Duration::from_secs(5));
+            legacy_poll.tick().await;
             let mut pending = VecDeque::<PendingMediaKey>::new();
 
             let mut initial_key_distributed = publish_local_key(
@@ -104,37 +110,128 @@ impl RtcE2eeSession {
                 &task_room,
                 &local_member_id,
                 &task_local_key,
-            )
-            .await;
+            ).await;
+
+            // Compatibility distribution for clients which still advertise
+            // membership through org.matrix.msc3401.call.member. Keep the
+            // same sender key and index for both membership generations.
+            let mut previous_legacy_members = HashSet::<String>::new();
+            let mut legacy_key_distributed = false;
+            if let Some(members) = legacy_memberships(&task_room).await {
+                previous_legacy_members = members.iter()
+                    .map(|member| member.member_id.clone())
+                    .collect();
+                legacy_key_distributed = publish_local_key_legacy(
+                    &task_client,
+                    &task_room,
+                    &local_member_id,
+                    &task_local_key,
+                    &members,
+                ).await;
+            }
 
             loop {
                 tokio::select! {
                     message = incoming.next() => {
                         let Some(message) = message else { break };
                         if let Some(candidate) = parse_incoming_key(message) {
-                            if try_store_received_key(
+                            let stored = if try_store_received_key(
                                 &task_client,
                                 &task_room,
                                 &task_received_keys,
                                 &candidate,
                             ).await {
-                                continue;
-                            }
+                                true
+                            } else {
+                                try_store_received_key_legacy(
+                                    &task_client,
+                                    &task_room,
+                                    &task_received_keys,
+                                    &candidate,
+                                ).await
+                            };
 
-                            if pending.len() == RTC_PENDING_KEY_LIMIT {
-                                pending.pop_front();
+                            if !stored {
+                                if pending.len() == RTC_PENDING_KEY_LIMIT {
+                                    pending.pop_front();
+                                }
+                                pending.push_back(candidate);
                             }
-                            pending.push_back(candidate);
                         }
                     }
 
-                    _ = initial_retry.tick(), if !initial_key_distributed => {
-                        initial_key_distributed = publish_local_key(
-                            &task_client,
-                            &task_room,
-                            &local_member_id,
-                            &task_local_key,
-                        ).await;
+                    _ = initial_retry.tick(), if !initial_key_distributed || !legacy_key_distributed => {
+                        if !initial_key_distributed {
+                            initial_key_distributed = publish_local_key(
+                                &task_client,
+                                &task_room,
+                                &local_member_id,
+                                &task_local_key,
+                            ).await;
+                        }
+                        if !legacy_key_distributed {
+                            let members = legacy_memberships(&task_room).await.unwrap_or_default();
+                            legacy_key_distributed = publish_local_key_legacy(
+                                &task_client,
+                                &task_room,
+                                &local_member_id,
+                                &task_local_key,
+                                &members,
+                            ).await;
+                        }
+                    }
+
+                    _ = legacy_poll.tick() => {
+                        let Some(members) = legacy_memberships(&task_room).await else {
+                            continue;
+                        };
+                        let current_members = members.iter()
+                            .map(|member| member.member_id.clone())
+                            .collect::<HashSet<_>>();
+                        if !legacy_key_distributed || current_members != previous_legacy_members {
+                            if legacy_key_distributed || current_members != previous_legacy_members {
+                                rotate_local_key(&task_local_key);
+                            }
+                            // Rotate once for the shared membership set and
+                            // distribute the same key to both protocol paths.
+                            initial_key_distributed = publish_local_key(
+                                &task_client,
+                                &task_room,
+                                &local_member_id,
+                                &task_local_key,
+                            ).await;
+                            legacy_key_distributed = publish_local_key_legacy(
+                                &task_client,
+                                &task_room,
+                                &local_member_id,
+                                &task_local_key,
+                                &members,
+                            ).await;
+                            previous_legacy_members = current_members;
+                        }
+
+                        let mut still_pending = VecDeque::new();
+                        while let Some(candidate) = pending.pop_front() {
+                            let stored = if try_store_received_key(
+                                &task_client,
+                                &task_room,
+                                &task_received_keys,
+                                &candidate,
+                            ).await {
+                                true
+                            } else {
+                                try_store_received_key_legacy(
+                                    &task_client,
+                                    &task_room,
+                                    &task_received_keys,
+                                    &candidate,
+                                ).await
+                            };
+                            if !stored {
+                                still_pending.push_back(candidate);
+                            }
+                        }
+                        pending = still_pending;
                     }
 
                     _ = rotation.tick() => {
@@ -144,6 +241,14 @@ impl RtcE2eeSession {
                             &task_room,
                             &local_member_id,
                             &task_local_key,
+                        ).await;
+                        let members = legacy_memberships(&task_room).await.unwrap_or_default();
+                        legacy_key_distributed = publish_local_key_legacy(
+                            &task_client,
+                            &task_room,
+                            &local_member_id,
+                            &task_local_key,
+                            &members,
                         ).await;
                     }
 
@@ -179,18 +284,35 @@ impl RtcE2eeSession {
                                 &task_room,
                                 &local_member_id,
                                 &task_local_key,
-                            )
-                            .await;
+                            ).await;
+                            let members = legacy_memberships(&task_room).await.unwrap_or_default();
+                            legacy_key_distributed = publish_local_key_legacy(
+                                &task_client,
+                                &task_room,
+                                &local_member_id,
+                                &task_local_key,
+                                &members,
+                            ).await;
                         }
 
                         let mut still_pending = VecDeque::new();
                         while let Some(candidate) = pending.pop_front() {
-                            if !try_store_received_key(
+                            let stored = if try_store_received_key(
                                 &task_client,
                                 &task_room,
                                 &task_received_keys,
                                 &candidate,
                             ).await {
+                                true
+                            } else {
+                                try_store_received_key_legacy(
+                                    &task_client,
+                                    &task_room,
+                                    &task_received_keys,
+                                    &candidate,
+                                ).await
+                            };
+                            if !stored {
                                 still_pending.push_back(candidate);
                             }
                         }
