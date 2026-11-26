@@ -58,6 +58,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::{Builder, Runtime};
 
 use crate::media::MediaManager;
+use crate::rtc_e2ee::RtcE2eeSession;
 use crate::notifications::{register_incoming_call_handler, register_notification_handler, NotificationQueue};
 use crate::session_storage::{delete_session, load_session, save_session};
 
@@ -503,6 +504,7 @@ pub struct MatrixClientManager {
     rtc_last_snapshots: HashMap<String, serde_json::Value>,
     rtc_local_memberships: HashMap<String, String>,
     rtc_modern_memberships: HashMap<String, (String, serde_json::Value)>,
+    rtc_e2ee_sessions: HashMap<String, RtcE2eeSession>,
     rtc_livekit_services: HashMap<String, String>,
     rtc_modern_renewals: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     rtc_renewals: Arc<Mutex<HashMap<String, String>>>,
@@ -696,6 +698,7 @@ impl MatrixClientManager {
             rtc_last_snapshots: HashMap::new(),
             rtc_local_memberships: HashMap::new(),
             rtc_modern_memberships: HashMap::new(),
+            rtc_e2ee_sessions: HashMap::new(),
             rtc_livekit_services: HashMap::new(),
             rtc_modern_renewals: Arc::new(Mutex::new(HashMap::new())),
             rtc_renewals: Arc::new(Mutex::new(HashMap::new())),
@@ -948,6 +951,8 @@ impl MatrixClientManager {
         self.rtc_participant_profiles.clear();
         self.rtc_last_snapshots.clear();
         self.rtc_local_memberships.clear();
+        self.rtc_modern_memberships.clear();
+        self.rtc_e2ee_sessions.clear();
         self.rtc_livekit_services.clear();
         if let Ok(mut renewals) = self.rtc_renewals.lock() {
             renewals.clear();
@@ -2645,10 +2650,10 @@ impl MatrixClientManager {
                 eprintln!("ASTRO RTC CALL: no other joined room members to notify");
             }
 
-            Ok::<(String, String, String, serde_json::Value), String>((state_key, livekit_service_url, member_id, modern_membership))
+            Ok::<(String, String, String, serde_json::Value, bool), String>((state_key, livekit_service_url, member_id, modern_membership, encrypted))
         });
 
-        let (state_key, livekit_service_url, member_id, modern_membership) = result?;
+        let (state_key, livekit_service_url, member_id, modern_membership, encrypted) = result?;
         self.rtc_local_memberships.insert(room_id.to_owned(), state_key.clone());
         self.rtc_modern_memberships.insert(room_id.to_owned(), (member_id, modern_membership.clone()));
         if let Ok(mut renewals) = self.rtc_modern_renewals.lock() { renewals.insert(room_id.to_owned(), modern_membership); }
@@ -2656,6 +2661,26 @@ impl MatrixClientManager {
             room_id.to_owned(),
             livekit_service_url,
         );
+
+        if encrypted {
+            let client = self.client.as_ref()
+                .ok_or_else(|| "No active Matrix session".to_string())?
+                .clone();
+            let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+                .map_err(|error| format!("Invalid room ID for MatrixRTC E2EE: {error}"))?;
+            let room = self.runtime.block_on(async {
+                client.get_room(&parsed_room_id)
+                    .ok_or_else(|| "Matrix room disappeared before E2EE key exchange could start".to_string())
+            })?;
+            let session = RtcE2eeSession::start(
+                self.runtime.as_ref(),
+                client,
+                room,
+                member_id,
+            )?;
+            self.rtc_e2ee_sessions.insert(room_id.to_owned(), session);
+            eprintln!("ASTRO RTC E2EE: per-member media-key exchange started in {room_id}");
+        }
 
         if let Ok(mut renewals) = self.rtc_renewals.lock() {
             renewals.insert(room_id.to_owned(), state_key);
@@ -3725,6 +3750,7 @@ impl MatrixClientManager {
 
         self.rtc_local_memberships.remove(room_id);
         self.rtc_modern_memberships.remove(room_id);
+        self.rtc_e2ee_sessions.remove(room_id);
         if let Ok(mut renewals) = self.rtc_modern_renewals.lock() { renewals.remove(room_id); }
         self.rtc_livekit_services.remove(room_id);
         if let Ok(mut renewals) = self.rtc_renewals.lock() {
