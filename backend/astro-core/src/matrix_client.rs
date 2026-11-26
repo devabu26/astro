@@ -2427,8 +2427,9 @@ impl MatrixClientManager {
                 .map_err(|error| format!("Could not publish MatrixRTC call presence: {error}"))?;
 
             // MatrixRTC membership only advertises that this device has joined.
-            // Send a separate MSC4075 notification so the other room members'
-            // clients can treat this as an incoming call.
+            // Match the event formats used by Element Call / matrix-js-sdk 39:
+            // MSC4075's then-current event name plus the legacy m.call.notify
+            // event for clients that still consume the compatibility format.
             let notification_event_id = membership_response.event_id;
             let recipients = room.human_member_ids(RoomMemberships::JOIN).await
                 .map_err(|error| format!("Could not load joined room members for call notification: {error}"))?
@@ -2443,10 +2444,14 @@ impl MatrixClientManager {
                     .unwrap_or_default()
                     .as_millis() as u64;
 
+                // Cinny's incoming-call listener currently recognises
+                // org.matrix.msc4075.rtc.notification (not the later stable
+                // m.rtc.notification event name).
                 let notification_content = serde_json::json!({
                     "sender_ts": sender_ts,
                     "lifetime": 30_000,
                     "notification_type": "ring",
+                    "m.call.intent": "audio",
                     "m.mentions": {
                         "user_ids": recipients
                     },
@@ -2456,14 +2461,41 @@ impl MatrixClientManager {
                     }
                 });
 
-                match room.send_raw("m.rtc.notification", notification_content).await {
+                match room.send_raw(
+                    "org.matrix.msc4075.rtc.notification",
+                    notification_content
+                ).await {
                     Ok(response) => eprintln!(
-                        "ASTRO RTC CALL: sent incoming-call notification {} to {} other room member(s)",
+                        "ASTRO RTC CALL: sent MSC4075 incoming-call notification {} to {} other room member(s)",
                         response.response.event_id,
                         recipients.len()
                     ),
                     Err(error) => eprintln!(
-                        "ASTRO RTC CALL: failed to send incoming-call notification: {error}"
+                        "ASTRO RTC CALL: failed to send MSC4075 incoming-call notification: {error}"
+                    ),
+                }
+
+                // Keep the legacy event in sync with matrix-js-sdk's
+                // compatibility sender. Older clients expect notify_type
+                // ("ring" / "notify") and call_id rather than the MSC4075
+                // notification_type and membership relation fields.
+                let legacy_content = serde_json::json!({
+                    "application": "m.call",
+                    "m.mentions": {
+                        "user_ids": recipients
+                    },
+                    "notify_type": "ring",
+                    "call_id": ""
+                });
+
+                match room.send_raw("m.call.notify", legacy_content).await {
+                    Ok(response) => eprintln!(
+                        "ASTRO RTC CALL: sent legacy call notification {} to {} other room member(s)",
+                        response.response.event_id,
+                        recipients.len()
+                    ),
+                    Err(error) => eprintln!(
+                        "ASTRO RTC CALL: failed to send legacy call notification: {error}"
                     ),
                 }
             } else {
