@@ -2778,9 +2778,8 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
         return;
     }
 
-    // Stop the frame and audio producers on this worker first. The Mir
-    // screencast release can wait on compositor IPC, so perform that release
-    // on a detached cleanup thread and let the worker event loop keep running.
+    // Stop frame/audio producers first. Mir release may wait on compositor
+    // IPC, so keep it off the worker event loop while teardown is pending.
     if (m_rtcScreenShareAudioInput) {
         m_rtcScreenShareAudioInput->stop();
         m_rtcScreenShareAudioInput->deleteLater();
@@ -2819,20 +2818,21 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
     m_rtcMirReleaseComplete = std::make_shared<std::atomic_bool>(false);
     const auto releaseComplete = m_rtcMirReleaseComplete;
 
-    // Release Mir's GL-backed buffers on the StorageWorker thread rather
-    // than a detached thread with no current GL context. When the camera's
-    // shared context is available, make it current for the destruction path;
-    // the worker is separate from the QML/UI thread, so this cannot block
-    // input or scene-graph event delivery while Mir completes its release.
-    const bool releaseContextCurrent = makeRtcCameraOpenGLContextCurrent();
-    qInfo() << "ASTRO_SCREEN_SHARE_STOP: releasing screencast on worker thread"
-            << "thread:" << quintptr(QThread::currentThreadId())
-            << "glContextCurrent:" << releaseContextCurrent;
-    mir_screencast_release_sync(screencast);
-    if (releaseContextCurrent)
-        releaseRtcCameraOpenGLContext();
-    qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release complete";
-    releaseComplete->store(true, std::memory_order_release);
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: starting non-blocking Mir release";
+    try {
+        std::thread([screencast, releaseComplete]() {
+            qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release begin"
+                    << "thread:" << quintptr(QThread::currentThreadId());
+            mir_screencast_release_sync(screencast);
+            qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release complete";
+            releaseComplete->store(true, std::memory_order_release);
+        }).detach();
+    } catch (const std::exception &exception) {
+        qWarning() << "ASTRO_SCREEN_SHARE_STOP: could not create Mir cleanup thread:"
+                   << exception.what();
+        mir_screencast_release_sync(screencast);
+        releaseComplete->store(true, std::memory_order_release);
+    }
 
     if (m_rtcScreenShareStopPollTimer)
         m_rtcScreenShareStopPollTimer->start();
