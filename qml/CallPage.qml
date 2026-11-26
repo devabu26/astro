@@ -268,6 +268,14 @@ Item {
         }
 
         remoteAnswered = false
+
+        // Ringback belongs to the outgoing call attempt, not to the later
+        // LiveKit audio-start callback. Start it before joining so the caller
+        // hears feedback while MatrixRTC and LiveKit are connecting.
+        if (directCall) {
+            startRingback()
+        }
+
         if (membershipJoined) {
             // The room participant control may already have joined MatrixRTC.
             // Reuse that membership instead of issuing a duplicate join.
@@ -562,11 +570,56 @@ Item {
                 : "P"
     }
 
+    function startRingback() {
+        if (!directCall || remoteAnswered || ringbackSource.length === 0)
+            return
+
+        if (ringbackAudio.playbackState !== Audio.PlayingState) {
+            console.info(
+                "ASTRO_CALL_RINGBACK: starting",
+                "sourceAvailable:", true,
+                "audioStatus:", ringbackAudio.status,
+                "playbackState:", ringbackAudio.playbackState
+            )
+            ringbackAudio.play()
+        }
+
+        if (!noAnswerTimer.running)
+            noAnswerTimer.restart()
+    }
+
     Audio {
         id: ringbackAudio
         source: root.ringbackSource
         loops: Audio.Infinite
-        volume: 0.45
+        volume: 1.0
+        audioRole: Audio.NotificationRole
+
+        onStatusChanged: {
+            console.info(
+                "ASTRO_CALL_RINGBACK: audio status",
+                status,
+                "source:", source
+            )
+        }
+
+        onPlaybackStateChanged: {
+            console.info(
+                "ASTRO_CALL_RINGBACK: playback state",
+                playbackState
+            )
+        }
+
+        onError: {
+            if (error !== Audio.NoError) {
+                console.warn(
+                    "ASTRO_CALL_RINGBACK: playback error",
+                    error,
+                    errorString,
+                    "source:", source
+                )
+            }
+        }
     }
 
     Timer {
@@ -879,11 +932,9 @@ Item {
             )
         }
 
-        if (participants.length > 0) {
-            remoteAnswered = true
-            noAnswerTimer.stop()
-            ringbackAudio.stop()
-        }
+        // Do not infer that the remote party answered from the participant
+        // model here: it can be populated during local session setup. The
+        // LiveKit participant_connected/active events below are authoritative.
 
         if (audioState.active === true) {
             audioStarted = true
@@ -1027,6 +1078,10 @@ Item {
 
             if (error && error.length > 0) {
                 root.actionError = error
+                if (operation === "join" || operation === "start") {
+                    noAnswerTimer.stop()
+                    ringbackAudio.stop()
+                }
                 if (operation === "stop") {
                     // Even if LiveKit shutdown reports an error, withdraw
                     // MatrixRTC membership so the user is not trapped in the call.
@@ -1056,11 +1111,8 @@ Item {
             if (operation === "start") {
                 root.audioStarted = true
                 root.muted = false
-                if (root.directCall && !root.remoteAnswered) {
-                    if (root.ringbackSource.length > 0)
-                        ringbackAudio.play()
-                    noAnswerTimer.restart()
-                }
+                if (root.directCall && !root.remoteAnswered)
+                    root.startRingback();
 
             } else if (operation === "mute") {
                 root.muted = root.pendingMuted
