@@ -408,6 +408,21 @@ void Backend::sendRoomAttachment(
 
 
 
+void Backend::declineRtcCall(const QString &roomId, const QString &eventId)
+{
+    if (!m_storageReady || roomId.isEmpty() || eventId.isEmpty()) {
+        emit matrixRtcActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID or call event ID is empty")
+        );
+        return;
+    }
+    emit requestDeclineRtcCall(roomId, eventId);
+}
+
+
 void Backend::joinRtcRoom(const QString &roomId)
 {
     if (!m_storageReady || roomId.isEmpty()) {
