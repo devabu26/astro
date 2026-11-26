@@ -1,5 +1,6 @@
 
 import QtQuick 2.7
+import QtQuick.Window 2.2
 import QtMultimedia 5.12
 import Lomiri.Components 1.3
 import Astro.Backend 1.0
@@ -34,6 +35,33 @@ Item {
     property string nativeBackgroundCameraDeviceId: ""
     property bool remoteAnswered: false
     property string ringbackSource: ""
+
+    // Mir screen-share teardown can leave Qt Quick without a fresh expose
+    // event on some Lomiri/Mir devices. Briefly request frames after stopping
+    // capture so the call UI is repainted without requiring an app switch.
+    property int screenShareRenderRecoveryTicks: 0
+
+    Timer {
+        id: screenShareRenderRecoveryTimer
+        interval: 100
+        repeat: true
+        running: false
+
+        onTriggered: {
+            var window = root.Window.window
+            if (window)
+                window.update()
+
+            root.screenShareRenderRecoveryTicks--
+            if (root.screenShareRenderRecoveryTicks <= 0)
+                stop()
+        }
+    }
+
+    function refreshAfterScreenShareStop() {
+        root.screenShareRenderRecoveryTicks = 15
+        screenShareRenderRecoveryTimer.restart()
+    }
 
     signal backRequested()
     signal remoteVideoCleared(string identity, string source)
@@ -690,6 +718,10 @@ Item {
                     root.screenShareAudioRequested = false
                     root.screenShareRoomId = ""
                 }
+                if (operation === "stopScreenShare" ||
+                    operation === "stopScreenShareForHangup") {
+                    root.refreshAfterScreenShareStop()
+                }
                 return
             }
 
@@ -712,6 +744,11 @@ Item {
                 } else {
                     root.stopAudioOrLeave()
                 }
+            }
+
+            if (operation === "stopScreenShare" ||
+                operation === "stopScreenShareForHangup") {
+                root.refreshAfterScreenShareStop()
             }
         }
 
