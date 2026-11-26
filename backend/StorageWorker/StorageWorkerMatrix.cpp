@@ -1144,96 +1144,6 @@ void StorageWorker::releaseRtcCameraOpenGLContext()
     }
 }
 
-// Read back Qt's GLTextureHandle camera frames while the camera worker's
-// shared OpenGL context is current. QVideoFrame::map() cannot map these
-// GL-backed buffers on Ubuntu Touch without a current context.
-static bool readGlCameraFrame(const QVideoFrame &frame, QImage *image)
-{
-    if (!image || frame.handleType() != QAbstractVideoBuffer::GLTextureHandle ||
-        frame.pixelFormat() != QVideoFrame::Format_RGB32)
-        return false;
-
-    bool handleOk = false;
-    const GLuint texture = frame.handle().toUInt(&handleOk);
-    if (!handleOk || texture == 0)
-        return false;
-
-    QOpenGLContext *context = QOpenGLContext::currentContext();
-    if (!context)
-        return false;
-
-    QOpenGLFunctions *gl = context->functions();
-    if (!gl)
-        return false;
-
-    while (gl->glGetError() != GL_NO_ERROR) { }
-
-    GLint previousFramebuffer = 0;
-    GLint previousPackAlignment = 4;
-    gl->glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
-    gl->glGetIntegerv(GL_PACK_ALIGNMENT, &previousPackAlignment);
-
-    GLuint framebuffer = 0;
-    gl->glGenFramebuffers(1, &framebuffer);
-    if (framebuffer == 0)
-        return false;
-
-    gl->glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-    gl->glFramebufferTexture2D(
-        GL_FRAMEBUFFER,
-        GL_COLOR_ATTACHMENT0,
-        GL_TEXTURE_2D,
-        texture,
-        0
-    );
-
-    const GLenum framebufferStatus = gl->glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    bool readOk = framebufferStatus == GL_FRAMEBUFFER_COMPLETE;
-    QByteArray pixels;
-
-    if (readOk) {
-        const int width = frame.width();
-        const int height = frame.height();
-        pixels.resize(width * height * 4);
-        gl->glPixelStorei(GL_PACK_ALIGNMENT, 1);
-        gl->glReadPixels(
-            0, 0, width, height,
-            GL_RGBA, GL_UNSIGNED_BYTE,
-            pixels.data()
-        );
-        readOk = gl->glGetError() == GL_NO_ERROR;
-    }
-
-    gl->glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFramebuffer));
-    gl->glPixelStorei(GL_PACK_ALIGNMENT, previousPackAlignment);
-    gl->glDeleteFramebuffers(1, &framebuffer);
-
-    if (!readOk)
-        return false;
-
-    const int width = frame.width();
-    const int height = frame.height();
-    QImage result(width, height, QImage::Format_RGB32);
-    if (result.isNull())
-        return false;
-
-    // OpenGL's origin is bottom-left; QImage's is top-left.
-    for (int y = 0; y < height; ++y) {
-        const uchar *source = reinterpret_cast<const uchar *>(pixels.constData())
-            + (height - 1 - y) * width * 4;
-        QRgb *destination = reinterpret_cast<QRgb *>(result.scanLine(y));
-        for (int x = 0; x < width; ++x) {
-            const int offset = x * 4;
-            destination[x] = qRgb(
-                source[offset], source[offset + 1], source[offset + 2]
-            );
-        }
-    }
-
-    *image = result;
-    return true;
-}
-
 // ASTRO_RTC_VIDEO_STAGE3
 class RtcCameraVideoSurface : public QAbstractVideoSurface
 {
@@ -1408,33 +1318,37 @@ public:
         const bool glTextureFrame =
             frame.handleType() == QAbstractVideoBuffer::GLTextureHandle;
         QVideoFrame mapped(frame);
-        QImage glFrameImage;
 
         if (glTextureFrame) {
-            // GL texture handles cannot be read with QVideoFrame::map().
-            // Activate the worker's context shared with Qt Quick before
-            // attaching the camera texture to a readback framebuffer.
+            // QtUbuntu's camera buffer owns the GL/EGL details. Let its
+            // QAbstractVideoBuffer::map() implementation perform the
+            // platform-specific GL texture readback instead of assuming
+            // frame.handle() contains a usable GLuint.
             const bool contextCurrent =
                 m_worker && m_worker->makeRtcCameraOpenGLContextCurrent();
-            const bool readOk = contextCurrent &&
-                readGlCameraFrame(frame, &glFrameImage);
+            const bool mapOk = contextCurrent &&
+                mapped.map(QAbstractVideoBuffer::ReadOnly);
             if (contextCurrent)
                 m_worker->releaseRtcCameraOpenGLContext();
 
-            if (!readOk) {
+            if (!mapOk) {
                 if (m_loggedMapFailure.testAndSetOrdered(0, 1)) {
-                    qWarning() << "RTC camera could not read GL texture frame:"
+                    qWarning() << "RTC camera could not map GL-backed frame:"
                                << width << "x" << height
                                << "format:" << format
-                               << "texture:" << frame.handle()
+                               << "handle:" << frame.handle()
+                               << "planes:" << frame.planeCount()
                                << "worker GL context current:" << contextCurrent;
                 }
-                // Keep the surface active if a GL texture is temporarily
-                // unavailable (for example while the camera backend is
-                // establishing its shared texture). A failed present() stops
-                // the QAbstractVideoSurface, preventing later frames from
-                // recovering. CPU-backed mapping failures remain fatal.
+                // Keep the surface active so a later camera frame can recover.
                 return true;
+            }
+
+            if (m_loggedMapFailure.testAndSetOrdered(0, 1)) {
+                qInfo() << "RTC camera mapped GL-backed frame:"
+                        << "planes:" << mapped.planeCount()
+                        << "bytes:" << mapped.mappedBytes()
+                        << "stride:" << mapped.bytesPerLine(0);
             }
         } else if (!mapped.map(QAbstractVideoBuffer::ReadOnly)) {
             if (m_loggedMapFailure.testAndSetOrdered(0, 1))
@@ -1461,7 +1375,7 @@ public:
         uchar *uOut = yOut + ySize;
         uchar *vOut = uOut + chromaSize;
         bool converted = false;
-        const int sourcePlaneCount = glTextureFrame ? 0 : mapped.planeCount();
+        const int sourcePlaneCount = mapped.planeCount();
         QImage::Format fallbackImageFormat = QImage::Format_Invalid;
         int fallbackStride = 0;
         bool fallbackHasBits = false;
@@ -1579,28 +1493,21 @@ public:
                 converted = true;
             }
         } else {
-            const QImage::Format imageFormat = glTextureFrame
-                ? QImage::Format_RGB32
-                : QVideoFrame::imageFormatFromPixelFormat(format);
+            const QImage::Format imageFormat =
+                QVideoFrame::imageFormatFromPixelFormat(format);
             fallbackImageFormat = imageFormat;
-            fallbackStride = glTextureFrame
-                ? glFrameImage.bytesPerLine()
-                : mapped.bytesPerLine(0);
-            fallbackHasBits = glTextureFrame
-                ? !glFrameImage.isNull()
-                : mapped.bits(0) != nullptr;
+            fallbackStride = mapped.bytesPerLine(0);
+            fallbackHasBits = mapped.bits(0) != nullptr;
             if (imageFormat != QImage::Format_Invalid &&
                 fallbackHasBits &&
                 fallbackStride > 0) {
-                const QImage source = glTextureFrame
-                    ? glFrameImage
-                    : QImage(
-                        mapped.bits(0),
-                        width,
-                        height,
-                        mapped.bytesPerLine(0),
-                        imageFormat
-                    );
+                const QImage source(
+                    mapped.bits(0),
+                    width,
+                    height,
+                    mapped.bytesPerLine(0),
+                    imageFormat
+                );
                 // RGBA8888 has a defined byte order on every CPU architecture.
                 // Read channels explicitly instead of relying on native-endian QRgb
                 // storage when converting the QML-captured image to I420.
