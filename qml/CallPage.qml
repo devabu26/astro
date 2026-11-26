@@ -12,6 +12,8 @@ Item {
     property string roomName: ""
     property bool directCall: false
     property var audioState: ({})
+    // Authoritative MatrixRTC membership state shared with the room view.
+    property var membershipState: ({})
 
     property string pendingOperation: ""
     property string actionError: ""
@@ -55,8 +57,21 @@ Item {
         }
 
         remoteAnswered = false
-        pendingOperation = "join"
-        backend.joinRtcRoom(roomId)
+        if (membershipJoined) {
+            // The room participant control may already have joined MatrixRTC.
+            // Reuse that membership instead of issuing a duplicate join.
+            startAudio()
+        } else {
+            pendingOperation = "join"
+            backend.joinRtcRoom(roomId)
+        }
+    }
+
+    onMembershipStateChanged: {
+        // Membership can also be changed from the room participant panel.
+        // Do not overwrite an in-flight local join/leave operation.
+        if (pendingOperation !== "join" && pendingOperation !== "leave")
+            membershipJoined = membershipState.joinedByMe === true
     }
 
     function startAudio() {
@@ -438,7 +453,7 @@ Item {
             if (backend && screenShareRoomId.length > 0)
                 backend.stopRtcScreenShare(screenShareRoomId)
             audioStarted = false
-            membershipJoined = false
+            membershipJoined = membershipState.joinedByMe === true
             videoStarted = false
             screenShareStarted = false
             screenShareAudioRequested = false
@@ -478,7 +493,7 @@ Item {
             membershipJoined = true
         } else {
             audioStarted = false
-            membershipJoined = false
+            membershipJoined = membershipState.joinedByMe === true
             muted = false
         }
     }
@@ -1355,7 +1370,7 @@ Item {
 
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: "Start"
+                                text: "Join Call"
                                 color: "white"
                                 font.pixelSize: units.gu(1.2)
                             }
@@ -1389,7 +1404,7 @@ Item {
 
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: "Leave"
+                                text: "Leave Call"
                                 color: "white"
                                 font.pixelSize: units.gu(1.2)
                             }
