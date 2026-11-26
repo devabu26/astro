@@ -175,6 +175,13 @@ fn timeline_item_to_json(
         .map(str::to_owned)
         .unwrap_or_else(|| event.sender().to_string());
 
+    // RTC notification events are signalling, not chat messages. They are
+    // handled by the global incoming-call notification queue; exposing them
+    // as m.room.event makes the QML message renderer show "unsupported message".
+    if matches!(content, TimelineItemContent::RtcNotification { .. }) {
+        return None;
+    }
+
     // Convert selected non-message timeline items into readable room events.
     // These remain distinct from ordinary Matrix message events.
     let room_event_body = if is_encrypted {
@@ -224,16 +231,6 @@ fn timeline_item_to_json(
             }
             TimelineItemContent::CallInvite => {
                 Some(format!("{sender_name} started a call"))
-            }
-            TimelineItemContent::RtcNotification { call_intent, .. } => {
-                use matrix_sdk::ruma::events::rtc::notification::CallIntent;
-
-                let description = match call_intent {
-                    Some(CallIntent::Audio) => "started a voice call",
-                    Some(CallIntent::Video) => "started a video call",
-                    _ => "started a call",
-                };
-                Some(format!("{sender_name} {description}"))
             }
             _ => None,
         }
