@@ -95,11 +95,53 @@ Item {
         }
     }
 
+    function stopAfterExternalMembershipLeave() {
+        if (!backend || !roomId)
+            return
+
+        // The room participant panel can leave MatrixRTC independently of
+        // this page. Once the shared membership snapshot confirms that leave,
+        // close the associated LiveKit session and clear all local media UI.
+        noAnswerTimer.stop()
+        ringbackAudio.stop()
+        localCamera.stop()
+        backgroundCameraStartTimer.stop()
+        waitingForForegroundCamera = false
+
+        if (screenShareRoomId === roomId)
+            backend.stopRtcScreenShare(roomId)
+
+        if (audioStarted || audioState.active === true ||
+                videoStarted || screenShareStarted) {
+            pendingOperation = "stopAfterExternalLeave"
+            backend.stopRtcAudio(roomId)
+        } else {
+            membershipJoined = false
+            audioStarted = false
+            videoStarted = false
+            screenShareStarted = false
+            screenShareAudioRequested = false
+            screenShareRoomId = ""
+            muted = false
+            actionError = ""
+        }
+    }
+
     onMembershipStateChanged: {
+        var joined = membershipState.joinedByMe === true
+
         // Membership can also be changed from the room participant panel.
         // Do not overwrite an in-flight local join/leave operation.
-        if (pendingOperation !== "join" && pendingOperation !== "leave")
-            membershipJoined = membershipState.joinedByMe === true
+        if (pendingOperation === "join" || pendingOperation === "leave" ||
+                pendingOperation === "stopAfterExternalLeave")
+            return
+
+        if (membershipJoined && !joined) {
+            membershipJoined = false
+            stopAfterExternalMembershipLeave()
+        } else {
+            membershipJoined = joined
+        }
     }
 
     function startAudio() {
@@ -642,6 +684,16 @@ Item {
                     root.screenShareAudioRequested = false
                     root.screenShareRoomId = ""
                     root.leaveMembership()
+                } else if (operation === "stopAfterExternalLeave") {
+                    // MatrixRTC membership was already removed by the room
+                    // participant control. Do not issue a second leave.
+                    root.membershipJoined = false
+                    root.audioStarted = false
+                    root.videoStarted = false
+                    root.screenShareStarted = false
+                    root.screenShareAudioRequested = false
+                    root.screenShareRoomId = ""
+                    root.muted = false
                 }
                 return
             }
@@ -664,6 +716,18 @@ Item {
                 root.audioStarted = false
                 root.muted = false
                 root.leaveMembership()
+
+            } else if (operation === "stopAfterExternalLeave") {
+                // The room participant control already left MatrixRTC. Only
+                // finish closing LiveKit/media here; never leave a second time.
+                root.membershipJoined = false
+                root.audioStarted = false
+                root.videoStarted = false
+                root.screenShareStarted = false
+                root.screenShareAudioRequested = false
+                root.screenShareRoomId = ""
+                root.muted = false
+                root.actionError = ""
             }
         }
 
