@@ -1,5 +1,6 @@
 use crate::matrix_client::MatrixClientManager;
 use crate::storage::StorageManager;
+use livekit::webrtc::video_frame::I420Buffer;
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -605,70 +606,131 @@ pub unsafe extern "C" fn astro_matrix_push_rtc_video_frame(
     }
 }
 
+// Opaque Rust-owned I420 allocation used by the Mir screen capture path.
+// C++ writes into the returned planes, then transfers this object to submit.
+// submit consumes it on every path because LiveKit may retain the frame.
+pub struct AstroRtcI420Frame {
+    buffer: Option<I420Buffer>,
+}
+
 #[no_mangle]
-pub unsafe extern "C" fn astro_matrix_push_rtc_screenshare_frame(
-    handle: *mut MatrixClientManager,
-    room_id: *const c_char,
+pub unsafe extern "C" fn astro_matrix_create_rtc_screenshare_frame(
     width: u32,
     height: u32,
-    frame_data: *const u8,
-    frame_data_len: u64,
+    frame_out: *mut *mut AstroRtcI420Frame,
+    plane_y_out: *mut *mut u8,
+    stride_y_out: *mut u32,
+    plane_u_out: *mut *mut u8,
+    stride_u_out: *mut u32,
+    plane_v_out: *mut *mut u8,
+    stride_v_out: *mut u32,
     error_out: *mut *mut c_char,
 ) -> i32 {
-    if !error_out.is_null() {
-        *error_out = ptr::null_mut();
-    }
+    if !error_out.is_null() { *error_out = ptr::null_mut(); }
+    if !frame_out.is_null() { *frame_out = ptr::null_mut(); }
+    if !plane_y_out.is_null() { *plane_y_out = ptr::null_mut(); }
+    if !plane_u_out.is_null() { *plane_u_out = ptr::null_mut(); }
+    if !plane_v_out.is_null() { *plane_v_out = ptr::null_mut(); }
+    if !stride_y_out.is_null() { *stride_y_out = 0; }
+    if !stride_u_out.is_null() { *stride_u_out = 0; }
+    if !stride_v_out.is_null() { *stride_v_out = 0; }
 
-    if handle.is_null() {
-        set_error(error_out, "Matrix client handle must not be null");
+    if frame_out.is_null() || plane_y_out.is_null() || stride_y_out.is_null()
+        || plane_u_out.is_null() || stride_u_out.is_null()
+        || plane_v_out.is_null() || stride_v_out.is_null()
+    {
+        set_error(error_out, "Screen-share frame output pointers must not be null");
         return -1;
     }
 
-    if frame_data.is_null() {
-        set_error(error_out, "Video frame data must not be null");
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<*mut AstroRtcI420Frame, String> {
+        let pixels = (width as u64).checked_mul(height as u64)
+            .ok_or_else(|| "Screen-share frame dimensions overflow".to_string())?;
+        if width < 2 || height < 2 || width > 1920 || height > 1920
+            || width % 2 != 0 || height % 2 != 0 || pixels > 2_073_600
+        {
+            return Err("Screen-share frame dimensions must be even, no larger than 1920 pixels per side, and within a 1080p pixel budget".into());
+        }
+
+        let mut buffer = I420Buffer::new(width, height);
+        let (stride_y, stride_u, stride_v) = buffer.strides();
+        let (plane_y, plane_u, plane_v) = buffer.data_mut();
+        let min_y = (stride_y as usize).checked_mul(height as usize)
+            .ok_or_else(|| "I420 luma plane size overflow".to_string())?;
+        let chroma_height = (height / 2) as usize;
+        let min_u = (stride_u as usize).checked_mul(chroma_height)
+            .ok_or_else(|| "I420 U plane size overflow".to_string())?;
+        let min_v = (stride_v as usize).checked_mul(chroma_height)
+            .ok_or_else(|| "I420 V plane size overflow".to_string())?;
+        if plane_y.len() < min_y || plane_u.len() < min_u || plane_v.len() < min_v {
+            return Err("LiveKit allocated an unexpectedly small I420 frame".into());
+        }
+
+        *plane_y_out = plane_y.as_mut_ptr();
+        *stride_y_out = stride_y;
+        *plane_u_out = plane_u.as_mut_ptr();
+        *stride_u_out = stride_u;
+        *plane_v_out = plane_v.as_mut_ptr();
+        *stride_v_out = stride_v;
+
+        Ok(Box::into_raw(Box::new(AstroRtcI420Frame { buffer: Some(buffer) })))
+    }));
+
+    match result {
+        Ok(Ok(frame)) => {
+            *frame_out = frame;
+            0
+        }
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while allocating LiveKit screen-share frame");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_free_rtc_screenshare_frame(
+    frame: *mut AstroRtcI420Frame,
+) {
+    if !frame.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| drop(Box::from_raw(frame))));
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_submit_rtc_screenshare_frame(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    frame: *mut AstroRtcI420Frame,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() { *error_out = ptr::null_mut(); }
+    if frame.is_null() {
+        set_error(error_out, "Screen-share I420 frame must not be null");
+        return -1;
+    }
+
+    // Consume immediately, including error paths.
+    let frame = Box::from_raw(frame);
+    if handle.is_null() {
+        drop(frame);
+        set_error(error_out, "Matrix client handle must not be null");
         return -1;
     }
 
     let result = catch_unwind(AssertUnwindSafe(|| {
         let room_id = read_input(room_id, "Room ID")?;
-
-        let frame_pixels = (width as u64).checked_mul(height as u64);
-        if width < 2 || height < 2
-            || width > 1920 || height > 1920
-            || width % 2 != 0 || height % 2 != 0
-            || frame_pixels.is_none_or(|pixels| pixels > 2_073_600)
-        {
-            return Err("Invalid screen-share frame dimensions".to_string());
-        }
-
-        let y_size = (width as usize)
-            .checked_mul(height as usize)
-            .ok_or_else(|| "Video frame dimensions overflow".to_string())?;
-        let expected_size = y_size
-            .checked_add(y_size / 2)
-            .ok_or_else(|| "Video frame size overflow".to_string())?;
-
-        let supplied_size = usize::try_from(frame_data_len)
-            .map_err(|_| "Video frame is too large".to_string())?;
-
-        if supplied_size != expected_size {
-            return Err(format!(
-                "Invalid I420 frame size: expected {expected_size} bytes, received {supplied_size}"
-            ));
-        }
-
-        // The caller must keep frame_data valid for the duration of this call.
-        // push_rtc_screenshare_frame copies the data into a LiveKit-owned buffer.
-        let bytes = std::slice::from_raw_parts(frame_data, supplied_size);
-
-        (&mut *handle).push_rtc_screenshare_frame(
-            room_id,
-            width,
-            height,
-            bytes,
-        )
+        let buffer = frame.buffer
+            .ok_or_else(|| "Screen-share I420 frame was already consumed".to_string())?;
+        (&mut *handle).push_rtc_screenshare_i420_buffer(room_id, buffer)
     }));
 
+    // On success the buffer has moved into VideoFrame. On failure it is
+    // released when the owned wrapper is dropped here.
     match result {
         Ok(Ok(())) => 0,
         Ok(Err(message)) => {
