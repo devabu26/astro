@@ -27,6 +27,7 @@ MainView {
     property bool matrixRoomsReady: false
     property bool showingSettings: false
     property bool showingCallPage: false
+    property bool incomingCall: false
     property string callRoomId: ""
     property string callRoomName: ""
     property string pendingNotificationRoomId: ""
@@ -595,6 +596,7 @@ MainView {
             roomId: root.callRoomId
             roomName: root.callRoomName
             directCall: chatPage.selectedRoomKind === "dm"
+            incomingCall: root.incomingCall
             audioState: chatPage.rtcAudioStatesByRoom[root.callRoomId] || ({})
             membershipState: chatPage.rtcCallStatesByRoom[root.callRoomId] || ({})
             memberships: chatPage.rtcMembershipsByRoom[root.callRoomId] || []
@@ -613,6 +615,7 @@ MainView {
 
             onBackRequested: {
                 root.showingCallPage = false
+                root.incomingCall = false
             }
         }
     }
@@ -629,9 +632,18 @@ MainView {
         width: parent.width - units.gu(4)
         z: 2100
 
-        onOpenRequested: {
+        onAcceptRequested: {
             root.showingSettings = false
-            chatPage.openNotification(roomId, eventId)
+            root.incomingCall = true
+            root.openCallPage(
+                roomId,
+                chatPage.roomNameForId(roomId),
+                true
+            )
+        }
+
+        onDeclineRequested: {
+            astroBackend.declineRtcCall(roomId, eventId)
         }
     }
 
