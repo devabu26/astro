@@ -15,6 +15,11 @@ Item {
     property var audioState: ({})
     // Authoritative MatrixRTC membership state shared with the room view.
     property var membershipState: ({})
+    // MatrixRTC membership profiles provide the MXC avatar URI for each user.
+    property var memberships: []
+    property var participantAvatarCache: ({})
+    property var participantAvatarRequests: ({})
+
 
     property string pendingOperation: ""
     property string actionError: ""
@@ -111,6 +116,103 @@ Item {
 
     readonly property bool callActive:
         audioState.active === true || audioStarted
+
+    function participantProfile(identity) {
+        identity = String(identity || "")
+        if (!identity)
+            return null
+
+        for (var i = 0; i < memberships.length; ++i) {
+            var membership = memberships[i]
+            if (membership && String(membership.sender || "") === identity)
+                return membership
+        }
+
+        return null
+    }
+
+    function participantAvatarMxc(identity) {
+        var profile = participantProfile(identity)
+        return profile && profile.avatar_url
+                ? String(profile.avatar_url) : ""
+    }
+
+    function participantDisplayName(identity, fallbackName) {
+        var profile = participantProfile(identity)
+        return profile && profile.display_name
+                ? String(profile.display_name)
+                : String(fallbackName || identity || "Participant")
+    }
+
+    function participantAvatarRequestKey(identity) {
+        return "call-avatar:" + roomId + ":" + String(identity || "")
+    }
+
+    function requestParticipantAvatar(identity, mxcUri) {
+        identity = String(identity || "")
+        mxcUri = String(mxcUri || "")
+        if (!backend || !identity || !mxcUri)
+            return
+
+        if (participantAvatarCache[identity] ||
+                participantAvatarRequests[identity] === mxcUri)
+            return
+
+        var requests = Object.assign({}, participantAvatarRequests)
+        requests[identity] = mxcUri
+        participantAvatarRequests = requests
+        backend.requestSenderAvatar(
+            participantAvatarRequestKey(identity), mxcUri
+        )
+    }
+
+    function storeParticipantAvatar(identity, dataUrl) {
+        if (!identity || !dataUrl)
+            return
+
+        var cache = Object.assign({}, participantAvatarCache)
+        cache[identity] = dataUrl
+        participantAvatarCache = cache
+    }
+
+    onRoomIdChanged: {
+        participantAvatarCache = ({})
+        participantAvatarRequests = ({})
+    }
+
+    onMembershipsChanged: {
+        for (var i = 0; i < participants.length; ++i) {
+            var identity = participants[i].identity || ""
+            requestParticipantAvatar(identity, participantAvatarMxc(identity))
+        }
+    }
+
+    onAudioStateChanged: {
+        for (var i = 0; i < participants.length; ++i) {
+            var identity = participants[i].identity || ""
+            requestParticipantAvatar(identity, participantAvatarMxc(identity))
+        }
+    }
+
+    Connections {
+        target: root.backend
+        ignoreUnknownSignals: true
+
+        onSenderAvatarRetrieved: {
+            var prefix = "call-avatar:" + root.roomId + ":"
+            if (requestKey.indexOf(prefix) !== 0)
+                return
+            var identity = requestKey.substring(prefix.length)
+            root.storeParticipantAvatar(identity, dataUrl)
+        }
+
+        onSenderAvatarFailed: {
+            var prefix = "call-avatar:" + root.roomId + ":"
+            if (requestKey.indexOf(prefix) !== 0)
+                return
+            console.warn("Could not load call participant avatar:", error)
+        }
+    }
 
     function startCall() {
         if (!backend || !roomId || pendingOperation.length > 0)
@@ -1273,22 +1375,55 @@ Item {
                             visible: !remoteVideo.hasFrame &&
                                      !remoteScreenVideo.hasFrame
 
+                            property string participantIdentity:
+                                String(modelData.identity || "")
+                            property string participantMxc:
+                                root.participantAvatarMxc(participantIdentity)
+
+                            Component.onCompleted: {
+                                root.requestParticipantAvatar(
+                                    participantIdentity, participantMxc
+                                )
+                            }
+
+                            onParticipantMxcChanged: {
+                                root.requestParticipantAvatar(
+                                    participantIdentity, participantMxc
+                                )
+                            }
+
                             Rectangle {
                                 anchors.verticalCenter: parent.verticalCenter
                                 width: units.gu(8)
                                 height: units.gu(8)
                                 radius: width / 2
                                 color: "#426b8a"
+                                clip: true
 
                                 Text {
                                     anchors.centerIn: parent
                                     text: root.participantInitial(
-                                            modelData.name ||
-                                            modelData.identity
+                                            root.participantDisplayName(
+                                                parent.parent.participantIdentity,
+                                                modelData.name
+                                            )
                                         )
                                     color: "white"
                                     font.pixelSize: units.gu(3)
                                     font.bold: true
+                                    visible: !participantAvatarImage.visible
+                                }
+
+                                Image {
+                                    id: participantAvatarImage
+                                    anchors.fill: parent
+                                    source: root.participantAvatarCache[
+                                        parent.parent.participantIdentity
+                                    ] || ""
+                                    fillMode: Image.PreserveAspectCrop
+                                    asynchronous: true
+                                    cache: true
+                                    visible: status === Image.Ready
                                 }
                             }
 
@@ -1297,9 +1432,10 @@ Item {
                                 spacing: units.gu(0.5)
 
                                 Text {
-                                    text: modelData.name ||
-                                        modelData.identity ||
-                                        "Participant"
+                                    text: root.participantDisplayName(
+                                        parent.parent.participantIdentity,
+                                        modelData.name
+                                    )
                                     color: "white"
                                     font.pixelSize: units.gu(2)
                                 }
