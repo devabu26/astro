@@ -123,6 +123,7 @@ public:
     Q_INVOKABLE void markRoomAsRead(const QString &roomId);
     Q_INVOKABLE void sendRoomMessage(const QString &roomId, const QString &message);
     Q_INVOKABLE void declineRtcCall(const QString &roomId, const QString &eventId);
+    Q_INVOKABLE void acceptRtcCall(const QString &roomId);
     Q_INVOKABLE void joinRtcRoom(const QString &roomId);
     Q_INVOKABLE void leaveRtcRoom(const QString &roomId);
     Q_INVOKABLE void startRtcAudio(const QString &roomId);
