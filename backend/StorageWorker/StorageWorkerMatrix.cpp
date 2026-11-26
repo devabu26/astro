@@ -1264,14 +1264,17 @@ public:
         qInfo() << "RTC supportedPixelFormats requested handle:"
         << static_cast<int>(type);
         
-        // Do not negotiate GLTextureHandle on Ubuntu Touch yet. Its
-        // camera backend's GL textures are not guaranteed to remain valid
-        // or shared with the worker context during app-state transitions.
-        // Advertising this path caused the app to crash when backgrounding.
-        // Keep the surface restricted to CPU-mappable frames until a safe
-        // camera-owned GL context/texture handoff is implemented.
+        if (type == QAbstractVideoBuffer::GLTextureHandle) {
+            // The Ubuntu Touch camera backend supplies RGB32 frames backed
+            // by GL_TEXTURE_2D. RtcCameraVideoSurface::present() reads these
+            // back synchronously through the worker's shared context before
+            // the camera releases/reuses the texture.
+            qInfo() << "RTC supportedPixelFormats enabling GL texture readback";
+            return { QVideoFrame::Format_RGB32 };
+        }
+
         if (type != QAbstractVideoBuffer::NoHandle) {
-            qInfo() << "RTC camera rejecting non-CPU surface handle:"
+            qInfo() << "RTC camera rejecting unsupported surface handle:"
                     << static_cast<int>(type);
             return {};
         }
@@ -1298,13 +1301,34 @@ public:
 
     bool start(const QVideoSurfaceFormat &format) override
     {
-        // Some Ubuntu Touch camera backends still attempt to start a GL
-        // viewfinder even after supportedPixelFormats() rejects GL handles.
-        // Never mark that surface active: the delivered texture may be zero
-        // or belong to a context that is not shared with this worker.
-        if (format.handleType() != QAbstractVideoBuffer::NoHandle) {
+        const bool glTextureFormat =
+            format.handleType() == QAbstractVideoBuffer::GLTextureHandle;
+
+        if (glTextureFormat) {
+            // Do not accept a GL surface unless the worker's shared context
+            // can actually be made current. present() uses this context for
+            // synchronous texture-to-CPU readback.
+            const bool contextReady =
+                m_worker && m_worker->makeRtcCameraOpenGLContextCurrent();
+            if (contextReady)
+                m_worker->releaseRtcCameraOpenGLContext();
+
+            if (!contextReady ||
+                format.pixelFormat() != QVideoFrame::Format_RGB32) {
+                m_surfaceStarted.storeRelease(0);
+                qWarning() << "RTC camera refusing unusable GL surface format:"
+                           << format.pixelFormat()
+                           << format.frameSize()
+                           << "contextReady:" << contextReady;
+                return false;
+            }
+
+            qInfo() << "RTC camera accepting GL texture surface for readback"
+                    << format.pixelFormat()
+                    << format.frameSize();
+        } else if (format.handleType() != QAbstractVideoBuffer::NoHandle) {
             m_surfaceStarted.storeRelease(0);
-            qWarning() << "RTC camera refusing non-CPU surface format:"
+            qWarning() << "RTC camera refusing unsupported surface format:"
                        << format.pixelFormat()
                        << format.frameSize()
                        << "handle:" << static_cast<int>(format.handleType());
@@ -1987,34 +2011,22 @@ void StorageWorker::startRtcBackgroundCamera(
                                     << "cameraSettings:" << cameraSettings.size()
                                     << "surfaceCpuFormats:" << surfaceFormats;
 
-                            // Some Ubuntu Touch camera backends expose no
-                            // supported settings and otherwise choose a GL-backed
-                            // default (observed as RGB32 with a GL texture handle).
-                            // Explicitly request a CPU-mappable YUV format instead.
-                            // The surface still rejects non-CPU handles, and
-                            // ActiveStatus is accepted only after start() succeeds.
+                            // This Ubuntu Touch backend does not expose
+                            // supported settings and selects RGB32 GL textures.
+                            // The surface now advertises that exact GL format
+                            // and performs a synchronous readback while the
+                            // camera frame/texture is still valid.
                             if (cameraSettings.isEmpty()) {
-                                QCameraViewfinderSettings requestedSettings;
-                                requestedSettings.setPixelFormat(
-                                    QVideoFrame::Format_YUV420P
-                                );
-
                                 qWarning() << "ASTRO_BACKGROUND_CAMERA: camera backend"
-                                           << "exposes no viewfinder settings; requesting"
-                                           << "CPU pixel format YUV420P"
+                                           << "exposes no viewfinder settings; using"
+                                           << "supported GL texture readback"
                                            << "device:"
                                            << m_rtcBackgroundCameraPendingDeviceId;
-
-                                m_rtcCamera->setViewfinderSettings(requestedSettings);
-                                qInfo() << "ASTRO_BACKGROUND_CAMERA: requested viewfinder settings"
-                                        << "pixelFormat:"
-                                        << static_cast<int>(requestedSettings.pixelFormat())
-                                        << "resolution: backend-selected";
 
                                 m_rtcCamera->setViewfinder(m_rtcVideoSurface);
 
                                 qInfo() << "ASTRO_BACKGROUND_CAMERA: starting camera"
-                                        << "with explicit CPU pixel format request";
+                                        << "with GL texture readback enabled";
 
                                 m_rtcCamera->start();
                                 return;
