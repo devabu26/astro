@@ -454,6 +454,7 @@ Item {
 
     signal backRequested()
     signal callRequested(string roomId, string roomName)
+    signal joinCallRequested(string roomId, string roomName)
     signal sendMessageRequested(string roomId, string message)
 
     property var fullscreenVideoOutput: null
@@ -2118,6 +2119,9 @@ Item {
                     backend: root.backend
                     roomId: root.roomId
                     callState: root.rtcCallState
+                    onJoinCallRequested: {
+                        root.joinCallRequested(root.roomId, root.roomName)
+                    }
                 }
 
                 // =====================================
