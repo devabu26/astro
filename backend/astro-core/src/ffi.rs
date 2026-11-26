@@ -780,13 +780,47 @@ pub unsafe extern "C" fn astro_matrix_stop_rtc_screenshare(
     }));
 
     match result {
-        Ok(Ok(())) => 0,
+        Ok(Ok(true)) => 1,
+        Ok(Ok(false)) => 0,
         Ok(Err(message)) => {
             set_error(error_out, &message);
             -1
         }
         Err(_) => {
-            set_error(error_out, "Unexpected Rust panic while stopping LiveKit screen share");
+            set_error(error_out, "Unexpected Rust panic while starting asynchronous screen-share teardown");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_poll_rtc_screenshare_stop(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        (&mut *handle).poll_rtc_screenshare_stop(room_id)
+    }));
+
+    match result {
+        Ok(Ok(None)) => 1,
+        Ok(Ok(Some(Ok(())))) => 0,
+        Ok(Ok(Some(Err(message)))) | Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while polling screen-share teardown");
             -1
         }
     }
