@@ -364,6 +364,40 @@ pub unsafe extern "C" fn astro_matrix_send_room_attachment(
 
 
 #[no_mangle]
+pub unsafe extern "C" fn astro_matrix_decline_rtc_call(
+    handle: *mut MatrixClientManager,
+    room_id: *const c_char,
+    notification_event_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return -1;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let room_id = read_input(room_id, "Room ID")?;
+        let event_id = read_input(notification_event_id, "Call notification event ID")?;
+        (&*handle).decline_rtc_call(room_id, event_id)
+    }));
+
+    match result {
+        Ok(Ok(())) => 0,
+        Ok(Err(message)) => {
+            set_error(error_out, &message);
+            -1
+        }
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while declining MatrixRTC call");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn astro_matrix_join_rtc_room(
     handle: *mut MatrixClientManager,
     room_id: *const c_char,
