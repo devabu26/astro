@@ -1987,25 +1987,34 @@ void StorageWorker::startRtcBackgroundCamera(
                                     << "cameraSettings:" << cameraSettings.size()
                                     << "surfaceCpuFormats:" << surfaceFormats;
 
-                            // Some Ubuntu Touch camera backends do not expose
-                            // supported viewfinder settings even though they can
-                            // negotiate a working format when given a surface.
-                            // In that case, leave the format at the backend default
-                            // and let QCamera negotiate with our CPU-only surface.
-                            // RtcCameraVideoSurface::start() still rejects any
-                            // non-CPU handle, and ActiveStatus below is not accepted
-                            // unless the surface actually started.
+                            // Some Ubuntu Touch camera backends expose no
+                            // supported settings and otherwise choose a GL-backed
+                            // default (observed as RGB32 with a GL texture handle).
+                            // Explicitly request a CPU-mappable YUV format instead.
+                            // The surface still rejects non-CPU handles, and
+                            // ActiveStatus is accepted only after start() succeeds.
                             if (cameraSettings.isEmpty()) {
+                                QCameraViewfinderSettings requestedSettings;
+                                requestedSettings.setPixelFormat(
+                                    QVideoFrame::Format_YUV420P
+                                );
+
                                 qWarning() << "ASTRO_BACKGROUND_CAMERA: camera backend"
-                                           << "exposes no viewfinder settings; trying"
-                                           << "automatic CPU surface negotiation"
+                                           << "exposes no viewfinder settings; requesting"
+                                           << "CPU pixel format YUV420P"
                                            << "device:"
                                            << m_rtcBackgroundCameraPendingDeviceId;
+
+                                m_rtcCamera->setViewfinderSettings(requestedSettings);
+                                qInfo() << "ASTRO_BACKGROUND_CAMERA: requested viewfinder settings"
+                                        << "pixelFormat:"
+                                        << static_cast<int>(requestedSettings.pixelFormat())
+                                        << "resolution: backend-selected";
 
                                 m_rtcCamera->setViewfinder(m_rtcVideoSurface);
 
                                 qInfo() << "ASTRO_BACKGROUND_CAMERA: starting camera"
-                                        << "with automatic viewfinder negotiation";
+                                        << "with explicit CPU pixel format request";
 
                                 m_rtcCamera->start();
                                 return;
