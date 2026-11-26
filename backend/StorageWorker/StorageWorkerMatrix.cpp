@@ -1753,11 +1753,9 @@ void StorageWorker::startRtcBackgroundCamera(
                                 m_rtcCamera = nullptr;
                             }
                         }
-                        if (wasPending) {
-                            emit matrixRtcBackgroundCameraActionFinished(
-                                roomId, false, QString(), message
-                            );
-                        }
+                        emit matrixRtcBackgroundCameraActionFinished(
+                            roomId, false, QString(), message
+                        );
                     },
                     Qt::QueuedConnection
                 );
