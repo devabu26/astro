@@ -80,6 +80,89 @@ static inline void rgbaToYRowNeon(
         );
     }
 }
+
+static void rgbaToChromaRowsNeon(
+    const uchar *row0,
+    const uchar *row1,
+    uchar *uOut,
+    uchar *vOut,
+    int width
+)
+{
+    const int vectorWidth = width & ~15;
+    int x = 0;
+    for (; x < vectorWidth; x += 16) {
+        const uint8x16x4_t top = vld4q_u8(row0 + x * 4);
+        const uint8x16x4_t bottom = vld4q_u8(row1 + x * 4);
+
+        const uint16x8_t rTop = vcombine_u16(
+            vpaddl_u8(vget_low_u8(top.val[0])),
+            vpaddl_u8(vget_high_u8(top.val[0]))
+        );
+        const uint16x8_t gTop = vcombine_u16(
+            vpaddl_u8(vget_low_u8(top.val[1])),
+            vpaddl_u8(vget_high_u8(top.val[1]))
+        );
+        const uint16x8_t bTop = vcombine_u16(
+            vpaddl_u8(vget_low_u8(top.val[2])),
+            vpaddl_u8(vget_high_u8(top.val[2]))
+        );
+        const uint16x8_t rBottom = vcombine_u16(
+            vpaddl_u8(vget_low_u8(bottom.val[0])),
+            vpaddl_u8(vget_high_u8(bottom.val[0]))
+        );
+        const uint16x8_t gBottom = vcombine_u16(
+            vpaddl_u8(vget_low_u8(bottom.val[1])),
+            vpaddl_u8(vget_high_u8(bottom.val[1]))
+        );
+        const uint16x8_t bBottom = vcombine_u16(
+            vpaddl_u8(vget_low_u8(bottom.val[2])),
+            vpaddl_u8(vget_high_u8(bottom.val[2]))
+        );
+
+        const uint16x8_t rounding = vdupq_n_u16(2);
+        const int16x8_t r = vreinterpretq_s16_u16(vshrq_n_u16(
+            vaddq_u16(vaddq_u16(rTop, rBottom), rounding), 2));
+        const int16x8_t g = vreinterpretq_s16_u16(vshrq_n_u16(
+            vaddq_u16(vaddq_u16(gTop, gBottom), rounding), 2));
+        const int16x8_t b = vreinterpretq_s16_u16(vshrq_n_u16(
+            vaddq_u16(vaddq_u16(bTop, bBottom), rounding), 2));
+
+        int16x8_t u = vmulq_n_s16(r, -38);
+        u = vmlaq_n_s16(u, g, -74);
+        u = vmlaq_n_s16(u, b, 112);
+        u = vaddq_s16(u, vdupq_n_s16(128));
+        u = vshrq_n_s16(u, 8);
+        u = vaddq_s16(u, vdupq_n_s16(128));
+
+        int16x8_t v = vmulq_n_s16(r, 112);
+        v = vmlaq_n_s16(v, g, -94);
+        v = vmlaq_n_s16(v, b, -18);
+        v = vaddq_s16(v, vdupq_n_s16(128));
+        v = vshrq_n_s16(v, 8);
+        v = vaddq_s16(v, vdupq_n_s16(128));
+
+        const int outputOffset = x / 2;
+        vst1_u8(uOut + outputOffset, vqmovun_s16(u));
+        vst1_u8(vOut + outputOffset, vqmovun_s16(v));
+    }
+
+    for (; x < width; x += 2) {
+        const uchar *p00 = row0 + x * 4;
+        const uchar *p01 = p00 + 4;
+        const uchar *p10 = row1 + x * 4;
+        const uchar *p11 = p10 + 4;
+        const int r = (p00[0] + p01[0] + p10[0] + p11[0] + 2) / 4;
+        const int g = (p00[1] + p01[1] + p10[1] + p11[1] + 2) / 4;
+        const int b = (p00[2] + p01[2] + p10[2] + p11[2] + 2) / 4;
+        const int index = x / 2;
+        uOut[index] = static_cast<uchar>(qBound(
+            0, ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128, 255));
+        vOut[index] = static_cast<uchar>(qBound(
+            0, ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128, 255));
+    }
+}
+
 #endif
 
 QByteArray rgbaFrameToI420(
@@ -137,18 +220,23 @@ QByteArray rgbaFrameToI420(
     for (int row = 0; row < height; row += 2) {
         const uchar *row0 = image.constScanLine(row);
         const uchar *row1 = image.constScanLine(row + 1);
-
+#if defined(__aarch64__) || defined(__ARM_NEON)
+        const int chromaOffset = (row / 2) * (width / 2);
+        rgbaToChromaRowsNeon(
+            row0, row1,
+            uOut + chromaOffset, vOut + chromaOffset,
+            width
+        );
+#else
         for (int col = 0; col < width; col += 2) {
             const uchar *p00 = row0 + col * 4;
             const uchar *p01 = p00 + 4;
             const uchar *p10 = row1 + col * 4;
             const uchar *p11 = p10 + 4;
-
             const int r = (p00[0] + p01[0] + p10[0] + p11[0] + 2) / 4;
             const int g = (p00[1] + p01[1] + p10[1] + p11[1] + 2) / 4;
             const int b = (p00[2] + p01[2] + p10[2] + p11[2] + 2) / 4;
             const int chromaIndex = (row / 2) * (width / 2) + col / 2;
-
             uOut[chromaIndex] = clamp(
                 ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128
             );
@@ -156,6 +244,7 @@ QByteArray rgbaFrameToI420(
                 ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128
             );
         }
+#endif
     }
 
     return output;
@@ -2399,15 +2488,15 @@ void StorageWorker::startRtcScreenShare(
         return;
     }
 
-    // Keep screen sharing sharp while bounding the workload on mobile devices:
-    // at most 1920 pixels on the long edge and roughly 2.1 megapixels.
+    // Keep text readable while reducing the CPU-bound conversion workload:
+    // cap the long edge at 1280 pixels and the frame at roughly 0.9 megapixels.
     const double displayPixels =
         static_cast<double>(displayWidth) * displayHeight;
     const double scale = std::min(
         1.0,
         std::min(
-            1920.0 / std::max(displayWidth, displayHeight),
-            std::sqrt(2073600.0 / displayPixels)
+            1280.0 / std::max(displayWidth, displayHeight),
+            std::sqrt(921600.0 / displayPixels)
         )
     );
     width = std::max(2, static_cast<int>(displayWidth * scale) & ~1);
@@ -2730,24 +2819,20 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
     m_rtcMirReleaseComplete = std::make_shared<std::atomic_bool>(false);
     const auto releaseComplete = m_rtcMirReleaseComplete;
 
-    qInfo() << "ASTRO_SCREEN_SHARE_STOP: starting non-blocking Mir release";
-    try {
-        std::thread([screencast, releaseComplete]() {
-            qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release begin"
-                    << "thread:" << quintptr(QThread::currentThreadId());
-            mir_screencast_release_sync(screencast);
-            qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release complete";
-            releaseComplete->store(true, std::memory_order_release);
-        }).detach();
-    } catch (const std::exception &exception) {
-        // Preserve resource cleanup if the process cannot create another
-        // thread. This is an exceptional fallback; normal teardown remains
-        // non-blocking.
-        qWarning() << "ASTRO_SCREEN_SHARE_STOP: could not create Mir cleanup thread:"
-                   << exception.what();
-        mir_screencast_release_sync(screencast);
-        releaseComplete->store(true, std::memory_order_release);
-    }
+    // Release Mir's GL-backed buffers on the StorageWorker thread rather
+    // than a detached thread with no current GL context. When the camera's
+    // shared context is available, make it current for the destruction path;
+    // the worker is separate from the QML/UI thread, so this cannot block
+    // input or scene-graph event delivery while Mir completes its release.
+    const bool releaseContextCurrent = makeRtcCameraOpenGLContextCurrent();
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: releasing screencast on worker thread"
+            << "thread:" << quintptr(QThread::currentThreadId())
+            << "glContextCurrent:" << releaseContextCurrent;
+    mir_screencast_release_sync(screencast);
+    if (releaseContextCurrent)
+        releaseRtcCameraOpenGLContext();
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release complete";
+    releaseComplete->store(true, std::memory_order_release);
 
     if (m_rtcScreenShareStopPollTimer)
         m_rtcScreenShareStopPollTimer->start();
