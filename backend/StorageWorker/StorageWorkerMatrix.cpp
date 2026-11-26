@@ -1372,6 +1372,19 @@ public:
         const QVideoFrame::PixelFormat format = frame.pixelFormat();
 
         const int frameNumber = m_loggedFrameCount.fetchAndAddRelaxed(1) + 1;
+        if (!m_frameDiagnosticTimer.isValid())
+            m_frameDiagnosticTimer.start();
+        if (frameNumber % 60 == 0) {
+            const qint64 elapsedMs = m_frameDiagnosticTimer.elapsed();
+            qInfo() << "ASTRO_BACKGROUND_CAMERA: native frame throughput"
+                    << "frames:" << frameNumber
+                    << "elapsedMs:" << elapsedMs
+                    << "averageFps:" << (elapsedMs > 0
+                        ? (frameNumber * 1000.0 / elapsedMs) : 0.0)
+                    << "source:" << width << "x" << height
+                    << "format:" << format
+                    << "thread:" << QThread::currentThreadId();
+        }
 
         if (frameNumber <= 10) {
             qInfo() << "RTC camera frame:"
@@ -1750,6 +1763,7 @@ private:
     QByteArray m_i420Output;
     QAtomicInt m_surfaceStarted{0};
     QAtomicInt m_loggedFrameCount{0};
+    QElapsedTimer m_frameDiagnosticTimer;
     QAtomicInt m_loggedInvalidFrame{0};
     QAtomicInt m_loggedInvalidDimensions{0};
     QAtomicInt m_loggedMapFailure{0};
