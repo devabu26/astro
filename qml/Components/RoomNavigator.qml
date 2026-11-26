@@ -10,6 +10,7 @@ Item {
     property string selectedRoom: ""
     // Active MatrixRTC memberships indexed by room ID.
     property var rtcMembershipsByRoom: ({})
+    property var rtcCallStatesByRoom: ({})
 
     // Navigation controls supplied by ChatPage.
     property string filterMode: "all"
@@ -81,6 +82,40 @@ Item {
     function roomHasOngoingCall(roomId) {
         var memberships = root.rtcMembershipsByRoom[String(roomId)] || []
         return Array.isArray(memberships) && memberships.length > 0
+    }
+
+    // True only when the logged-in Matrix user has joined this room's call.
+    function roomCallJoinedByMe(roomId) {
+        var state = root.rtcCallStatesByRoom[String(roomId)] || ({})
+        return state.joinedByMe === true
+    }
+
+    // A Space inherits the joined-by-me state from any descendant room.
+    function spaceHasCallJoinedByMe(spaceId, ancestors) {
+        var visited = ancestors ? ancestors.slice() : []
+        var id = String(spaceId)
+
+        if (visited.indexOf(id) !== -1 || !root.roomsModel)
+            return false
+
+        visited.push(id)
+
+        for (var i = 0; i < root.roomsModel.count; i++) {
+            var child = root.roomsModel.get(i)
+
+            if (!hasParent(child, id))
+                continue
+
+            if (child.kind === "space") {
+                if (spaceHasCallJoinedByMe(child.roomId, visited))
+                    return true
+            } else if (child.kind === "room" || child.kind === "dm") {
+                if (roomCallJoinedByMe(child.roomId))
+                    return true
+            }
+        }
+
+        return false
     }
 
     // A Space shows the same indicator when any descendant room,
@@ -734,6 +769,10 @@ Item {
                 entryRowType === "space"
                 ? root.spaceHasOngoingCall(entryRoomId, [])
                 : root.roomHasOngoingCall(entryRoomId)
+            property bool entryCallJoinedByMe:
+                entryRowType === "space"
+                ? root.spaceHasCallJoinedByMe(entryRoomId, [])
+                : root.roomCallJoinedByMe(entryRoomId)
             property int entryUnreadCount: Number(model.unreadCount || 0)
             property int entryMentionCount: Number(model.mentionCount || 0)
             property int entryDepth: model.depth === undefined ? 0 : model.depth
@@ -1029,12 +1068,29 @@ Item {
                             spacing: units.gu(0.6)
 
                             Rectangle {
+                                id: activeCallIndicator
+
                                 width: units.gu(0.9)
                                 height: width
                                 radius: width / 2
                                 anchors.verticalCenter: parent.verticalCenter
-                                color: "#35c759"
+                                color: entryCallJoinedByMe ? "#ff354f" : "#35c759"
                                 visible: entryHasOngoingCall
+                                z: 2
+                            }
+
+                            DropShadow {
+                                anchors.fill: activeCallIndicator
+                                source: activeCallIndicator
+                                horizontalOffset: 0
+                                verticalOffset: 0
+                                radius: 9
+                                samples: 17
+                                spread: 0.35
+                                color: "#ffff354f"
+                                opacity: entryCallJoinedByMe ? 0.9 : 0
+                                visible: entryCallJoinedByMe
+                                z: 1
                             }
 
                             Text {
