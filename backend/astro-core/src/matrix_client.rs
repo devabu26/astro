@@ -27,6 +27,11 @@ use matrix_sdk::{
 };
 use livekit::prelude::{LocalAudioTrack, LocalVideoTrack, LocalTrack, PlatformAudio, RemoteTrack, Room as LiveKitRoom, RoomEvent, RoomOptions, TrackSource};
 use livekit::options::TrackPublishOptions;
+use livekit::e2ee::{
+    key_provider::{KeyDerivationAlgorithm, KeyProvider, KeyProviderOptions},
+    E2eeOptions, EncryptionType,
+};
+use livekit::prelude::ParticipantIdentity;
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
@@ -543,6 +548,8 @@ struct LiveKitAudioSession {
     screen_share_frames_accepted: u64,
     screen_share_frames_rejected: u64,
     screen_share_stats_last_report: Instant,
+    e2ee_key_provider: Option<KeyProvider>,
+    e2ee_installed_keys: HashMap<(String, u8), Vec<u8>>,
 }
 
 fn create_new_store(database_path: &Path) -> Result<(String, PathBuf), String> {
@@ -2775,6 +2782,59 @@ impl MatrixClientManager {
             return Err("An audio call is already active in this room".into());
         }
 
+        // If this Matrix room is encrypted, wait for the MatrixRTC key grace
+        // period and refuse to connect without a usable local key. This prevents
+        // accidentally publishing media into an encrypted call without E2EE.
+        let e2ee_material = if let Some(e2ee_session) = self.rtc_e2ee_sessions.get(&room_id) {
+            let local_identity = e2ee_session.local_livekit_identity().to_owned();
+            let runtime = Arc::clone(&self.runtime);
+            let keys = runtime.block_on(async {
+                for _ in 0..80 {
+                    let snapshot = e2ee_session.livekit_key_snapshot();
+                    if snapshot.iter().any(|(identity, _, _)| identity == &local_identity) {
+                        return Ok(snapshot);
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err("MatrixRTC local media key did not become active; refusing an unencrypted LiveKit connection".to_string())
+            })?;
+            Some((local_identity, keys))
+        } else {
+            None
+        };
+
+        let mut e2ee_key_provider = None;
+        let mut e2ee_installed_keys = HashMap::new();
+        if let Some((local_identity, keys)) = e2ee_material {
+            let mut key_options = KeyProviderOptions::default();
+            key_options.key_ring_size = 256;
+            key_options.key_derivation_algorithm = KeyDerivationAlgorithm::HKDF;
+            // MSC4195 requires a 128-bit derived AES key. LiveKit's AES-GCM
+            // frame cryptor uses 128-bit keys with this HKDF provider.
+            let provider = KeyProvider::new(key_options);
+
+            for (identity, index, key) in keys {
+                let participant_identity = ParticipantIdentity::from(identity.clone());
+                if !provider.set_key(&participant_identity, i32::from(index), key.clone()) {
+                    return Err(format!(
+                        "LiveKit rejected MatrixRTC key index {index} for participant {identity}"
+                    ));
+                }
+                e2ee_installed_keys.insert((identity, index), key);
+            }
+
+            if !e2ee_installed_keys.contains_key(&(local_identity.clone(), 0))
+                && !e2ee_installed_keys.keys().any(|(identity, _)| identity == &local_identity)
+            {
+                return Err("No active local MatrixRTC key is installed in LiveKit".into());
+            }
+            eprintln!(
+                "ASTRO RTC E2EE: configured LiveKit HKDF key provider with {} participant key(s)",
+                e2ee_installed_keys.len()
+            );
+            e2ee_key_provider = Some(provider);
+        }
+
         // Retrieve credentials internally. The JWT never reaches QML.
         let credentials_json = self.rtc_livekit_credentials_json(&room_id)?;
 
@@ -2807,13 +2867,37 @@ impl MatrixClientManager {
         let runtime = Arc::clone(&self.runtime);
 
         let audio_session = runtime.block_on(async move {
+            let mut room_options = RoomOptions::default();
+            if let Some(provider) = e2ee_key_provider.clone() {
+                room_options.encryption = Some(E2eeOptions {
+                    encryption_type: EncryptionType::Gcm,
+                    key_provider: provider,
+                });
+            }
+
             let (room, events) = LiveKitRoom::connect(
                 &livekit_url,
                 &jwt,
-                RoomOptions::default(),
+                room_options,
             )
             .await
             .map_err(|error| format!("Could not connect to LiveKit: {error}"))?;
+
+            if let Some(expected_identity) = e2ee_installed_keys.keys()
+                .find(|(identity, _)| e2ee_key_provider.is_some() && identity == &room.local_participant().identity().to_string())
+                .map(|(identity, _)| identity.clone())
+            {
+                let _ = expected_identity;
+            }
+            if e2ee_key_provider.is_some() {
+                let actual_identity = room.local_participant().identity().to_string();
+                if !e2ee_installed_keys.keys().any(|(identity, _)| identity == &actual_identity) {
+                    let _ = room.close().await;
+                    return Err(format!(
+                        "LiveKit assigned participant identity '{actual_identity}', which does not match the MatrixRTC E2EE identity"
+                    ));
+                }
+            }
 
             let publish_options = TrackPublishOptions {
                 source: TrackSource::Microphone,
@@ -2849,6 +2933,8 @@ impl MatrixClientManager {
                 screen_share_frames_accepted: 0,
                 screen_share_frames_rejected: 0,
                 screen_share_stats_last_report: Instant::now(),
+                e2ee_key_provider,
+                e2ee_installed_keys,
             })
         })?;
 
