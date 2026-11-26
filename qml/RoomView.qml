@@ -20,13 +20,8 @@ Item {
     // expanded panel into another room or leave it open after navigating
     // away from this conversation.
     function collapseRtcParticipants() {
-        rtcParticipants.expanded = false
-    }
-
-    onRoomIdChanged: root.collapseRtcParticipants()
-    onVisibleChanged: {
-        if (!visible)
-            root.collapseRtcParticipants()
+        if (rtcParticipants)
+            rtcParticipants.expanded = false
     }
 
 
@@ -1044,11 +1039,14 @@ Item {
                 : "unavailable"
         )
 
-        if (!visible)
+        if (!visible) {
             root.stopSharedVideo()
+            root.collapseRtcParticipants()
+        }
     }
 
     onRoomIdChanged: {
+        root.collapseRtcParticipants()
         root.requestRtcParticipantAvatars()
 
         root.roomMenuVisible = false
