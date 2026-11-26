@@ -1170,6 +1170,18 @@ public:
 
     bool start(const QVideoSurfaceFormat &format) override
     {
+        // Some Ubuntu Touch camera backends still attempt to start a GL
+        // viewfinder even after supportedPixelFormats() rejects GL handles.
+        // Never mark that surface active: the delivered texture may be zero
+        // or belong to a context that is not shared with this worker.
+        if (format.handleType() != QAbstractVideoBuffer::NoHandle) {
+            qWarning() << "RTC camera refusing non-CPU surface format:"
+                       << format.pixelFormat()
+                       << format.frameSize()
+                       << "handle:" << static_cast<int>(format.handleType());
+            return false;
+        }
+
         const bool started = QAbstractVideoSurface::start(format);
         qInfo() << "RTC camera negotiated format:"
                 << format.pixelFormat()
