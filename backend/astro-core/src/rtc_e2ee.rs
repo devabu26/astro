@@ -47,10 +47,18 @@ struct PendingMediaKey {
     bytes: Vec<u8>,
 }
 
+#[derive(Clone)]
+struct ReceivedMediaKey {
+    livekit_identity: String,
+    bytes: Vec<u8>,
+    activate_at: Instant,
+}
+
 pub(crate) struct RtcE2eeSession {
     task: AbortHandle,
     local_key: Arc<Mutex<MediaKey>>,
-    received_keys: Arc<Mutex<BTreeMap<(String, u8), Vec<u8>>>>,
+    local_livekit_identity: String,
+    received_keys: Arc<Mutex<BTreeMap<(String, u8), ReceivedMediaKey>>>,
 }
 
 impl RtcE2eeSession {
@@ -70,6 +78,7 @@ impl RtcE2eeSession {
             activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
         }));
         let received_keys = Arc::new(Mutex::new(BTreeMap::new()));
+        let local_livekit_identity = legacy_livekit_identity(&client)?;
 
         let task_local_key = Arc::clone(&local_key);
         let task_received_keys = Arc::clone(&received_keys);
@@ -192,6 +201,7 @@ impl RtcE2eeSession {
         Ok(Self {
             task: handle.abort_handle(),
             local_key,
+            local_livekit_identity,
             received_keys,
         })
     }
@@ -339,11 +349,32 @@ impl RtcE2eeSession {
     /// Look up a received sender key by MatrixRTC member ID and key index.
     #[allow(dead_code)]
     pub(crate) fn received_key(&self, member_id: &str, index: u8) -> Option<Vec<u8>> {
-        self.received_keys
-            .lock()
-            .ok()?
-            .get(&(member_id.to_owned(), index))
-            .cloned()
+        let key = self.received_keys.lock().ok()?
+            .get(&(member_id.to_owned(), index)).cloned()?;
+        (Instant::now() >= key.activate_at).then_some(key.bytes)
+    }
+
+    pub(crate) fn local_livekit_identity(&self) -> &str {
+        &self.local_livekit_identity
+    }
+
+    /// Return all keys that have passed the MatrixRTC five-second activation
+    /// grace, mapped to the legacy /sfu/get LiveKit participant identity.
+    pub(crate) fn livekit_key_snapshot(&self) -> Vec<(String, u8, Vec<u8>)> {
+        let mut snapshot = Vec::new();
+        if let Some((index, key)) = self.current_local_key() {
+            snapshot.push((self.local_livekit_identity.clone(), index, key));
+        }
+
+        let now = Instant::now();
+        if let Ok(keys) = self.received_keys.lock() {
+            for ((_, index), key) in keys.iter() {
+                if now >= key.activate_at {
+                    snapshot.push((key.livekit_identity.clone(), *index, key.bytes.clone()));
+                }
+            }
+        }
+        snapshot
     }
 }
 
@@ -351,6 +382,16 @@ impl Drop for RtcE2eeSession {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+fn legacy_livekit_identity(client: &Client) -> Result<String, String> {
+    let user_id = client.user_id()
+        .ok_or_else(|| "Matrix user ID is unavailable for LiveKit E2EE identity".to_string())?;
+    let device_id = client.device_id()
+        .ok_or_else(|| "Matrix device ID is unavailable for LiveKit E2EE identity".to_string())?;
+    // Astro currently obtains credentials through the legacy /sfu/get flow,
+    // whose LiveKit identity is the legacy user-id:device-id form.
+    Ok(format!("{user_id}:{device_id}"))
 }
 
 fn rotate_local_key(local_key: &Arc<Mutex<MediaKey>>) {
@@ -607,7 +648,14 @@ async fn try_store_received_key(
         }
 
         if let Ok(mut keys) = received_keys.lock() {
-            keys.insert((candidate.member_id.clone(), candidate.index), candidate.bytes.clone());
+            keys.insert(
+    (candidate.member_id.clone(), candidate.index),
+    ReceivedMediaKey {
+        livekit_identity: format!("{}:{}", candidate.sender, candidate.sender_device),
+        bytes: candidate.bytes.clone(),
+        activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
+    },
+);
         }
         return true;
     }
