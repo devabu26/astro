@@ -113,6 +113,7 @@ public slots:
     void markRoomAsRead(const QString &roomId);
     void sendRoomMessage(const QString &roomId, const QString &message);
     void declineRtcCall(const QString &roomId, const QString &eventId);
+    void acceptRtcCall(const QString &roomId);
     void joinRtcRoom(const QString &roomId);
     void leaveRtcRoom(const QString &roomId);
     void startRtcAudio(const QString &roomId);
