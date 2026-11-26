@@ -2458,7 +2458,7 @@ impl MatrixClientManager {
                 match room.send_raw("m.rtc.notification", notification_content).await {
                     Ok(response) => eprintln!(
                         "ASTRO RTC CALL: sent incoming-call notification {} to {} other room member(s)",
-                        response.event_id,
+                        response.response.event_id,
                         recipients.len()
                     ),
                     Err(error) => eprintln!(
