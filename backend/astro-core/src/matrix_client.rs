@@ -34,6 +34,7 @@ use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
 use livekit::webrtc::video_frame::{VideoBuffer, VideoBufferType};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
+use livekit::webrtc::stats::RtcStats;
 use livekit::webrtc::video_frame::{
     I420Buffer, VideoFrame, VideoRotation,
 };
@@ -498,6 +499,10 @@ struct LiveKitAudioSession {
     screen_share_audio_source: Option<NativeAudioSource>,
     screen_share_audio_track: Option<LocalAudioTrack>,
     screen_share_audio_sender: Option<tokio::sync::mpsc::Sender<Vec<i16>>>,
+    screen_share_frames_submitted: u64,
+    screen_share_frames_accepted: u64,
+    screen_share_frames_rejected: u64,
+    screen_share_stats_last_report: Instant,
 }
 
 fn create_new_store(database_path: &Path) -> Result<(String, PathBuf), String> {
@@ -2608,6 +2613,10 @@ impl MatrixClientManager {
                 screen_share_audio_source: None,
                 screen_share_audio_track: None,
                 screen_share_audio_sender: None,
+                screen_share_frames_submitted: 0,
+                screen_share_frames_accepted: 0,
+                screen_share_frames_rejected: 0,
+                screen_share_stats_last_report: Instant::now(),
             })
         })?;
 
@@ -2953,7 +2962,7 @@ impl MatrixClientManager {
 
         let session = self
             .rtc_livekit_audio_sessions
-            .get(room_id)
+            .get_mut(room_id)
             .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
 
         let source = session
@@ -2994,10 +3003,81 @@ impl MatrixClientManager {
             source.capture_frame(&frame)
         };
 
-        // LiveKit returns false when its video adapter intentionally drops
-        // a frame for resolution or frame-rate adaptation. This is normal
-        // during capture and must not terminate the entire screen-share loop.
-        let _frame_forwarded = captured;
+        // Record the source's acceptance result. A false return can be a
+        // normal adapter drop, so keep it diagnostic rather than fatal.
+        session.screen_share_frames_submitted =
+            session.screen_share_frames_submitted.saturating_add(1);
+        if captured {
+            session.screen_share_frames_accepted =
+                session.screen_share_frames_accepted.saturating_add(1);
+        } else {
+            session.screen_share_frames_rejected =
+                session.screen_share_frames_rejected.saturating_add(1);
+        }
+
+        // Query WebRTC's outbound stats asynchronously every five seconds.
+        // Never wait for get_stats() on the Qt capture thread.
+        if session.screen_share_stats_last_report.elapsed() >= Duration::from_secs(5) {
+            session.screen_share_stats_last_report = Instant::now();
+
+            let submitted = session.screen_share_frames_submitted;
+            let accepted = session.screen_share_frames_accepted;
+            let rejected = session.screen_share_frames_rejected;
+            let track = session
+                .screen_share_track
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| "Screen-share track is no longer active".to_string())?;
+
+            drop(session);
+            runtime.spawn(async move {
+                match LocalTrack::Video(track).get_stats().await {
+                    Ok(stats) => {
+                        let mut found_outbound_video = false;
+
+                        for stat in stats {
+                            if let RtcStats::OutboundRtp(outbound) = stat {
+                                if outbound.stream.kind == "video" {
+                                    found_outbound_video = true;
+                                    eprintln!(
+                                        "ASTRO_SCREEN_SHARE_RTC: submitted={} accepted={} rejected={} encoded={} sent={} bytesSent={} fps={:.1} resolution={}x{} encoder={} active={}",
+                                        submitted,
+                                        accepted,
+                                        rejected,
+                                        outbound.outbound.frames_encoded,
+                                        outbound.outbound.frames_sent,
+                                        outbound.sent.bytes_sent,
+                                        outbound.outbound.frames_per_second,
+                                        outbound.outbound.frame_width,
+                                        outbound.outbound.frame_height,
+                                        outbound.outbound.encoder_implementation,
+                                        outbound.outbound.active
+                                    );
+                                }
+                            }
+                        }
+
+                        if !found_outbound_video {
+                            eprintln!(
+                                "ASTRO_SCREEN_SHARE_RTC: submitted={} accepted={} rejected={} outboundVideoStats=missing",
+                                submitted,
+                                accepted,
+                                rejected
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "ASTRO_SCREEN_SHARE_RTC: submitted={} accepted={} rejected={} statsError={}",
+                            submitted,
+                            accepted,
+                            rejected,
+                            error
+                        );
+                    }
+                }
+            });
+        }
 
         Ok(())
     }
