@@ -590,23 +590,28 @@ Item {
 
     Audio {
         id: ringbackAudio
+        // Set the role before the source. Qt uses it when configuring
+        // the output stream's routing and volume policy.
+        audioRole: Audio.RingtoneRole
         source: root.ringbackSource
         loops: Audio.Infinite
         volume: 1.0
-        audioRole: Audio.NotificationRole
 
         onStatusChanged: {
             console.info(
                 "ASTRO_CALL_RINGBACK: audio status",
                 status,
-                "source:", source
+                "source:", source,
+                "hasAudio:", hasAudio,
+                "duration:", duration
             )
         }
 
         onPlaybackStateChanged: {
             console.info(
                 "ASTRO_CALL_RINGBACK: playback state",
-                playbackState
+                playbackState,
+                "audioRole:", audioRole
             )
         }
 
@@ -798,6 +803,12 @@ Item {
     }
 
     Component.onCompleted: {
+        console.info(
+            "ASTRO_CALL_RINGBACK: audio capabilities",
+            "availability:", ringbackAudio.availability,
+            "supportedRoles:", ringbackAudio.supportedAudioRoles(),
+            "selectedRole:", ringbackAudio.audioRole
+        )
         if (backend && directCall)
             ringbackSource = backend.rtcRingbackToneUrl()
     }
