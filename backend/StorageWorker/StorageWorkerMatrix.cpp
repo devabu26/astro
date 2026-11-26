@@ -2818,24 +2818,37 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
     m_rtcMirReleaseComplete = std::make_shared<std::atomic_bool>(false);
     const auto releaseComplete = m_rtcMirReleaseComplete;
 
-    qInfo() << "ASTRO_SCREEN_SHARE_STOP: starting non-blocking Mir release";
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: starting parallel Mir release and LiveKit unpublish";
+
+    // Mir teardown can wait on compositor IPC. Keep it isolated on its own
+    // thread, but do not make LiveKit unpublish wait for Mir to finish.
     try {
         std::thread([screencast, releaseComplete]() {
+            QElapsedTimer releaseTimer;
+            releaseTimer.start();
             qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release begin"
                     << "thread:" << quintptr(QThread::currentThreadId());
             mir_screencast_release_sync(screencast);
-            qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release complete";
+            qInfo() << "ASTRO_SCREEN_SHARE_STOP: screencast release complete"
+                    << "elapsedMs:" << releaseTimer.elapsed();
             releaseComplete->store(true, std::memory_order_release);
         }).detach();
     } catch (const std::exception &exception) {
-        qWarning() << "ASTRO_SCREEN_SHARE_STOP: could not create Mir cleanup thread:"
-                   << exception.what();
-        mir_screencast_release_sync(screencast);
+        // Never fall back to synchronous Mir teardown on the StorageWorker:
+        // that can stall the worker's event loop and freeze call controls.
+        qCritical() << "ASTRO_SCREEN_SHARE_STOP: could not create Mir cleanup thread;"
+                    << "leaving screencast for process cleanup:" << exception.what();
         releaseComplete->store(true, std::memory_order_release);
+        m_rtcMirReleasePendingError =
+            QStringLiteral("Could not start background Mir screencast cleanup");
     }
 
     if (m_rtcScreenShareStopPollTimer)
         m_rtcScreenShareStopPollTimer->start();
+
+    // Start the network-side unpublish immediately. A slow compositor release
+    // must not keep the old screen-share track published to remote peers.
+    beginRtcScreenShareUnpublish(roomId, m_rtcMirReleasePendingError);
 }
 
 void StorageWorker::beginRtcScreenShareUnpublish(
@@ -2902,27 +2915,38 @@ void StorageWorker::beginRtcScreenShareUnpublish(
 
 void StorageWorker::pollRtcScreenShareStop()
 {
-    if (!m_rtcMirReleasePendingRoomId.isEmpty()) {
-        if (m_rtcMirReleaseComplete &&
-            !m_rtcMirReleaseComplete->load(std::memory_order_acquire))
-            return;
-
-        const QString roomId = m_rtcMirReleasePendingRoomId;
-        const QString releaseError = m_rtcMirReleasePendingError;
+    // Mir release and LiveKit unpublish are independent teardown operations.
+    // Retire the Mir state as soon as its background thread finishes, without
+    // delaying polling of the LiveKit operation.
+    if (!m_rtcMirReleasePendingRoomId.isEmpty() &&
+        m_rtcMirReleaseComplete &&
+        m_rtcMirReleaseComplete->load(std::memory_order_acquire)) {
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: background Mir release finished"
+                << "room:" << m_rtcMirReleasePendingRoomId;
         m_rtcMirReleasePendingRoomId.clear();
         m_rtcMirReleasePendingError.clear();
         m_rtcMirReleaseComplete.reset();
+    }
 
-        qInfo() << "ASTRO_SCREEN_SHARE_STOP: Mir release completed; starting LiveKit unpublish";
-        beginRtcScreenShareUnpublish(roomId, releaseError);
+    if (m_rtcScreenShareStopPendingRoomId.isEmpty()) {
+        if (m_rtcMirReleasePendingRoomId.isEmpty() &&
+            m_rtcScreenShareStopPollTimer) {
+            m_rtcScreenShareStopPollTimer->stop();
+        }
         return;
     }
 
-    if (m_rtcScreenShareStopPendingRoomId.isEmpty() || !m_matrixClient) {
-        if (m_rtcScreenShareStopPollTimer)
-            m_rtcScreenShareStopPollTimer->stop();
+    if (!m_matrixClient) {
+        const QString roomId = m_rtcScreenShareStopPendingRoomId;
         m_rtcScreenShareStopPendingRoomId.clear();
         m_rtcScreenShareStopCompletionError.clear();
+        emit matrixRtcScreenShareActionFinished(
+            roomId, QStringLiteral("Matrix session closed during screen-share teardown")
+        );
+        if (m_rtcMirReleasePendingRoomId.isEmpty() &&
+            m_rtcScreenShareStopPollTimer) {
+            m_rtcScreenShareStopPollTimer->stop();
+        }
         return;
     }
 
@@ -2947,8 +2971,6 @@ void StorageWorker::pollRtcScreenShareStop()
     if (result > 0)
         return;
 
-    if (m_rtcScreenShareStopPollTimer)
-        m_rtcScreenShareStopPollTimer->stop();
     m_rtcScreenShareStopPendingRoomId.clear();
     m_rtcScreenShareStopCompletionError.clear();
 
@@ -2957,8 +2979,14 @@ void StorageWorker::pollRtcScreenShareStop()
 
     qInfo() << "ASTRO_SCREEN_SHARE_STOP: asynchronous unpublish completed"
             << "result:" << result
-            << "error:" << errorMessage;
+            << "error:" << errorMessage
+            << "mirReleaseStillPending:" << !m_rtcMirReleasePendingRoomId.isEmpty();
     emit matrixRtcScreenShareActionFinished(roomId, errorMessage);
+
+    if (m_rtcMirReleasePendingRoomId.isEmpty() &&
+        m_rtcScreenShareStopPollTimer) {
+        m_rtcScreenShareStopPollTimer->stop();
+    }
 }
 bool StorageWorker::startRtcScreenShareAudioCapture(
     const QString &roomId,
