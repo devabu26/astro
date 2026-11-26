@@ -136,10 +136,6 @@ public:
     Q_INVOKABLE void stopRtcVideo(const QString &roomId);
     Q_INVOKABLE void startRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
     Q_INVOKABLE void stopRtcScreenShare(const QString &roomId);
-    Q_INVOKABLE void stopRtcScreenShareAfterSceneGraph(
-        QObject *windowObject,
-        const QString &roomId
-    );
     Q_INVOKABLE void switchRtcCamera(const QString &roomId);
     Q_INVOKABLE void startRtcBackgroundCamera(
         const QString &roomId,
