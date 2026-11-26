@@ -2,6 +2,7 @@
 import QtQuick 2.7
 import QtQuick.Window 2.2
 import QtMultimedia 5.12
+import QtGraphicalEffects 1.0
 import Lomiri.Components 1.3
 import Astro.Backend 1.0
 
@@ -1700,7 +1701,7 @@ Item {
                                     color: "white"
                                     font.pixelSize: parent.parent.avatarSize * 0.38
                                     font.bold: true
-                                    visible: !participantAvatarImage.visible
+                                    visible: !participantAvatarMask.visible
                                 }
 
                                 Image {
@@ -1712,7 +1713,21 @@ Item {
                                     fillMode: Image.PreserveAspectCrop
                                     asynchronous: true
                                     cache: true
-                                    visible: status === Image.Ready
+                                }
+
+                                OpacityMask {
+                                    id: participantAvatarMask
+                                    anchors.fill: parent
+                                    source: participantAvatarImage
+                                    maskSource: Rectangle {
+                                        width: participantAvatarMask.width
+                                        height: participantAvatarMask.height
+                                        radius: width / 2
+                                        color: "white"
+                                    }
+                                    cached: true
+                                    hideSource: true
+                                    visible: participantAvatarImage.status === Image.Ready
                                 }
                             }
 
