@@ -41,6 +41,7 @@ Item {
 
     property bool roomsLoading: false
     property bool moreMenuVisible: false
+    property bool sortMenuVisible: false
 
     function rtcParticipantDisplayName(name, identity) {
         var displayName = String(name || "").trim()
@@ -252,7 +253,8 @@ function loadRooms(json, finished) {
                 mentionCount: Number(room.mention_count || 0),
                 parentSpaceIds: JSON.stringify(
                     room.parent_space_ids || []
-                )
+                ),
+                lastActivity: Number(room.last_activity || 0)
             })
 
             if (root.backend &&
@@ -644,6 +646,95 @@ function loadRooms(json, finished) {
                         width: parent.width
                         height: units.gu(8)
 
+                        // Room ordering selector sits beside the existing overflow menu.
+                        Rectangle {
+                            id: roomSortButton
+
+                            anchors {
+                                right: moreButton.left
+                                rightMargin: units.gu(0.5)
+                                verticalCenter: parent.verticalCenter
+                            }
+
+                            width: units.gu(8)
+                            height: units.gu(5)
+                            radius: units.gu(1)
+                            color: root.sortMenuVisible ? "#40566a" : "transparent"
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: roomNavigator.sortMode === "recent" ? "Recent ▾" : "A–Z ▾"
+                                color: "#b4c4d1"
+                                font.pixelSize: units.gu(1.35)
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: {
+                                    root.moreMenuVisible = false
+                                    root.sortMenuVisible = !root.sortMenuVisible
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            id: roomSortMenu
+
+                            anchors {
+                                top: parent.bottom
+                                right: parent.right
+                            }
+
+                            width: units.gu(19)
+                            height: units.gu(10)
+                            radius: units.gu(1)
+                            color: "#263744"
+                            border.color: "#526575"
+                            border.width: units.dp(1)
+                            visible: root.sortMenuVisible
+                            z: 30
+
+                            Column {
+                                anchors.fill: parent
+                                anchors.margins: units.gu(0.5)
+                                spacing: units.gu(0.5)
+
+                                Repeater {
+                                    model: [
+                                        { label: "A–Z", value: "name" },
+                                        { label: "Recent", value: "recent" }
+                                    ]
+
+                                    delegate: Rectangle {
+                                        width: parent.width
+                                        height: units.gu(4)
+                                        radius: units.gu(0.5)
+                                        color: roomNavigator.sortMode === modelData.value
+                                               ? "#40566a" : "#344b5c"
+
+                                        Text {
+                                            anchors {
+                                                left: parent.left
+                                                leftMargin: units.gu(1.5)
+                                                verticalCenter: parent.verticalCenter
+                                            }
+                                            text: modelData.label
+                                            color: "white"
+                                            font.pixelSize: units.gu(1.5)
+                                        }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            onClicked: {
+                                                roomNavigator.sortMode = modelData.value
+                                                root.sortMenuVisible = false
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         Text {
                             anchors {
                                 left: parent.left
@@ -688,6 +779,7 @@ function loadRooms(json, finished) {
                                 anchors.fill: parent
 
                                 onClicked: {
+                                    root.sortMenuVisible = false
                                     root.moreMenuVisible =
                                         !root.moreMenuVisible
                                 }
