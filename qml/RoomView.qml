@@ -1992,7 +1992,7 @@ Item {
                         radius: 12
                         samples: 25
                         spread: 0.18
-                        color: "#ffff3548"
+                        color: "#55f28a"
                         opacity: root.rtcCallState.joinedByMe === true ? 0.78 : 0
                         visible: opacity > 0
                         z: 9
@@ -2013,11 +2013,11 @@ Item {
                         radius: units.gu(1)
 
                         color: root.rtcCallState.joinedByMe === true
-                               ? (callButtonMouse.pressed ? "#c94a55" : "#a8323d")
+                               ? (callButtonMouse.pressed ? "#258449" : "#2e9d58")
                                : (callButtonMouse.pressed ? "#40596b" : "transparent")
                         border.width: root.rtcCallState.joinedByMe === true
                                       ? units.dp(1) : 0
-                        border.color: "#ff9aa2"
+                        border.color: "#8cf0ad"
 
                         visible: root.roomId.length > 0
 
