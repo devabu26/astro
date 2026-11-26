@@ -1889,8 +1889,33 @@ void StorageWorker::startRtcBackgroundCamera(
                 );
             } else {
                 selectedDeviceId = selected.deviceName();
+
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: constructing native QCamera"
+                        << "device:" << selectedDeviceId
+                        << "description:" << selected.description()
+                        << "workerThread:" << QThread::currentThreadId()
+                        << "parent:" << this;
+
                 m_rtcCamera = new QCamera(selected, this);
+
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: native QCamera constructed"
+                        << "camera:" << m_rtcCamera
+                        << "status:" << static_cast<int>(m_rtcCamera->status())
+                        << "state:" << static_cast<int>(m_rtcCamera->state())
+                        << "available:" << m_rtcCamera->isAvailable()
+                        << "error:" << static_cast<int>(m_rtcCamera->error())
+                        << "errorString:" << m_rtcCamera->errorString();
+
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: setting native camera capture mode"
+                        << "mode:" << static_cast<int>(QCamera::CaptureVideo)
+                        << "camera:" << m_rtcCamera;
                 m_rtcCamera->setCaptureMode(QCamera::CaptureVideo);
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: native capture mode configured"
+                        << "status:" << static_cast<int>(m_rtcCamera->status())
+                        << "state:" << static_cast<int>(m_rtcCamera->state())
+                        << "available:" << m_rtcCamera->isAvailable()
+                        << "error:" << static_cast<int>(m_rtcCamera->error())
+                        << "errorString:" << m_rtcCamera->errorString();
 
                 // Load first so the camera backend can report its real
                 // viewfinder capabilities. Starting with the backend's
@@ -2079,6 +2104,10 @@ void StorageWorker::startRtcBackgroundCamera(
                     Qt::QueuedConnection
                 );
 
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: native camera status handler connected"
+                        << "camera:" << m_rtcCamera
+                        << "thread:" << QThread::currentThreadId();
+
                 connect(
                     m_rtcCamera,
                     QOverload<QCamera::Error>::of(&QCamera::error),
@@ -2115,6 +2144,10 @@ void StorageWorker::startRtcBackgroundCamera(
                     },
                     Qt::QueuedConnection
                 );
+
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: native camera error handler connected"
+                        << "camera:" << m_rtcCamera
+                        << "thread:" << QThread::currentThreadId();
 
                 qInfo() << "ASTRO_BACKGROUND_CAMERA: loading native camera before format negotiation"
                         << "statusBefore:" << static_cast<int>(m_rtcCamera->status())
@@ -2184,6 +2217,15 @@ void StorageWorker::startRtcBackgroundCamera(
 
 void StorageWorker::stopRtcBackgroundCamera(const QString &roomId)
 {
+    qInfo() << "ASTRO_BACKGROUND_CAMERA: native stop request received"
+            << "room:" << roomId
+            << "workerThread:" << QThread::currentThreadId()
+            << "camera:" << m_rtcCamera
+            << "cameraStatus:" << (m_rtcCamera
+                ? static_cast<int>(m_rtcCamera->status()) : -1)
+            << "cameraState:" << (m_rtcCamera
+                ? static_cast<int>(m_rtcCamera->state()) : -1);
+
     QCamera *cameraToUnload = nullptr;
     bool alreadyStopped = false;
 
