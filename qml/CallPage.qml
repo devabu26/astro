@@ -305,10 +305,11 @@ Item {
             "waitedMs:", screenShareStopDrainElapsedMs,
             "cameraGrabPending:", cameraFrameGrabPending
         )
-        backend.stopRtcScreenShareAfterSceneGraph(
-            Window.window,
-            screenShareStopRoomId
-        )
+        // Dispatch from the QML/application thread after the camera
+        // readback has drained. Do not wait for a Qt Quick render-stage
+        // callback here: screen-share teardown must not depend on the
+        // scenegraph render loop making progress.
+        backend.stopRtcScreenShare(screenShareStopRoomId)
     }
 
     function beginScreenShare(includeDeviceAudio) {
