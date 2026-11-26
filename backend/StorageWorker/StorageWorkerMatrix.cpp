@@ -2778,19 +2778,30 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
         return;
     }
 
-    // Stop frame/audio producers first. Mir release may wait on compositor
-    // IPC, so keep it off the worker event loop while teardown is pending.
+    // Stop frame/audio producers first. Record each synchronous stage so a
+    // device-side stall can be attributed to audio shutdown, timer shutdown,
+    // or the later LiveKit FFI request.
+    QElapsedTimer stopStageTimer;
+    stopStageTimer.start();
     if (m_rtcScreenShareAudioInput) {
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: stopping device audio input";
         m_rtcScreenShareAudioInput->stop();
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: device audio input stopped"
+                << "elapsedMs:" << stopStageTimer.restart();
         m_rtcScreenShareAudioInput->deleteLater();
         m_rtcScreenShareAudioInput = nullptr;
+    } else {
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: no device audio input to stop";
     }
     m_rtcScreenShareAudioDevice = nullptr;
     m_rtcScreenShareAudioBuffer.clear();
     m_rtcScreenShareAudioRoomId.clear();
 
     if (m_rtcScreenShareTimer) {
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: stopping capture timer";
         m_rtcScreenShareTimer->stop();
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: capture timer stopped"
+                << "elapsedMs:" << stopStageTimer.restart();
         m_rtcScreenShareTimer->deleteLater();
         m_rtcScreenShareTimer = nullptr;
     }
@@ -2878,9 +2889,16 @@ void StorageWorker::beginRtcScreenShareUnpublish(
 
     const QByteArray roomIdBytes = roomId.toUtf8();
     char *error = nullptr;
+    QElapsedTimer unpublishRequestTimer;
+    unpublishRequestTimer.start();
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: requesting LiveKit unpublish"
+            << "room:" << roomId;
     const int32_t result = astro_matrix_stop_rtc_screenshare(
         m_matrixClient, roomIdBytes.constData(), &error
     );
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: LiveKit unpublish request returned"
+            << "result:" << result
+            << "elapsedMs:" << unpublishRequestTimer.elapsed();
 
     QString errorMessage = completionError;
     if (error) {
