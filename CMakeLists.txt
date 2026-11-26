@@ -168,6 +168,8 @@ add_custom_command(
         "CARGO_TARGET_DIR=${RUST_TARGET_DIR}"
         "CARGO_HOME=${CMAKE_CURRENT_BINARY_DIR}/cargo-home"
         "HOST_CC=x86_64-linux-gnu-gcc"
+        "CXX=/usr/bin/clang++-23"
+        "CXX_x86_64_unknown_linux_gnu=/usr/bin/clang++-23"
         "CXX_aarch64_unknown_linux_gnu=/usr/local/bin/astro-clang++-arm64"
         "${CARGO_EXECUTABLE}" build
         --manifest-path "${CMAKE_SOURCE_DIR}/backend/astro-core/Cargo.toml"
