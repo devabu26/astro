@@ -98,8 +98,55 @@ Item {
         return expandedSpaceIds.indexOf(spaceId) !== -1
     }
 
+    // A Space usually has no message timeline of its own, so its
+    // latest_event_timestamp can be empty even while its child rooms are
+    // active. For ordering, derive a Space's activity from the newest
+    // descendant room (including rooms nested in child Spaces).
+    function latestActivityForSpace(spaceId, ancestors) {
+        var visited = ancestors ? ancestors.slice() : []
+
+        if (visited.indexOf(String(spaceId)) !== -1)
+            return 0
+
+        visited.push(String(spaceId))
+
+        var latest = 0
+
+        if (!root.roomsModel)
+            return latest
+
+        for (var i = 0; i < root.roomsModel.count; i++) {
+            var child = root.roomsModel.get(i)
+
+            if (!hasParent(child, spaceId))
+                continue
+
+            if (child.kind === "space") {
+                latest = Math.max(
+                    latest,
+                    latestActivityForSpace(child.roomId, visited)
+                )
+            } else {
+                latest = Math.max(
+                    latest,
+                    Number(child.lastActivity || 0)
+                )
+            }
+        }
+
+        return latest
+    }
+
+    function activityForRoom(room) {
+        if (room.kind === "space")
+            return latestActivityForSpace(room.roomId, [])
+
+        return Number(room.lastActivity || 0)
+    }
+
     // Return room-model indexes in the selected order. Recent uses the
-    // Matrix SDK's latest-event timestamp; rooms without one sort last.
+    // Matrix SDK's latest-event timestamp; Spaces inherit the newest
+    // activity timestamp of any descendant room.
     function sortedRoomIndexes(kind) {
         var indexes = []
 
@@ -120,8 +167,8 @@ Item {
             var rightName = String(right.name || "").toLowerCase()
 
             if (root.sortMode === "recent") {
-                var leftTime = Number(left.lastActivity || 0)
-                var rightTime = Number(right.lastActivity || 0)
+                var leftTime = activityForRoom(left)
+                var rightTime = activityForRoom(right)
 
                 if (leftTime !== rightTime)
                     return rightTime - leftTime
