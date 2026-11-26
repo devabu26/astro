@@ -2766,6 +2766,12 @@ bool StorageWorker::startRtcScreenShareAudioCapture(
     m_rtcScreenShareAudioInput->setBufferSize(3840);
     m_rtcScreenShareAudioRoomId = roomId;
     m_rtcScreenShareAudioBuffer.clear();
+    m_rtcScreenShareAudioDiagnosticBytes = 0;
+    m_rtcScreenShareAudioDiagnosticFrames = 0;
+    m_rtcScreenShareAudioDiagnosticSquares = 0.0L;
+    m_rtcScreenShareAudioDiagnosticSamples = 0;
+    m_rtcScreenShareAudioDiagnosticsTimer.start();
+    m_rtcScreenShareAudioInput->setNotifyInterval(1000);
     m_rtcScreenShareAudioDevice = m_rtcScreenShareAudioInput->start();
 
     // start() can successfully open the monitor while it is idle because
@@ -2799,7 +2805,39 @@ bool StorageWorker::startRtcScreenShareAudioCapture(
         this,
         &StorageWorker::captureRtcScreenShareAudio
     );
+    connect(
+        m_rtcScreenShareAudioInput,
+        &QAudioInput::notify,
+        this,
+        [this]() {
+            if (!m_rtcScreenShareAudioInput)
+                return;
+            qInfo() << "ASTRO_SCREEN_SHARE_AUDIO: input notify"
+                    << "state:" << static_cast<int>(m_rtcScreenShareAudioInput->state())
+                    << "error:" << static_cast<int>(m_rtcScreenShareAudioInput->error())
+                    << "processedUs:" << m_rtcScreenShareAudioInput->processedUSecs()
+                    << "bytesReady:" << (m_rtcScreenShareAudioDevice
+                        ? m_rtcScreenShareAudioDevice->bytesAvailable() : -1);
+        }
+    );
+    connect(
+        m_rtcScreenShareAudioInput,
+        &QAudioInput::stateChanged,
+        this,
+        [this](QAudio::State state) {
+            qInfo() << "ASTRO_SCREEN_SHARE_AUDIO: input state changed"
+                    << "state:" << static_cast<int>(state)
+                    << "error:" << (m_rtcScreenShareAudioInput
+                        ? static_cast<int>(m_rtcScreenShareAudioInput->error()) : -1);
+        }
+    );
 
+    qInfo() << "ASTRO_SCREEN_SHARE_AUDIO: capture opened"
+            << "device:" << monitor.deviceName()
+            << "state:" << static_cast<int>(m_rtcScreenShareAudioInput->state())
+            << "error:" << static_cast<int>(m_rtcScreenShareAudioInput->error())
+            << "bufferSize:" << m_rtcScreenShareAudioInput->bufferSize()
+            << "processedUs:" << m_rtcScreenShareAudioInput->processedUSecs();
     qInfo() << "ASTRO_SCREEN_SHARE_AUDIO: capturing playback monitor:"
             << monitor.deviceName();
     return true;
@@ -2811,9 +2849,9 @@ void StorageWorker::captureRtcScreenShareAudio()
         m_rtcScreenShareAudioRoomId.isEmpty())
         return;
 
-    m_rtcScreenShareAudioBuffer.append(
-        m_rtcScreenShareAudioDevice->readAll()
-    );
+    const QByteArray incoming = m_rtcScreenShareAudioDevice->readAll();
+    m_rtcScreenShareAudioDiagnosticBytes += static_cast<quint64>(incoming.size());
+    m_rtcScreenShareAudioBuffer.append(incoming);
 
     // 10 ms at 48 kHz stereo, signed 16-bit little-endian PCM.
     constexpr int sampleCount = 960;
@@ -2826,6 +2864,13 @@ void StorageWorker::captureRtcScreenShareAudio()
             static_cast<size_t>(frameBytes)
         );
         m_rtcScreenShareAudioBuffer.remove(0, frameBytes);
+        long double frameSquares = 0.0L;
+        for (int i = 0; i < sampleCount; ++i) {
+            const long double sample = samples[i];
+            frameSquares += sample * sample;
+        }
+        m_rtcScreenShareAudioDiagnosticSquares += frameSquares;
+        m_rtcScreenShareAudioDiagnosticSamples += sampleCount;
 
         const QByteArray roomBytes = m_rtcScreenShareAudioRoomId.toUtf8();
         char *error = nullptr;
@@ -2854,6 +2899,30 @@ void StorageWorker::captureRtcScreenShareAudio()
             m_rtcScreenShareAudioRoomId.clear();
             return;
         }
+        ++m_rtcScreenShareAudioDiagnosticFrames;
+    }
+
+    if (m_rtcScreenShareAudioDiagnosticsTimer.isValid() &&
+        m_rtcScreenShareAudioDiagnosticsTimer.elapsed() >= 1000) {
+        const double rms = m_rtcScreenShareAudioDiagnosticSamples > 0
+            ? std::sqrt(static_cast<double>(
+                m_rtcScreenShareAudioDiagnosticSquares /
+                m_rtcScreenShareAudioDiagnosticSamples))
+            : 0.0;
+        qInfo() << "ASTRO_SCREEN_SHARE_AUDIO: capture stats"
+                << "inputBytes:" << m_rtcScreenShareAudioDiagnosticBytes
+                << "submittedFrames:" << m_rtcScreenShareAudioDiagnosticFrames
+                << "rms:" << rms
+                << "bufferedBytes:" << m_rtcScreenShareAudioBuffer.size()
+                << "inputState:" << (m_rtcScreenShareAudioInput
+                    ? static_cast<int>(m_rtcScreenShareAudioInput->state()) : -1)
+                << "inputError:" << (m_rtcScreenShareAudioInput
+                    ? static_cast<int>(m_rtcScreenShareAudioInput->error()) : -1);
+        m_rtcScreenShareAudioDiagnosticBytes = 0;
+        m_rtcScreenShareAudioDiagnosticFrames = 0;
+        m_rtcScreenShareAudioDiagnosticSquares = 0.0L;
+        m_rtcScreenShareAudioDiagnosticSamples = 0;
+        m_rtcScreenShareAudioDiagnosticsTimer.restart();
     }
 }
 
