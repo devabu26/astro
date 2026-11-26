@@ -225,9 +225,7 @@ pub fn register_incoming_call_handler(client: &Client, queue: NotificationQueue)
             }
         },
     );
-}
 
-    
     // MSC4310 declines are relations to the exact MSC4075 notification event.
     // The caller uses this to stop ringing, and for one-to-one calls to end
     // its LiveKit session and withdraw its MatrixRTC membership.
@@ -250,3 +248,4 @@ pub fn register_incoming_call_handler(client: &Client, queue: NotificationQueue)
             }
         },
     );
+}
