@@ -2847,9 +2847,7 @@ impl MatrixClientManager {
                 e2ee_installed_keys.insert((identity, index), key);
             }
 
-            if !e2ee_installed_keys.contains_key(&(local_identity.clone(), 0))
-                && !e2ee_installed_keys.keys().any(|(identity, _)| identity == &local_identity)
-            {
+            if !e2ee_installed_keys.keys().any(|(identity, _)| identity == &local_identity) {
                 return Err("No active local MatrixRTC key is installed in LiveKit".into());
             }
             eprintln!(
