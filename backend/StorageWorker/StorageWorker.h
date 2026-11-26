@@ -533,6 +533,8 @@ private:
     int m_rtcScreenShareWidth = 0;
     int m_rtcScreenShareHeight = 0;
     bool m_rtcScreenShareStartPending = false;
+    // Invalidates queued timer/timeout callbacks from an older capture session.
+    quint64 m_rtcScreenShareGeneration = 0;
     QByteArray m_rtcScreenShareLastFrame;
     QElapsedTimer m_rtcScreenShareLastFrameSent;
     // Aggregate screen-share stage timings; emitted every five seconds.
