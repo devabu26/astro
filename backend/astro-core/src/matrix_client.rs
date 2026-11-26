@@ -453,6 +453,45 @@ async fn discover_livekit_service_url(client: &Client) -> Result<String, String>
         .ok_or_else(|| "The homeserver did not advertise a LiveKit transport".into())
 }
 
+
+async fn fetch_rtc_livekit_credentials(client: &Client, room: &Room, service_url: &str) -> Result<(String, String), String> {
+    let device_id = client.device_id().ok_or_else(|| "Matrix device ID is unavailable".to_string())?.to_string();
+    let openid_token = client.account().request_openid_token().await
+        .map_err(|error| format!("Could not obtain Matrix OpenID token: {error}"))?;
+    let token_type = serde_json::to_value(&openid_token.token_type)
+        .map_err(|error| format!("Could not encode OpenID token type: {error}"))?;
+    let token_type = token_type.as_str().ok_or_else(|| "Matrix returned an invalid OpenID token type".to_string())?;
+    let request_body = serde_json::json!({
+        "room": room.room_id().as_str(), "device_id": device_id,
+        "openid_token": {
+            "access_token": openid_token.access_token, "token_type": token_type,
+            "matrix_server_name": openid_token.matrix_server_name.to_string(),
+            "expires_in": openid_token.expires_in.as_secs()
+        }
+    });
+    let request_bytes = serde_json::to_vec(&request_body).map_err(|error| format!("Could not encode LiveKit token request: {error}"))?;
+    let endpoint = format!("{}/sfu/get", service_url.trim_end_matches('/'));
+    let response = client.http_client().post(&endpoint).header("content-type", "application/json")
+        .body(request_bytes).send().await
+        .map_err(|error| format!("LiveKit authorization request failed: {error}"))?;
+    let status = response.status();
+    let response_bytes = response.bytes().await.map_err(|error| format!("Could not read LiveKit authorization response: {error}"))?;
+    if !status.is_success() { return Err(format!("LiveKit authorization service returned HTTP {status}")); }
+    let value: serde_json::Value = serde_json::from_slice(&response_bytes)
+        .map_err(|error| format!("Invalid LiveKit authorization response: {error}"))?;
+    let url = value.get("url").and_then(serde_json::Value::as_str).filter(|v| !v.is_empty())
+        .ok_or_else(|| "LiveKit authorization response has no URL".to_string())?.to_owned();
+    let jwt = value.get("jwt").and_then(serde_json::Value::as_str).filter(|v| !v.is_empty())
+        .ok_or_else(|| "LiveKit authorization response has no JWT".to_string())?.to_owned();
+    Ok((url, jwt))
+}
+
+fn rtc_random_member_id() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).map_err(|error| format!("Could not generate a secure MatrixRTC member ID: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
 pub struct MatrixClientManager {
     client: Option<Client>,
     rtc_livekit_audio_sessions: HashMap<String, LiveKitAudioSession>,
@@ -462,7 +501,9 @@ pub struct MatrixClientManager {
     rtc_participant_profiles: HashMap<(String, String), RtcParticipantProfile>,
     rtc_last_snapshots: HashMap<String, serde_json::Value>,
     rtc_local_memberships: HashMap<String, String>,
+    rtc_modern_memberships: HashMap<String, (String, serde_json::Value)>,
     rtc_livekit_services: HashMap<String, String>,
+    rtc_modern_renewals: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     rtc_renewals: Arc<Mutex<HashMap<String, String>>>,
     runtime: std::sync::Arc<Runtime>,
     session_path: PathBuf,
@@ -653,7 +694,9 @@ impl MatrixClientManager {
             rtc_participant_profiles: HashMap::new(),
             rtc_last_snapshots: HashMap::new(),
             rtc_local_memberships: HashMap::new(),
+            rtc_modern_memberships: HashMap::new(),
             rtc_livekit_services: HashMap::new(),
+            rtc_modern_renewals: Arc::new(Mutex::new(HashMap::new())),
             rtc_renewals: Arc::new(Mutex::new(HashMap::new())),
             runtime: std::sync::Arc::new(runtime),
             session_path,
@@ -1276,6 +1319,7 @@ impl MatrixClientManager {
         let runtime = std::sync::Arc::clone(&self.runtime);
         let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
         let renewals = Arc::clone(&self.rtc_renewals);
+        let modern_renewals = Arc::clone(&self.rtc_modern_renewals);
 
         let thread = std::thread::Builder::new()
             .name("astro-matrix-rtc-compat".to_string())
@@ -1359,9 +1403,30 @@ impl MatrixClientManager {
                                 }
                             }
 
+                            let modern_active = modern_renewals.lock().map(|items| items.clone()).unwrap_or_default();
+                            for (room_id, content) in modern_active {
+                                let Some(room) = joined_rooms.iter().find(|room| room.room_id().as_str() == room_id) else {
+                                    if let Ok(mut items) = modern_renewals.lock() { items.remove(&room_id); }
+                                    continue;
+                                };
+                                if let Err(error) = room.send_raw("m.rtc.member", content)
+                                    .with_sticky_duration(Duration::from_secs(60 * 60)).await {
+                                    eprintln!("ASTRO RTC: modern membership renewal failed in {room_id}: {error}");
+                                }
+                            }
                             tokio::select! {
                                 _ = &mut cancel_rx => return,
                                 _ = tokio::time::sleep(Duration::from_secs(30 * 60)) => {}
+                            }
+                            continue;
+                        }
+
+                        let sticky_enabled = client.supports_sticky_events().await.unwrap_or(false);
+                        if !sticky_enabled {
+                            eprintln!("ASTRO RTC: homeserver does not advertise MSC4354 sticky-event support");
+                            tokio::select! {
+                                _ = &mut cancel_rx => return,
+                                _ = tokio::time::sleep(Duration::from_secs(30)) => {}
                             }
                             continue;
                         }
@@ -1382,6 +1447,12 @@ impl MatrixClientManager {
                         };
 
                         let sliding_sync = match builder
+                            .with_sticky_events_extension(
+                                matrix_sdk::ruma::api::client::sync::sync_events::v5::request::StickyEvents {
+                                    enabled: Some(true),
+                                    ..Default::default()
+                                }
+                            )
                             .version(Version::Native)
                             .build()
                             .await
@@ -1411,12 +1482,10 @@ impl MatrixClientManager {
                             Some({
                                 let mut settings =
                                     matrix_sdk::ruma::api::client::sync::sync_events::v5::request::RoomSubscription::default();
-                                settings.required_state = vec![(
-                                    matrix_sdk::ruma::events::StateEventType::from(
-                                        "org.matrix.msc3401.call.member"
-                                    ),
-                                    "*".to_owned(),
-                                )];
+                                settings.required_state = vec![
+                                    (matrix_sdk::ruma::events::StateEventType::from("org.matrix.msc3401.call.member"), "*".to_owned()),
+                                    (matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room".to_owned()),
+                                ];
                                 settings
                             }),
                             false,
@@ -1514,12 +1583,10 @@ impl MatrixClientManager {
                                                     Some({
                                                         let mut settings =
                                                             matrix_sdk::ruma::api::client::sync::sync_events::v5::request::RoomSubscription::default();
-                                                        settings.required_state = vec![(
-                                                            matrix_sdk::ruma::events::StateEventType::from(
-                                                                "org.matrix.msc3401.call.member"
-                                                            ),
-                                                            "*".to_owned(),
-                                                        )];
+                                                        settings.required_state = vec![
+                                                            (matrix_sdk::ruma::events::StateEventType::from("org.matrix.msc3401.call.member"), "*".to_owned()),
+                                                            (matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room".to_owned()),
+                                                        ];
                                                         settings
                                                     }),
                                                     true,
@@ -1543,12 +1610,10 @@ impl MatrixClientManager {
                                                 Some({
                                                     let mut settings =
                                                         matrix_sdk::ruma::api::client::sync::sync_events::v5::request::RoomSubscription::default();
-                                                    settings.required_state = vec![(
-                                                        matrix_sdk::ruma::events::StateEventType::from(
-                                                            "org.matrix.msc3401.call.member"
-                                                        ),
-                                                        "*".to_owned(),
-                                                    )];
+                                                    settings.required_state = vec![
+                                                        (matrix_sdk::ruma::events::StateEventType::from("org.matrix.msc3401.call.member"), "*".to_owned()),
+                                                        (matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room".to_owned()),
+                                                    ];
                                                     settings
                                                 }),
                                                 true,
@@ -2398,8 +2463,59 @@ impl MatrixClientManager {
                 .ok_or_else(|| "Matrix device ID is unavailable".to_string())?
                 .to_string();
 
-            let livekit_service_url =
-                discover_livekit_service_url(&client).await?;
+            if !client.supports_sticky_events().await
+                .map_err(|error| format!("Could not check MatrixRTC sticky-event support: {error}"))? {
+                return Err("This homeserver does not support MatrixRTC sticky events (MSC4354)".to_string());
+            }
+            if !client.available_sliding_sync_versions().await.iter().any(|v| matches!(v, Version::Native)) {
+                return Err("This homeserver does not provide native Sliding Sync required for MatrixRTC sticky membership".to_string());
+            }
+            let encrypted = room.latest_encryption_state().await
+                .map_err(|error| format!("Could not determine room encryption state: {error}"))?.is_encrypted();
+            let slot = room.get_state_event(
+                matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room"
+            ).await.map_err(|error| format!("Could not check the MatrixRTC room-call slot: {error}"))?;
+            let slot_content = match slot {
+                Some(matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState::Sync(raw)) =>
+                    serde_json::from_str::<serde_json::Value>(raw.json().get()).ok().and_then(|v| v.get("content").cloned()),
+                Some(matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState::Stripped(raw)) =>
+                    serde_json::from_str::<serde_json::Value>(raw.json().get()).ok().and_then(|v| v.get("content").cloned()),
+                None => None,
+            };
+            if let Some(content) = slot_content {
+                let status = content["status"].as_str().unwrap_or("");
+                let application = content["application"]["type"].as_str().unwrap_or("");
+                let encryption_type = content["encryption"]["type"].as_str().unwrap_or("");
+                if status != "open" { return Err("The MatrixRTC room-call slot exists but is not open; ask an administrator to open it".into()); }
+                if application != "m.call" { return Err("The MatrixRTC room-call slot has an incompatible application type".into()); }
+                if encrypted && encryption_type != "m.per_member" { return Err("The encrypted room-call slot does not enable m.per_member encryption".into()); }
+                if !encrypted && encryption_type == "m.per_member" { return Err("The room-call slot requires per-member encryption, but this room is not encrypted".into()); }
+            } else {
+                let mut content = serde_json::json!({
+                    "status": "open", "application": { "type": "m.call" }
+                });
+                if encrypted { content["encryption"] = serde_json::json!({ "type": "m.per_member" }); }
+                room.send_state_event_raw("m.rtc.slot", "m.call#room", content)
+                    .await.map_err(|error| format!("Could not create the MatrixRTC room-call slot; Astro may lack permission to send m.rtc.slot state events: {error}"))?;
+                eprintln!("ASTRO RTC: created m.call#room slot");
+            }
+
+            let livekit_service_url = discover_livekit_service_url(&client).await?;
+            let (livekit_url, _jwt) = fetch_rtc_livekit_credentials(&client, &room, &livekit_service_url).await?;
+            let member_id = rtc_random_member_id()?;
+            let modern_membership = serde_json::json!({
+                "slot_id": "m.call#room",
+                "member": { "id": member_id, "membership": "join" },
+                "application": { "type": "m.call" },
+                "transports": {
+                    "published": [{ "type": "m.livekit", "url": livekit_url }],
+                    "can_subscribe": ["m.livekit"]
+                },
+                "sticky_key": member_id
+            });
+            room.send_raw("m.rtc.member", modern_membership.clone())
+                .with_sticky_duration(Duration::from_secs(60 * 60)).await
+                .map_err(|error| format!("Could not publish modern MatrixRTC membership: {error}"))?;
 
             let state_key = rtc_membership_state_key(&room, &user_id, &device_id);
 
@@ -2502,11 +2618,13 @@ impl MatrixClientManager {
                 eprintln!("ASTRO RTC CALL: no other joined room members to notify");
             }
 
-            Ok::<(String, String), String>((state_key, livekit_service_url))
+            Ok::<(String, String, String, serde_json::Value), String>((state_key, livekit_service_url, member_id, modern_membership))
         });
 
-        let (state_key, livekit_service_url) = result?;
+        let (state_key, livekit_service_url, member_id, modern_membership) = result?;
         self.rtc_local_memberships.insert(room_id.to_owned(), state_key.clone());
+        self.rtc_modern_memberships.insert(room_id.to_owned(), (member_id, modern_membership.clone()));
+        if let Ok(mut renewals) = self.rtc_modern_renewals.lock() { renewals.insert(room_id.to_owned(), modern_membership); }
         self.rtc_livekit_services.insert(
             room_id.to_owned(),
             livekit_service_url,
@@ -2551,75 +2669,8 @@ impl MatrixClientManager {
             let room = client.joined_rooms().into_iter()
                 .find(|room| room.room_id() == &parsed_room_id)
                 .ok_or_else(|| "You are no longer joined to this room".to_string())?;
-
-            let device_id = client.device_id()
-                .ok_or_else(|| "Matrix device ID is unavailable".to_string())?
-                .to_string();
-
-            let openid_token = client.account()
-                .request_openid_token()
-                .await
-                .map_err(|error| format!("Could not obtain Matrix OpenID token: {error}"))?;
-
-            let token_type = serde_json::to_value(&openid_token.token_type)
-                .map_err(|error| format!("Could not encode OpenID token type: {error}"))?;
-
-            let token_type = token_type.as_str()
-                .ok_or_else(|| "Matrix returned an invalid OpenID token type".to_string())?;
-
-            let request_body = serde_json::json!({
-                "room": room.room_id().as_str(),
-                "device_id": device_id,
-                "openid_token": {
-                    "access_token": openid_token.access_token,
-                    "token_type": token_type,
-                    "matrix_server_name": openid_token.matrix_server_name.to_string(),
-                    "expires_in": openid_token.expires_in.as_secs()
-                }
-            });
-
-            let request_bytes = serde_json::to_vec(&request_body)
-                .map_err(|error| format!("Could not encode LiveKit token request: {error}"))?;
-
-            let endpoint = format!("{}/sfu/get", service_url.trim_end_matches('/'));
-
-            let response = client.http_client()
-                .post(&endpoint)
-                .header("content-type", "application/json")
-                .body(request_bytes)
-                .send()
-                .await
-                .map_err(|error| format!("LiveKit authorization request failed: {error}"))?;
-
-            let status = response.status();
-            let response_bytes = response.bytes()
-                .await
-                .map_err(|error| format!("Could not read LiveKit authorization response: {error}"))?;
-
-            if !status.is_success() {
-                return Err(format!(
-                    "LiveKit authorization service returned HTTP {status}"
-                ));
-            }
-
-            let response_json: serde_json::Value =
-                serde_json::from_slice(&response_bytes)
-                    .map_err(|error| format!("Invalid LiveKit authorization response: {error}"))?;
-
-            let livekit_url = response_json.get("url")
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| "LiveKit authorization response has no URL".to_string())?;
-
-            let jwt = response_json.get("jwt")
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| "LiveKit authorization response has no JWT".to_string())?;
-
-            Ok(serde_json::json!({
-                "url": livekit_url,
-                "jwt": jwt
-            }).to_string())
+            let (livekit_url, jwt) = fetch_rtc_livekit_credentials(&client, &room, &service_url).await?;
+            Ok(serde_json::json!({ "url": livekit_url, "jwt": jwt }).to_string())
         })
     }
 
@@ -3613,6 +3664,7 @@ impl MatrixClientManager {
             .map_err(|error| format!("Invalid room ID: {error}"))?;
 
         let remembered_key = self.rtc_local_memberships.get(room_id).cloned();
+        let remembered_modern = self.rtc_modern_memberships.get(room_id).cloned();
 
         let state_key = self.runtime.block_on(async move {
             let room = client.joined_rooms().into_iter()
@@ -3633,16 +3685,20 @@ impl MatrixClientManager {
             };
 
             room.send_state_event_raw(
-                "org.matrix.msc3401.call.member",
-                &key,
-                serde_json::json!({})
-            ).await
-                .map_err(|error| format!("Could not withdraw MatrixRTC call presence: {error}"))?;
-
+                "org.matrix.msc3401.call.member", &key, serde_json::json!({})
+            ).await.map_err(|error| format!("Could not withdraw MatrixRTC call presence: {error}"))?;
+            if let Some((_member_id, mut modern_content)) = remembered_modern {
+                modern_content["member"]["membership"] = serde_json::json!("leave");
+                room.send_raw("m.rtc.member", modern_content)
+                    .with_sticky_duration(Duration::from_secs(60 * 60)).await
+                    .map_err(|error| format!("Could not publish MatrixRTC leave membership: {error}"))?;
+            }
             Ok::<String, String>(key)
         })?;
 
         self.rtc_local_memberships.remove(room_id);
+        self.rtc_modern_memberships.remove(room_id);
+        if let Ok(mut renewals) = self.rtc_modern_renewals.lock() { renewals.remove(room_id); }
         self.rtc_livekit_services.remove(room_id);
         if let Ok(mut renewals) = self.rtc_renewals.lock() {
             renewals.remove(room_id);
