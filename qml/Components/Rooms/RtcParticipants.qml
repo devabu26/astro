@@ -15,6 +15,8 @@ Item {
     property var membershipOverride: null
     property string actionError: ""
 
+    signal joinCallRequested()
+
 
     readonly property bool joinedByMe:
         membershipOverride === null
@@ -257,7 +259,12 @@ Item {
                     anchors.fill: parent
                     enabled: !root.actionPending &&
                              !!root.backend && root.roomId.length > 0
-                    onClicked: root.performRtcAction()
+                    onClicked: {
+                        if (root.joinedByMe)
+                            root.performRtcAction()
+                        else
+                            root.joinCallRequested()
+                    }
                 }
             }
 
