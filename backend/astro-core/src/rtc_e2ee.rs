@@ -85,10 +85,9 @@ impl RtcE2eeSession {
             rotation.tick().await;
             let mut initial_retry = tokio::time::interval(Duration::from_secs(5));
             initial_retry.tick().await;
-            let mut initial_key_distributed = false;
             let mut pending = VecDeque::<PendingMediaKey>::new();
 
-            initial_key_distributed = publish_local_key(
+            let mut initial_key_distributed = publish_local_key(
                 &task_client,
                 &task_room,
                 &local_member_id,
