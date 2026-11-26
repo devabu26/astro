@@ -2495,59 +2495,69 @@ impl MatrixClientManager {
                 .ok_or_else(|| "Matrix device ID is unavailable".to_string())?
                 .to_string();
 
-            if !client.supports_sticky_events().await
-                .map_err(|error| format!("Could not check MatrixRTC sticky-event support: {error}"))? {
-                return Err("This homeserver does not support MatrixRTC sticky events (MSC4354)".to_string());
-            }
-            if !client.available_sliding_sync_versions().await.iter().any(|v| matches!(v, Version::Native)) {
-                return Err("This homeserver does not provide native Sliding Sync required for MatrixRTC sticky membership".to_string());
-            }
             let encrypted = room.latest_encryption_state().await
                 .map_err(|error| format!("Could not determine room encryption state: {error}"))?.is_encrypted();
-            let slot = room.get_state_event(
-                matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room"
-            ).await.map_err(|error| format!("Could not check the MatrixRTC room-call slot: {error}"))?;
-            let slot_content = match slot {
-                Some(matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState::Sync(raw)) =>
-                    serde_json::from_str::<serde_json::Value>(raw.json().get()).ok().and_then(|v| v.get("content").cloned()),
-                Some(matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState::Stripped(raw)) =>
-                    serde_json::from_str::<serde_json::Value>(raw.json().get()).ok().and_then(|v| v.get("content").cloned()),
-                None => None,
-            };
-            if let Some(content) = slot_content {
-                let status = content["status"].as_str().unwrap_or("");
-                let application = content["application"]["type"].as_str().unwrap_or("");
-                let encryption_type = content["encryption"]["type"].as_str().unwrap_or("");
-                if status != "open" { return Err("The MatrixRTC room-call slot exists but is not open; ask an administrator to open it".into()); }
-                if application != "m.call" { return Err("The MatrixRTC room-call slot has an incompatible application type".into()); }
-                if encrypted && encryption_type != "m.per_member" { return Err("The encrypted room-call slot does not enable m.per_member encryption".into()); }
-                if !encrypted && encryption_type == "m.per_member" { return Err("The room-call slot requires per-member encryption, but this room is not encrypted".into()); }
-            } else {
-                let mut content = serde_json::json!({
-                    "status": "open", "application": { "type": "m.call" }
-                });
-                if encrypted { content["encryption"] = serde_json::json!({ "type": "m.per_member" }); }
-                room.send_state_event_raw("m.rtc.slot", "m.call#room", content)
-                    .await.map_err(|error| format!("Could not create the MatrixRTC room-call slot; Astro may lack permission to send m.rtc.slot state events: {error}"))?;
-                eprintln!("ASTRO RTC: created m.call#room slot");
-            }
 
-            let livekit_service_url = discover_livekit_service_url(&client).await?;
-            let (livekit_url, _jwt) = fetch_rtc_livekit_credentials(&client, &room, &livekit_service_url).await?;
-            let member_id = rtc_random_member_id()?;
-            let modern_membership = serde_json::json!({
-                "slot_id": "m.call#room",
-                "member": { "id": member_id, "membership": "join" },
-                "application": { "type": "m.call" },
-                "transports": {
-                    "published": [{ "type": "m.livekit", "url": livekit_url }],
-                    "can_subscribe": ["m.livekit"]
-                },
-                "sticky_key": member_id
-            });
-            room.send_raw("m.rtc.member", modern_membership.clone())
-                .with_sticky_duration(Duration::from_secs(60 * 60)).await
-                .map_err(|error| format!("Could not publish modern MatrixRTC membership: {error}"))?;
+            // MSC4354 is optional. Homeservers without sticky events (or native
+            // Sliding Sync) still get the established MSC3401 compatibility
+            // membership and LiveKit call path; modern MatrixRTC membership and
+            // per-member key exchange are enabled only when the server supports it.
+            let sticky_supported = client.supports_sticky_events().await.unwrap_or(false)
+                && client.available_sliding_sync_versions().await.iter()
+                    .any(|version| matches!(version, Version::Native));
+
+            let mut modern_membership: Option<serde_json::Value> = None;
+            let mut member_id: Option<String> = None;
+
+            if sticky_supported {
+                let slot = room.get_state_event(
+                    matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room"
+                ).await.map_err(|error| format!("Could not check the MatrixRTC room-call slot: {error}"))?;
+                let slot_content = match slot {
+                    Some(matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState::Sync(raw)) =>
+                        serde_json::from_str::<serde_json::Value>(raw.json().get()).ok().and_then(|v| v.get("content").cloned()),
+                    Some(matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState::Stripped(raw)) =>
+                        serde_json::from_str::<serde_json::Value>(raw.json().get()).ok().and_then(|v| v.get("content").cloned()),
+                    None => None,
+                };
+                if let Some(content) = slot_content {
+                    let status = content["status"].as_str().unwrap_or("");
+                    let application = content["application"]["type"].as_str().unwrap_or("");
+                    let encryption_type = content["encryption"]["type"].as_str().unwrap_or("");
+                    if status != "open" { return Err("The MatrixRTC room-call slot exists but is not open; ask an administrator to open it".into()); }
+                    if application != "m.call" { return Err("The MatrixRTC room-call slot has an incompatible application type".into()); }
+                    if encrypted && encryption_type != "m.per_member" { return Err("The encrypted room-call slot does not enable m.per_member encryption".into()); }
+                    if !encrypted && encryption_type == "m.per_member" { return Err("The room-call slot requires per-member encryption, but this room is not encrypted".into()); }
+                } else {
+                    let mut content = serde_json::json!({
+                        "status": "open", "application": { "type": "m.call" }
+                    });
+                    if encrypted { content["encryption"] = serde_json::json!({ "type": "m.per_member" }); }
+                    room.send_state_event_raw("m.rtc.slot", "m.call#room", content)
+                        .await.map_err(|error| format!("Could not create the MatrixRTC room-call slot; Astro may lack permission to send m.rtc.slot state events: {error}"))?;
+                    eprintln!("ASTRO RTC: created m.call#room slot");
+                }
+
+                let (livekit_url, _jwt) = fetch_rtc_livekit_credentials(&client, &room, &livekit_service_url).await?;
+                let id = rtc_random_member_id()?;
+                let content = serde_json::json!({
+                    "slot_id": "m.call#room",
+                    "member": { "id": id, "membership": "join" },
+                    "application": { "type": "m.call" },
+                    "transports": {
+                        "published": [{ "type": "m.livekit", "url": livekit_url }],
+                        "can_subscribe": ["m.livekit"]
+                    },
+                    "sticky_key": id
+                });
+                room.send_raw("m.rtc.member", content.clone())
+                    .with_sticky_duration(Duration::from_secs(60 * 60)).await
+                    .map_err(|error| format!("Could not publish modern MatrixRTC membership: {error}"))?;
+                member_id = Some(id);
+                modern_membership = Some(content);
+            } else {
+                eprintln!("ASTRO RTC: MSC4354/native Sliding Sync unavailable; using legacy-compatible call membership only");
+            }
 
             let state_key = rtc_membership_state_key(&room, &user_id, &device_id);
 
@@ -2650,19 +2660,26 @@ impl MatrixClientManager {
                 eprintln!("ASTRO RTC CALL: no other joined room members to notify");
             }
 
-            Ok::<(String, String, String, serde_json::Value, bool), String>((state_key, livekit_service_url, member_id, modern_membership, encrypted))
+            Ok::<(String, String, Option<String>, Option<serde_json::Value>, bool), String>((state_key, livekit_service_url, member_id, modern_membership, encrypted))
         });
 
         let (state_key, livekit_service_url, member_id, modern_membership, encrypted) = result?;
         self.rtc_local_memberships.insert(room_id.to_owned(), state_key.clone());
-        self.rtc_modern_memberships.insert(room_id.to_owned(), (member_id, modern_membership.clone()));
-        if let Ok(mut renewals) = self.rtc_modern_renewals.lock() { renewals.insert(room_id.to_owned(), modern_membership); }
+        if let (Some(member_id), Some(modern_membership)) = (member_id, modern_membership) {
+            self.rtc_modern_memberships.insert(room_id.to_owned(), (member_id.clone(), modern_membership.clone()));
+            if let Ok(mut renewals) = self.rtc_modern_renewals.lock() {
+                renewals.insert(room_id.to_owned(), modern_membership);
+            }
+        }
         self.rtc_livekit_services.insert(
             room_id.to_owned(),
             livekit_service_url,
         );
 
-        if encrypted {
+        if encrypted && self.rtc_modern_memberships.contains_key(room_id) {
+            let member_id = self.rtc_modern_memberships.get(room_id)
+                .map(|(member_id, _)| member_id.clone())
+                .ok_or_else(|| "Modern MatrixRTC membership disappeared before E2EE startup".to_string())?;
             let client = self.client.as_ref()
                 .ok_or_else(|| "No active Matrix session".to_string())?
                 .clone();
