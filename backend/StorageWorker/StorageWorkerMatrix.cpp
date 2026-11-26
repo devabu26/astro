@@ -1019,6 +1019,38 @@ void StorageWorker::sendRoomMessage(
 }
 
 
+void StorageWorker::declineRtcCall(const QString &roomId, const QString &eventId)
+{
+    if (!m_matrixClient || roomId.isEmpty() || eventId.isEmpty()) {
+        emit matrixRtcActionFinished(
+            roomId,
+            !m_matrixClient
+                ? QStringLiteral("No active Matrix session")
+                : QStringLiteral("Room ID or call event ID is empty")
+        );
+        return;
+    }
+
+    const QByteArray roomIdBytes = roomId.toUtf8();
+    const QByteArray eventIdBytes = eventId.toUtf8();
+    char *error = nullptr;
+    const int32_t result = astro_matrix_decline_rtc_call(
+        m_matrixClient, roomIdBytes.constData(),
+        eventIdBytes.constData(), &error
+    );
+
+    QString errorMessage;
+    if (error) {
+        errorMessage = QString::fromUtf8(error);
+        astro_string_free(error);
+    }
+    if (result < 0 && errorMessage.isEmpty())
+        errorMessage = QStringLiteral("Could not decline call");
+
+    emit matrixRtcActionFinished(roomId, errorMessage);
+}
+
+
 void StorageWorker::joinRtcRoom(const QString &roomId)
 {
     if (!m_matrixClient || roomId.isEmpty()) {
