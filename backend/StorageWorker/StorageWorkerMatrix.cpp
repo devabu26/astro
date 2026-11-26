@@ -9,6 +9,7 @@
 #include <QAbstractVideoBuffer>
 #include <QVideoFrame>
 #include <QCameraInfo>
+#include <QCameraViewfinderSettings>
 #include <QImage>
 #include <QVideoSurfaceFormat>
 #include <QOpenGLContext>
@@ -1922,8 +1923,11 @@ void StorageWorker::startRtcBackgroundCamera(
                 selectedDeviceId = selected.deviceName();
                 m_rtcCamera = new QCamera(selected, this);
                 m_rtcCamera->setCaptureMode(QCamera::CaptureVideo);
-                m_rtcCamera->setViewfinder(m_rtcVideoSurface);
 
+                // Load first so the camera backend can report its real
+                // viewfinder capabilities. Starting with the backend's
+                // default format can select a GL-backed surface that this
+                // CPU-only RTC surface deliberately refuses.
                 m_rtcBackgroundCameraStartPending = true;
                 m_rtcBackgroundCameraPendingRoomId = roomId;
                 m_rtcBackgroundCameraPendingDeviceId = selectedDeviceId;
@@ -1941,6 +1945,126 @@ void StorageWorker::startRtcBackgroundCamera(
                         qInfo() << "RTC background camera status:"
                                 << static_cast<int>(status)
                                 << "available:" << m_rtcCamera->isAvailable();
+
+                        if (status == QCamera::LoadedStatus) {
+                            if (!m_rtcVideoSurface ||
+                                m_rtcVideoRoomId != roomId) {
+                                const QString message = QStringLiteral(
+                                    "The RTC video surface is no longer available"
+                                );
+                                m_rtcBackgroundCameraStartPending = false;
+                                m_rtcBackgroundCameraPendingRoomId.clear();
+                                m_rtcBackgroundCameraPendingDeviceId.clear();
+                                emit matrixRtcBackgroundCameraActionFinished(
+                                    roomId, false, QString(), message
+                                );
+                                stopRtcBackgroundCamera(roomId);
+                                return;
+                            }
+
+                            const QList<QVideoFrame::PixelFormat> surfaceFormats =
+                                m_rtcVideoSurface->supportedPixelFormats(
+                                    QAbstractVideoBuffer::NoHandle
+                                );
+                            const QList<QCameraViewfinderSettings> cameraSettings =
+                                m_rtcCamera->supportedViewfinderSettings();
+
+                            // Prefer formats already handled efficiently by
+                            // RtcCameraVideoSurface, then the packed RGB
+                            // format observed from the working foreground
+                            // camera. The camera's own settings list is
+                            // already ordered by backend preference.
+                            const QList<QVideoFrame::PixelFormat> formatPriority = {
+                                QVideoFrame::Format_YUV420P,
+                                QVideoFrame::Format_NV12,
+                                QVideoFrame::Format_YV12,
+                                QVideoFrame::Format_NV21,
+                                QVideoFrame::Format_YUYV,
+                                QVideoFrame::Format_UYVY,
+                                QVideoFrame::Format_ARGB32_Premultiplied,
+                                QVideoFrame::Format_ARGB32,
+                                QVideoFrame::Format_RGB32,
+                                QVideoFrame::Format_RGB24
+                            };
+
+                            QCameraViewfinderSettings selectedSettings;
+                            bool foundCompatibleSettings = false;
+
+                            qInfo() << "ASTRO_BACKGROUND_CAMERA: viewfinder capabilities"
+                                    << "cameraSettings:" << cameraSettings.size()
+                                    << "surfaceCpuFormats:" << surfaceFormats;
+
+                            for (QVideoFrame::PixelFormat preferredFormat : formatPriority) {
+                                if (!surfaceFormats.contains(preferredFormat))
+                                    continue;
+
+                                for (const QCameraViewfinderSettings &candidate : cameraSettings) {
+                                    if (candidate.pixelFormat() != preferredFormat)
+                                        continue;
+
+                                    const QSize resolution = candidate.resolution();
+                                    if (!resolution.isEmpty() &&
+                                        ((resolution.width() & 1) ||
+                                         (resolution.height() & 1))) {
+                                        continue;
+                                    }
+
+                                    selectedSettings = candidate;
+                                    foundCompatibleSettings = true;
+                                    break;
+                                }
+
+                                if (foundCompatibleSettings)
+                                    break;
+                            }
+
+                            if (!foundCompatibleSettings) {
+                                QStringList cameraFormats;
+                                for (const QCameraViewfinderSettings &candidate : cameraSettings) {
+                                    cameraFormats.append(
+                                        QStringLiteral("%1x%2:%3@%4-%5")
+                                            .arg(candidate.resolution().width())
+                                            .arg(candidate.resolution().height())
+                                            .arg(static_cast<int>(candidate.pixelFormat()))
+                                            .arg(candidate.minimumFrameRate())
+                                            .arg(candidate.maximumFrameRate())
+                                    );
+                                }
+
+                                const QString message = QStringLiteral(
+                                    "The native camera has no viewfinder format compatible with the CPU video surface"
+                                );
+                                qWarning() << "ASTRO_BACKGROUND_CAMERA: no compatible viewfinder format"
+                                           << "cameraFormats:" << cameraFormats
+                                           << "surfaceFormats:" << surfaceFormats;
+
+                                m_rtcBackgroundCameraStartPending = false;
+                                m_rtcBackgroundCameraPendingRoomId.clear();
+                                m_rtcBackgroundCameraPendingDeviceId.clear();
+                                emit matrixRtcBackgroundCameraActionFinished(
+                                    roomId, false, QString(), message
+                                );
+                                stopRtcBackgroundCamera(roomId);
+                                return;
+                            }
+
+                            m_rtcCamera->setViewfinderSettings(selectedSettings);
+                            m_rtcCamera->setViewfinder(m_rtcVideoSurface);
+
+                            qInfo() << "ASTRO_BACKGROUND_CAMERA: selected CPU viewfinder format"
+                                    << "pixelFormat:"
+                                    << static_cast<int>(selectedSettings.pixelFormat())
+                                    << "resolution:" << selectedSettings.resolution()
+                                    << "minimumFps:" << selectedSettings.minimumFrameRate()
+                                    << "maximumFps:" << selectedSettings.maximumFrameRate()
+                                    << "device:" << m_rtcBackgroundCameraPendingDeviceId;
+
+                            qInfo() << "ASTRO_BACKGROUND_CAMERA: starting camera with negotiated viewfinder settings"
+                                    << "device:" << m_rtcBackgroundCameraPendingDeviceId
+                                    << "thread:" << QThread::currentThreadId();
+                            m_rtcCamera->start();
+                            return;
+                        }
 
                         if (status == QCamera::ActiveStatus) {
                             const bool surfaceAccepted =
@@ -2024,14 +2148,12 @@ void StorageWorker::startRtcBackgroundCamera(
                     Qt::QueuedConnection
                 );
 
-                qInfo() << "ASTRO_BACKGROUND_CAMERA: calling QCamera::start"
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: loading native camera before format negotiation"
                         << "statusBefore:" << static_cast<int>(m_rtcCamera->status())
-                        << "stateBefore:" << static_cast<int>(m_rtcCamera->state())
-                        << "errorBefore:" << static_cast<int>(m_rtcCamera->error())
                         << "device:" << selectedDeviceId
                         << "thread:" << QThread::currentThreadId();
-                m_rtcCamera->start();
-                qInfo() << "ASTRO_BACKGROUND_CAMERA: QCamera::start returned"
+                m_rtcCamera->load();
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: QCamera::load returned"
                         << "statusAfter:" << static_cast<int>(m_rtcCamera->status())
                         << "stateAfter:" << static_cast<int>(m_rtcCamera->state())
                         << "errorAfter:" << static_cast<int>(m_rtcCamera->error())
