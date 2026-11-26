@@ -542,12 +542,24 @@ Item {
             if (running) {
                 root.nativeBackgroundCameraDeviceId = deviceId || ""
             }
+
             if (error && error.length > 0) {
                 root.actionError = error
                 console.warn(
                     "ASTRO_BACKGROUND_CAMERA: native capture transition failed:",
                     error
                 )
+
+                // A failed start/timeout is not proof that QCamera has released
+                // the device. The worker unloads it asynchronously; request
+                ///confirm that unload and only restart the QML camera after
+                // the subsequent error-free stopped notification.
+                if (root.applicationActive &&
+                        root.videoStarted &&
+                        root.waitingForForegroundCamera) {
+                    root.backend.stopRtcBackgroundCamera(root.roomId)
+                }
+                return
             }
 
             if (running && root.applicationActive) {
@@ -565,6 +577,9 @@ Item {
                 }
                 root.nativeBackgroundCameraDeviceId = ""
                 root.waitingForForegroundCamera = false
+                console.info(
+                    "ASTRO_BACKGROUND_CAMERA: native device fully released; restarting QML camera"
+                )
                 localCamera.start()
             }
         }
