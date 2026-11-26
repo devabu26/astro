@@ -627,8 +627,11 @@ async fn publish_local_key(
     }
 
     if recipients.is_empty() {
+        eprintln!("ASTRO RTC E2EE: no eligible cross-signed sticky members to receive the current media key");
         return false;
     }
+    let recipient_count: usize = recipients.values().map(Vec::len).sum();
+    eprintln!("ASTRO RTC E2EE: sending stable media key to {recipient_count} sticky member device(s)");
 
     let content = serde_json::json!({
         "room_id": room.room_id().as_str(),
@@ -915,8 +918,11 @@ async fn publish_local_key_legacy(
     }
 
     if recipients.is_empty() {
+        eprintln!("ASTRO RTC E2EE legacy: no eligible cross-signed MSC3401 members to receive the current media key");
         return false;
     }
+    let recipient_count: usize = recipients.values().map(Vec::len).sum();
+    eprintln!("ASTRO RTC E2EE legacy: sending compatibility media key to {recipient_count} legacy member device(s)");
 
     let own_device = match client.device_id() {
         Some(device_id) => device_id.to_string(),
