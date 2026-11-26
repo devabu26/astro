@@ -2529,44 +2529,6 @@ void StorageWorker::pollRtcScreenShareStop()
             << "error:" << errorMessage;
     emit matrixRtcScreenShareActionFinished(roomId, errorMessage);
 }
-void StorageWorker::pollRtcScreenShareStop()
-{
-    if (m_rtcScreenShareStopPendingRoomId.isEmpty() || !m_matrixClient) {
-        if (m_rtcScreenShareStopPollTimer)
-            m_rtcScreenShareStopPollTimer->stop();
-        m_rtcScreenShareStopPendingRoomId.clear();
-        return;
-    }
-
-    const QString roomId = m_rtcScreenShareStopPendingRoomId;
-    const QByteArray roomIdBytes = roomId.toUtf8();
-    char *error = nullptr;
-    const int32_t result = astro_matrix_poll_rtc_screenshare_stop(
-        m_matrixClient, roomIdBytes.constData(), &error
-    );
-
-    QString errorMessage;
-    if (error) {
-        errorMessage = QString::fromUtf8(error);
-        astro_string_free(error);
-    }
-
-    if (result > 0)
-        return;
-
-    if (m_rtcScreenShareStopPollTimer)
-        m_rtcScreenShareStopPollTimer->stop();
-    m_rtcScreenShareStopPendingRoomId.clear();
-
-    if (result < 0 && errorMessage.isEmpty())
-        errorMessage = QStringLiteral("Could not finish LiveKit screen-share teardown");
-
-    qInfo() << "ASTRO_SCREEN_SHARE_STOP: asynchronous unpublish completed"
-            << "result:" << result
-            << "error:" << errorMessage;
-    emit matrixRtcScreenShareActionFinished(roomId, errorMessage);
-}
-
 bool StorageWorker::startRtcScreenShareAudioCapture(
     const QString &roomId,
     QString *error
