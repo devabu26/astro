@@ -1429,12 +1429,7 @@ impl MatrixClientManager {
 
                         let sticky_enabled = client.supports_sticky_events().await.unwrap_or(false);
                         if !sticky_enabled {
-                            eprintln!("ASTRO RTC: homeserver does not advertise MSC4354 sticky-event support");
-                            tokio::select! {
-                                _ = &mut cancel_rx => return,
-                                _ = tokio::time::sleep(Duration::from_secs(30)) => {}
-                            }
-                            continue;
+                            eprintln!("ASTRO RTC: MSC4354 unavailable; continuing native Sliding Sync for legacy call membership");
                         }
 
                         let builder = match client.sliding_sync("astro-rtc-compat") {
@@ -1452,13 +1447,18 @@ impl MatrixClientManager {
                             }
                         };
 
-                        let sliding_sync = match builder
-                            .with_sticky_events_extension({
+                        let builder = if sticky_enabled {
+                            builder.with_sticky_events_extension({
                                 let mut sticky_events =
                                     matrix_sdk::ruma::api::client::sync::sync_events::v5::request::StickyEvents::default();
                                 sticky_events.enabled = Some(true);
                                 sticky_events
                             })
+                        } else {
+                            builder
+                        };
+
+                        let sliding_sync = match builder
                             .version(Version::Native)
                             .build()
                             .await
@@ -2497,6 +2497,8 @@ impl MatrixClientManager {
 
             let encrypted = room.latest_encryption_state().await
                 .map_err(|error| format!("Could not determine room encryption state: {error}"))?.is_encrypted();
+
+            let livekit_service_url = discover_livekit_service_url(&client).await?;
 
             // MSC4354 is optional. Homeservers without sticky events (or native
             // Sliding Sync) still get the established MSC3401 compatibility
