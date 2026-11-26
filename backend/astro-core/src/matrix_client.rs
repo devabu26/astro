@@ -2900,12 +2900,13 @@ impl MatrixClientManager {
             source.capture_frame(&frame)
         };
 
-        if !captured {
-            return Err(format!(
-                "LiveKit rejected camera frame {}x{} (source {}x{})",
-                width, height, source_resolution.width, source_resolution.height
-            ));
-        }
+        // Like the screen-share source below, LiveKit may return false
+        // when its video adapter drops a frame during frame-rate or
+        // resolution adaptation. This is not a malformed I420 buffer:
+        // dimensions, packed plane sizes and source resolution were
+        // validated above. A dropped frame must not be surfaced as a
+        // camera-capture failure.
+        let _frame_forwarded = captured;
 
         Ok(())
     }
