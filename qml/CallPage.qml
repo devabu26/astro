@@ -845,16 +845,9 @@ Item {
                     MouseArea {
                         anchors.fill: parent
                         onClicked: {
-                            if (root.pendingOperation.length > 0)
-                                return
-
-                            if (root.callActive ||
-                                root.membershipJoined ||
-                                root.videoStarted) {
-                                root.hangUp()
-                            } else {
-                                root.backRequested()
-                            }
+                            // Navigation must never end an active call.
+                            // Only the explicit Leave button invokes hangUp().
+                            root.backRequested()
                         }
                     }
                 }
