@@ -1650,6 +1650,17 @@ Item {
                             visible: !remoteVideo.hasFrame &&
                                      !remoteScreenVideo.hasFrame
 
+                            // Give a lone participant a proper call-stage
+                            // portrait instead of the small multi-party avatar.
+                            // Keep it proportional on different device sizes.
+                            property real avatarSize:
+                                root.participants.length === 1
+                                ? Math.min(
+                                      Math.min(parent.width, parent.height) * 0.44,
+                                      units.gu(32)
+                                  )
+                                : units.gu(8)
+
                             property string participantIdentity:
                                 String(modelData.identity || "")
                             property string participantMxc:
@@ -1669,8 +1680,8 @@ Item {
 
                             Rectangle {
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: units.gu(8)
-                                height: units.gu(8)
+                                width: parent.avatarSize
+                                height: parent.avatarSize
                                 radius: width / 2
                                 color: "#426b8a"
                                 clip: true
@@ -1684,7 +1695,7 @@ Item {
                                             )
                                         )
                                     color: "white"
-                                    font.pixelSize: units.gu(3)
+                                    font.pixelSize: parent.parent.avatarSize * 0.38
                                     font.bold: true
                                     visible: !participantAvatarImage.visible
                                 }
