@@ -2074,6 +2074,50 @@ void StorageWorker::startRtcBackgroundCamera(
                                             static_cast<QAbstractVideoSurface *>(nullptr)
                                         );
                                         probeCamera->setViewfinder(probeSurface);
+
+                                        // setViewfinder() may negotiate the
+                                        // GL surface asynchronously. Confirm
+                                        // acceptance before declaring startup
+                                        // failed or reporting the camera ready.
+                                        QTimer::singleShot(500, this,
+                                            [this, roomId, probeCamera, probeSurface]() {
+                                                if (m_rtcCamera != probeCamera ||
+                                                    m_rtcVideoSurface != probeSurface ||
+                                                    m_rtcVideoRoomId != roomId ||
+                                                    !m_rtcBackgroundCameraStartPending) {
+                                                    return;
+                                                }
+
+                                                if (probeSurface->hasAcceptedFormat() &&
+                                                    probeCamera->status() == QCamera::ActiveStatus) {
+                                                    const QString activeDevice =
+                                                        m_rtcBackgroundCameraPendingDeviceId;
+                                                    m_rtcBackgroundCameraStartPending = false;
+                                                    m_rtcBackgroundCameraPendingRoomId.clear();
+                                                    m_rtcBackgroundCameraPendingDeviceId.clear();
+                                                    qInfo() << "ASTRO_BACKGROUND_CAMERA: GL fallback surface accepted"
+                                                            << "device:" << activeDevice;
+                                                    emit matrixRtcBackgroundCameraActionFinished(
+                                                        roomId, true, activeDevice, QString()
+                                                    );
+                                                } else {
+                                                    qWarning() << "ASTRO_BACKGROUND_CAMERA: GL fallback"
+                                                               << "surface was not accepted"
+                                                               << "cameraStatus:"
+                                                               << static_cast<int>(probeCamera->status())
+                                                               << "surfaceActive:"
+                                                               << probeSurface->isActive();
+                                                    m_rtcBackgroundCameraStartPending = false;
+                                                    m_rtcBackgroundCameraPendingRoomId.clear();
+                                                    m_rtcBackgroundCameraPendingDeviceId.clear();
+                                                    emit matrixRtcBackgroundCameraActionFinished(
+                                                        roomId, false, QString(),
+                                                        QStringLiteral("The native camera rejected both CPU and GL viewfinder formats")
+                                                    );
+                                                    stopRtcBackgroundCamera(roomId);
+                                                }
+                                            }
+                                        );
                                     }
                                 );
 
@@ -2179,27 +2223,21 @@ void StorageWorker::startRtcBackgroundCamera(
                                     << (m_rtcVideoSurface &&
                                         m_rtcVideoSurface->isActive());
 
+                            if (!surfaceAccepted) {
+                                // The CPU-first probe intentionally declines
+                                // the GL format. Keep startup pending so its
+                                // timed GL fallback can renegotiate the active
+                                // camera instead of unloading it immediately.
+                                qWarning() << "ASTRO_BACKGROUND_CAMERA: camera is active"
+                                           << "but CPU probe has not accepted a surface;"
+                                           << "waiting for GL fallback"
+                                           << "device:" << activeDevice;
+                                return;
+                            }
+
                             m_rtcBackgroundCameraStartPending = false;
                             m_rtcBackgroundCameraPendingRoomId.clear();
                             m_rtcBackgroundCameraPendingDeviceId.clear();
-
-                            if (!surfaceAccepted) {
-                                const QString message = QStringLiteral(
-                                    "The camera became active, but its video surface rejected the format"
-                                );
-                                qWarning() << "RTC native camera cannot provide CPU-backed frames:"
-                                           << activeDevice;
-                                emit matrixRtcBackgroundCameraActionFinished(
-                                    roomId, false, QString(), message
-                                );
-
-                                // ActiveStatus only confirms that the device
-                                // opened. It does not prove that Qt accepted
-                                // the viewfinder format. Release it through
-                                // the normal asynchronous unload path.
-                                stopRtcBackgroundCamera(roomId);
-                                return;
-                            }
 
                             qInfo() << "RTC native background camera is active:"
                                     << activeDevice;
