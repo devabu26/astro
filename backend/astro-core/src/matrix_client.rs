@@ -25,7 +25,8 @@ use matrix_sdk::{
     config::SyncSettings, ruma::room::RoomType, store::RoomLoadSettings, Client, LoopCtrl,
     Room, RoomMemberships, SqliteStoreConfig, TransmissionProgress,
 };
-use livekit::prelude::{LocalAudioTrack, LocalVideoTrack, LocalTrack, PlatformAudio, RemoteTrack, Room as LiveKitRoom, RoomEvent, RoomOptions, TrackPublishOptions, TrackSource};
+use livekit::prelude::{LocalAudioTrack, LocalVideoTrack, LocalTrack, PlatformAudio, RemoteTrack, Room as LiveKitRoom, RoomEvent, RoomOptions, TrackSource};
+use livekit::options::TrackPublishOptions;
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
@@ -1447,12 +1448,12 @@ impl MatrixClientManager {
                         };
 
                         let sliding_sync = match builder
-                            .with_sticky_events_extension(
-                                matrix_sdk::ruma::api::client::sync::sync_events::v5::request::StickyEvents {
-                                    enabled: Some(true),
-                                    ..Default::default()
-                                }
-                            )
+                            .with_sticky_events_extension({
+                                let mut sticky_events =
+                                    matrix_sdk::ruma::api::client::sync::sync_events::v5::request::StickyEvents::default();
+                                sticky_events.enabled = Some(true);
+                                sticky_events
+                            })
                             .version(Version::Native)
                             .build()
                             .await
