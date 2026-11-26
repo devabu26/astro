@@ -257,13 +257,14 @@ bool rgbaFrameToI420(
     return true;
 }
 
-QByteArray transformI420Frame(
+bool transformI420Frame(
     const QByteArray &source,
     int sourceWidth,
     int sourceHeight,
     int targetWidth,
     int targetHeight,
-    bool rotate270
+    bool rotate270,
+    QByteArray &output
 )
 {
     if (sourceWidth < 2 || sourceHeight < 2 ||
@@ -271,13 +272,14 @@ QByteArray transformI420Frame(
         (sourceWidth & 1) || (sourceHeight & 1) ||
         (targetWidth & 1) || (targetHeight & 1) ||
         source.size() != sourceWidth * sourceHeight * 3 / 2) {
-        return QByteArray();
+        return false;
     }
 
     if (!rotate270 &&
         sourceWidth == targetWidth &&
         sourceHeight == targetHeight) {
-        return source;
+        output = source;
+        return true;
     }
 
     const int rotatedWidth = rotate270 ? sourceHeight : sourceWidth;
@@ -304,10 +306,12 @@ QByteArray transformI420Frame(
     const int targetYSize = targetWidth * targetHeight;
     const int targetChromaSize = targetYSize / 4;
 
-    QByteArray output(
-        targetYSize + targetChromaSize * 2,
-        Qt::Uninitialized
-    );
+    const int outputSize = targetYSize + targetChromaSize * 2;
+    // Reuse the surface-owned destination while dimensions stay constant.
+    // The pending-frame gate prevents another conversion until the queued
+    // submission has finished consuming its implicitly-shared snapshot.
+    if (output.size() != outputSize)
+        output.resize(outputSize);
 
     const uchar *sourceY =
         reinterpret_cast<const uchar *>(source.constData());
@@ -383,7 +387,7 @@ QByteArray transformI420Frame(
         cropX / 2, cropY / 2, cropWidth / 2, cropHeight / 2
     );
 
-    return output;
+    return true;
 }
 
 }
@@ -1441,8 +1445,10 @@ public:
 
         const int ySize = width * height;
         const int chromaSize = ySize / 4;
-        QByteArray i420(ySize + chromaSize * 2, Qt::Uninitialized);
-        uchar *yOut = reinterpret_cast<uchar *>(i420.data());
+        const int i420Size = ySize + chromaSize * 2;
+        if (m_i420Input.size() != i420Size)
+            m_i420Input.resize(i420Size);
+        uchar *yOut = reinterpret_cast<uchar *>(m_i420Input.data());
         uchar *uOut = yOut + ySize;
         uchar *vOut = uOut + chromaSize;
         bool converted = false;
@@ -1677,18 +1683,22 @@ public:
         const bool rotate270 =
             (width > height && m_targetWidth < m_targetHeight) ||
             (width < height && m_targetWidth > m_targetHeight);
-        const QByteArray outputFrame = transformI420Frame(
-            i420,
-            width,
-            height,
-            m_targetWidth,
-            m_targetHeight,
-            rotate270
-        );
-        if (outputFrame.isEmpty()) {
+        if (!transformI420Frame(
+                m_i420Input,
+                width,
+                height,
+                m_targetWidth,
+                m_targetHeight,
+                rotate270,
+                m_i420Output)) {
             m_pending->storeRelease(0);
             return false;
         }
+
+        // QByteArray's implicit sharing gives the queued worker a stable
+        // snapshot. The pending gate prevents this surface from writing the
+        // reusable storage again until pushRtcVideoFrame() has returned.
+        const QByteArray outputFrame = m_i420Output;
 
         if (m_loggedFirstFrame.testAndSetOrdered(0, 1)) {
             qInfo() << "RTC camera submitted first I420 frame:"
@@ -1730,6 +1740,11 @@ private:
     int m_targetWidth = 360;
     int m_targetHeight = 480;
     QSharedPointer<QAtomicInt> m_pending;
+    // Reuse conversion storage across camera frames. These buffers are only
+    // touched while m_pending is clear, and the queued submission owns a
+    // shared snapshot of the transformed output until FFI submission ends.
+    QByteArray m_i420Input;
+    QByteArray m_i420Output;
     QAtomicInt m_surfaceStarted{0};
     QAtomicInt m_loggedFrameCount{0};
     QAtomicInt m_loggedInvalidFrame{0};
