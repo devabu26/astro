@@ -278,7 +278,10 @@ bool transformI420Frame(
     if (!rotate270 &&
         sourceWidth == targetWidth &&
         sourceHeight == targetHeight) {
-        output = source;
+        if (output.size() != source.size())
+            output.resize(source.size());
+        std::memcpy(output.data(), source.constData(),
+                    static_cast<size_t>(source.size()));
         return true;
     }
 
