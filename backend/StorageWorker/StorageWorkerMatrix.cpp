@@ -2,6 +2,7 @@
 #include "StorageWorker.h"
 
 #include <QMutexLocker>
+#include <thread>
 #include <QDebug>
 #include <QAbstractVideoSurface>
 #include <QAbstractVideoBuffer>
@@ -2089,7 +2090,8 @@ void StorageWorker::startRtcScreenShare(
             << "matrixClient:" << (m_matrixClient != nullptr)
             << "roomIdEmpty:" << roomId.isEmpty()
             << "size:" << width << "x" << height;
-    if (!m_rtcScreenShareStopPendingRoomId.isEmpty()) {
+    if (!m_rtcScreenShareStopPendingRoomId.isEmpty() ||
+        !m_rtcMirReleasePendingRoomId.isEmpty()) {
         emit matrixRtcScreenShareActionFinished(
             roomId,
             QStringLiteral("Screen-share teardown is still in progress")
@@ -2390,8 +2392,12 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
             << "captureActive:" << (m_rtcScreenShareTimer != nullptr)
             << "mirCastActive:" << (m_rtcScreenCast != nullptr);
 
-    if (!m_rtcScreenShareStopPendingRoomId.isEmpty()) {
-        if (m_rtcScreenShareStopPendingRoomId == roomId)
+    if (!m_rtcScreenShareStopPendingRoomId.isEmpty() ||
+        !m_rtcMirReleasePendingRoomId.isEmpty()) {
+        const QString pendingRoom = !m_rtcMirReleasePendingRoomId.isEmpty()
+            ? m_rtcMirReleasePendingRoomId
+            : m_rtcScreenShareStopPendingRoomId;
+        if (pendingRoom == roomId)
             return;
         emit matrixRtcScreenShareActionFinished(
             roomId,
@@ -2417,10 +2423,57 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
         return;
     }
 
-    qInfo() << "ASTRO_SCREEN_SHARE_STOP: releasing local capture";
-    stopRtcScreenShareCapture();
-    qInfo() << "ASTRO_SCREEN_SHARE_STOP: local capture released";
-    beginRtcScreenShareUnpublish(roomId, QString());
+    // Stop the frame and audio producers on this worker first. The Mir
+    // screencast release can wait on compositor IPC, so perform that release
+    // on a detached cleanup thread and let the worker event loop keep running.
+    if (m_rtcScreenShareAudioInput) {
+        m_rtcScreenShareAudioInput->stop();
+        m_rtcScreenShareAudioInput->deleteLater();
+        m_rtcScreenShareAudioInput = nullptr;
+    }
+    m_rtcScreenShareAudioDevice = nullptr;
+    m_rtcScreenShareAudioBuffer.clear();
+    m_rtcScreenShareAudioRoomId.clear();
+
+    if (m_rtcScreenShareTimer) {
+        m_rtcScreenShareTimer->stop();
+        m_rtcScreenShareTimer->deleteLater();
+        m_rtcScreenShareTimer = nullptr;
+    }
+
+    MirScreencast *screencast = m_rtcScreenCast;
+    MirConnection *connection = m_rtcScreenShareConnection;
+    m_rtcScreenCast = nullptr;
+    m_rtcScreenShareConnection = nullptr;
+    m_rtcScreenShareStream = nullptr;
+    m_rtcScreenShareRoomId.clear();
+    m_rtcScreenShareWidth = 0;
+    m_rtcScreenShareHeight = 0;
+    m_rtcScreenShareLastFrame.clear();
+    m_rtcScreenShareLastFrameSent.invalidate();
+    m_rtcScreenShareStartPending = false;
+
+    if (!screencast && !connection) {
+        beginRtcScreenShareUnpublish(roomId, QString());
+        return;
+    }
+
+    m_rtcMirReleasePendingRoomId = roomId;
+    m_rtcMirReleasePendingError.clear();
+    m_rtcMirReleaseComplete = std::make_shared<std::atomic_bool>(false);
+    const auto releaseComplete = m_rtcMirReleaseComplete;
+
+    qInfo() << "ASTRO_SCREEN_SHARE_STOP: starting non-blocking Mir release";
+    std::thread([screencast, connection, releaseComplete]() {
+        if (screencast)
+            mir_screencast_release_sync(screencast);
+        if (connection)
+            mir_connection_release(connection);
+        releaseComplete->store(true, std::memory_order_release);
+    }).detach();
+
+    if (m_rtcScreenShareStopPollTimer)
+        m_rtcScreenShareStopPollTimer->start();
 }
 
 void StorageWorker::beginRtcScreenShareUnpublish(
@@ -2487,6 +2540,22 @@ void StorageWorker::beginRtcScreenShareUnpublish(
 
 void StorageWorker::pollRtcScreenShareStop()
 {
+    if (!m_rtcMirReleasePendingRoomId.isEmpty()) {
+        if (m_rtcMirReleaseComplete &&
+            !m_rtcMirReleaseComplete->load(std::memory_order_acquire))
+            return;
+
+        const QString roomId = m_rtcMirReleasePendingRoomId;
+        const QString releaseError = m_rtcMirReleasePendingError;
+        m_rtcMirReleasePendingRoomId.clear();
+        m_rtcMirReleasePendingError.clear();
+        m_rtcMirReleaseComplete.reset();
+
+        qInfo() << "ASTRO_SCREEN_SHARE_STOP: Mir release completed; starting LiveKit unpublish";
+        beginRtcScreenShareUnpublish(roomId, releaseError);
+        return;
+    }
+
     if (m_rtcScreenShareStopPendingRoomId.isEmpty() || !m_matrixClient) {
         if (m_rtcScreenShareStopPollTimer)
             m_rtcScreenShareStopPollTimer->stop();
