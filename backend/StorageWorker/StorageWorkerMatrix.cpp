@@ -1139,16 +1139,19 @@ public:
         qInfo() << "RTC supportedPixelFormats requested handle:"
         << static_cast<int>(type);
         
+        // Ubuntu Touch's camera backend can deliver GL-backed RGB32 frames.
+        // Advertise that format explicitly so QCamera can negotiate the
+        // GLTextureHandle path; rejecting this handle type leaves the native
+        // background camera with no compatible viewfinder surface.
         if (type == QAbstractVideoBuffer::GLTextureHandle)
-            return {};
+            return { QVideoFrame::Format_RGB32 };
 
         if (type != QAbstractVideoBuffer::NoHandle)
             return {};
 
         qInfo() << "RTC supportedPixelFormats returning CPU formats";
 
-        // Camera backends on Ubuntu Touch commonly negotiate YUV420P,
-        // YV12 or NV12 rather than the RGB formats used by desktop cameras.
+        // Camera backends may also negotiate CPU-backed YUV/RGB formats.
         return {
             QVideoFrame::Format_RGB32,
             QVideoFrame::Format_ARGB32,
@@ -1221,12 +1224,23 @@ public:
         QImage glFrameImage;
 
         if (glTextureFrame) {
-            if (!readGlCameraFrame(frame, &glFrameImage)) {
+            // GL texture handles cannot be read with QVideoFrame::map().
+            // Activate the worker's context shared with Qt Quick before
+            // attaching the camera texture to a readback framebuffer.
+            const bool contextCurrent =
+                m_worker && m_worker->makeRtcCameraOpenGLContextCurrent();
+            const bool readOk = contextCurrent &&
+                readGlCameraFrame(frame, &glFrameImage);
+            if (contextCurrent)
+                m_worker->releaseRtcCameraOpenGLContext();
+
+            if (!readOk) {
                 if (m_loggedMapFailure.testAndSetOrdered(0, 1)) {
                     qWarning() << "RTC camera could not read GL texture frame:"
                                << width << "x" << height
                                << "format:" << format
-                               << "texture:" << frame.handle();
+                               << "texture:" << frame.handle()
+                               << "worker GL context current:" << contextCurrent;
                 }
                 return false;
             }
