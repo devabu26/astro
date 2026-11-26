@@ -395,6 +395,13 @@ fn legacy_livekit_identity(client: &Client) -> Result<String, String> {
     Ok(format!("{user_id}:{device_id}"))
 }
 
+fn restart_local_key_activation_delay(local_key: &Arc<Mutex<MediaKey>>) {
+    if let Ok(mut key) = local_key.lock() {
+        // MSC4143's grace period starts after key delivery, not key creation.
+        key.activate_at = Instant::now() + RTC_KEY_ACTIVATION_DELAY;
+    }
+}
+
 fn rotate_local_key(local_key: &Arc<Mutex<MediaKey>>) {
     let mut bytes = [0u8; RTC_KEY_BYTES];
     if let Err(error) = getrandom::getrandom(&mut bytes) {
@@ -516,14 +523,18 @@ async fn publish_local_key(
         }
     };
 
-    match client
+    let delivery = client
         .send_encrypted_to_device(
             &ToDeviceEventType::from(RTC_KEY_EVENT),
             recipients,
             raw,
         )
-        .await
-    {
+        .await;
+    if delivery.is_ok() {
+        restart_local_key_activation_delay(local_key);
+    }
+
+    match delivery {
         Ok(failures) if failures.is_empty() => {
             eprintln!("ASTRO RTC E2EE: distributed media key index {} to active verified participants", key.index);
             true
@@ -812,11 +823,16 @@ async fn publish_local_key_legacy(
             return false;
         }
     };
-    match client.send_encrypted_to_device(
+    let delivery = client.send_encrypted_to_device(
         &ToDeviceEventType::from(LEGACY_RTC_KEY_EVENT),
         recipients,
         raw,
-    ).await {
+    ).await;
+    if delivery.is_ok() {
+        restart_local_key_activation_delay(local_key);
+    }
+
+    match delivery {
         Ok(failures) if failures.is_empty() => {
             eprintln!("ASTRO RTC E2EE legacy: distributed key index {} to verified legacy members", key.index);
             true
