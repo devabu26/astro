@@ -122,6 +122,7 @@ public:
     Q_INVOKABLE void requestOlderRoomTimeline(const QString &roomId);
     Q_INVOKABLE void markRoomAsRead(const QString &roomId);
     Q_INVOKABLE void sendRoomMessage(const QString &roomId, const QString &message);
+    Q_INVOKABLE void declineRtcCall(const QString &roomId, const QString &eventId);
     Q_INVOKABLE void joinRtcRoom(const QString &roomId);
     Q_INVOKABLE void leaveRtcRoom(const QString &roomId);
     Q_INVOKABLE void startRtcAudio(const QString &roomId);
@@ -427,6 +428,7 @@ signals:
     void requestPaginateRoomTimeline(const QString &roomId);
     void requestMarkRoomAsRead(const QString &roomId);
     void requestSendRoomMessage(const QString &roomId, const QString &message);
+    void requestDeclineRtcCall(const QString &roomId, const QString &eventId);
     void requestJoinRtcRoom(const QString &roomId);
     void requestLeaveRtcRoom(const QString &roomId);
     void requestStartRtcAudio(const QString &roomId);
