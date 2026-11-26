@@ -798,8 +798,8 @@ async fn publish_local_key_legacy(
     let content = serde_json::json!({
         "room_id": room.room_id().as_str(),
         "member_id": member_id,
-        "media_key": media_key,
-        "keys": media_key.clone(),
+        "media_key": media_key.clone(),
+        "keys": media_key,
         "member": {
             "id": member_id,
             "claimed_device_id": own_device
