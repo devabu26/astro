@@ -18,6 +18,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <cstring>
+#if defined(__aarch64__) || defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 #include <algorithm>
 #include <cmath>
 
@@ -33,6 +36,47 @@
 #include <QDebug>
 
 namespace {
+
+#if defined(__aarch64__) || defined(__ARM_NEON)
+static inline void rgbaToYRowNeon(
+    const uchar *source,
+    uchar *destination,
+    int width
+)
+{
+    int x = 0;
+    for (; x + 16 <= width; x += 16) {
+        const uint8x16x4_t rgba = vld4q_u8(source + x * 4);
+
+        uint16x8_t yLow = vmull_n_u8(vget_low_u8(rgba.val[0]), 66);
+        yLow = vmlal_n_u8(yLow, vget_low_u8(rgba.val[1]), 129);
+        yLow = vmlal_n_u8(yLow, vget_low_u8(rgba.val[2]), 25);
+        yLow = vaddq_u16(yLow, vdupq_n_u16(128));
+        yLow = vshrq_n_u16(yLow, 8);
+        yLow = vaddq_u16(yLow, vdupq_n_u16(16));
+
+        uint16x8_t yHigh = vmull_n_u8(vget_high_u8(rgba.val[0]), 66);
+        yHigh = vmlal_n_u8(yHigh, vget_high_u8(rgba.val[1]), 129);
+        yHigh = vmlal_n_u8(yHigh, vget_high_u8(rgba.val[2]), 25);
+        yHigh = vaddq_u16(yHigh, vdupq_n_u16(128));
+        yHigh = vshrq_n_u16(yHigh, 8);
+        yHigh = vaddq_u16(yHigh, vdupq_n_u16(16));
+
+        const uint8x8_t low = vqmovun_s16(vreinterpretq_s16_u16(yLow));
+        const uint8x8_t high = vqmovun_s16(vreinterpretq_s16_u16(yHigh));
+        vst1q_u8(destination + x, vcombine_u8(low, high));
+    }
+
+    for (; x < width; ++x) {
+        const int r = source[x * 4];
+        const int g = source[x * 4 + 1];
+        const int b = source[x * 4 + 2];
+        destination[x] = static_cast<uchar>(
+            qBound(0, ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16, 255)
+        );
+    }
+}
+#endif
 
 QByteArray rgbaFrameToI420(
     const QByteArray &rgba,
@@ -67,42 +111,39 @@ QByteArray rgbaFrameToI420(
         return static_cast<uchar>(qBound(0, value, 255));
     };
 
+    // Luma is independent per pixel and accounts for two thirds of the
+    // output samples. Use ARM NEON on Ubuntu Touch ARM64, retaining the
+    // scalar path for other architectures and row tails.
+    for (int row = 0; row < height; ++row) {
+        const uchar *sourceRow = image.constScanLine(row);
+#if defined(__aarch64__) || defined(__ARM_NEON)
+        rgbaToYRowNeon(sourceRow, yOut + row * width, width);
+#else
+        for (int col = 0; col < width; ++col) {
+            const uchar *pixel = sourceRow + col * 4;
+            yOut[row * width + col] = clamp(
+                ((66 * pixel[0] + 129 * pixel[1] + 25 * pixel[2] + 128) >> 8) + 16
+            );
+        }
+#endif
+    }
+
+    // Chroma is sampled once per 2x2 block using the same four-pixel
+    // average as the original converter, preserving its colour output.
     for (int row = 0; row < height; row += 2) {
         const uchar *row0 = image.constScanLine(row);
         const uchar *row1 = image.constScanLine(row + 1);
 
         for (int col = 0; col < width; col += 2) {
-            const uchar *pixels[4] = {
-                row0 + col * 4,
-                row0 + (col + 1) * 4,
-                row1 + col * 4,
-                row1 + (col + 1) * 4
-            };
+            const uchar *p00 = row0 + col * 4;
+            const uchar *p01 = p00 + 4;
+            const uchar *p10 = row1 + col * 4;
+            const uchar *p11 = p10 + 4;
 
-            int rSum = 0;
-            int gSum = 0;
-            int bSum = 0;
-
-            for (int p = 0; p < 4; ++p) {
-                const int r = pixels[p][0];
-                const int g = pixels[p][1];
-                const int b = pixels[p][2];
-                rSum += r;
-                gSum += g;
-                bSum += b;
-
-                const int index =
-                    (row + p / 2) * width + col + p % 2;
-                yOut[index] = clamp(
-                    ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16
-                );
-            }
-
-            const int r = (rSum + 2) / 4;
-            const int g = (gSum + 2) / 4;
-            const int b = (bSum + 2) / 4;
-            const int chromaIndex =
-                (row / 2) * (width / 2) + col / 2;
+            const int r = (p00[0] + p01[0] + p10[0] + p11[0] + 2) / 4;
+            const int g = (p00[1] + p01[1] + p10[1] + p11[1] + 2) / 4;
+            const int b = (p00[2] + p01[2] + p10[2] + p11[2] + 2) / 4;
+            const int chromaIndex = (row / 2) * (width / 2) + col / 2;
 
             uOut[chromaIndex] = clamp(
                 ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128
@@ -2506,16 +2547,22 @@ void StorageWorker::captureRtcScreenShareFrame()
         return;
     }
 
-    QByteArray rgba(frameBytes, Qt::Uninitialized);
+    // Keep the previous-frame snapshot as the staging buffer. This avoids
+    // allocating and copying a second full RGBA frame on every changed tick.
+    if (m_rtcScreenShareLastFrame.size() != frameBytes)
+        m_rtcScreenShareLastFrame.resize(frameBytes);
+
     for (int row = 0; row < height; ++row) {
         const int sourceRow = height - 1 - row;
-        std::memcpy(rgba.data() + row * width * 4,
+        std::memcpy(m_rtcScreenShareLastFrame.data() + row * width * 4,
                     region.vaddr + sourceRow * region.stride,
                     static_cast<size_t>(width * 4));
     }
     mir_buffer_stream_swap_buffers_sync(m_rtcScreenShareStream);
 
-    const QByteArray i420 = rgbaFrameToI420(rgba, width, height);
+    const QByteArray i420 = rgbaFrameToI420(
+        m_rtcScreenShareLastFrame, width, height
+    );
     const QByteArray roomBytes = roomId.toUtf8();
     if (i420.isEmpty()) {
         stopRtcScreenShareCapture();
@@ -2545,7 +2592,6 @@ void StorageWorker::captureRtcScreenShareFrame()
         return;
     }
 
-    m_rtcScreenShareLastFrame = rgba;
     m_rtcScreenShareLastFrameSent.restart();
 
     if (m_rtcScreenShareStartPending) {
