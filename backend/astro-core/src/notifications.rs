@@ -153,6 +153,7 @@ pub fn register_notification_handler(client: &Client, queue: NotificationQueue) 
 /// Register a global handler for MSC4075 incoming-call notifications.
 /// Only live ring events explicitly mentioning this account are surfaced.
 pub fn register_incoming_call_handler(client: &Client, queue: NotificationQueue) {
+    let decline_queue = queue.clone();
     client.add_event_handler(
         // Use the catch-all message-like event type and filter by variant.
         // matrix-sdk 0.19.1's typed handler dispatch matches the canonical
@@ -232,7 +233,7 @@ pub fn register_incoming_call_handler(client: &Client, queue: NotificationQueue)
     // its LiveKit session and withdraw its MatrixRTC membership.
     client.add_event_handler(
         move |event: AnySyncMessageLikeEvent, room: Room| {
-            let queue = queue.clone();
+            let queue = decline_queue.clone();
 
             async move {
                 let AnySyncMessageLikeEvent::RtcDecline(
