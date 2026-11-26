@@ -78,6 +78,7 @@ impl RtcE2eeSession {
         }));
         let received_keys = Arc::new(Mutex::new(BTreeMap::new()));
         let local_livekit_identity = legacy_livekit_identity(&client)?;
+        let task_legacy_member_id = local_livekit_identity.clone();
 
         let task_local_key = Arc::clone(&local_key);
         let task_received_keys = Arc::clone(&received_keys);
@@ -124,7 +125,7 @@ impl RtcE2eeSession {
                 legacy_key_distributed = publish_local_key_legacy(
                     &task_client,
                     &task_room,
-                    &local_member_id,
+                    &task_legacy_member_id,
                     &task_local_key,
                     &members,
                 ).await;
@@ -174,7 +175,7 @@ impl RtcE2eeSession {
                             legacy_key_distributed = publish_local_key_legacy(
                                 &task_client,
                                 &task_room,
-                                &local_member_id,
+                                &task_legacy_member_id,
                                 &task_local_key,
                                 &members,
                             ).await;
@@ -203,7 +204,7 @@ impl RtcE2eeSession {
                             legacy_key_distributed = publish_local_key_legacy(
                                 &task_client,
                                 &task_room,
-                                &local_member_id,
+                                &task_legacy_member_id,
                                 &task_local_key,
                                 &members,
                             ).await;
@@ -246,7 +247,7 @@ impl RtcE2eeSession {
                         legacy_key_distributed = publish_local_key_legacy(
                             &task_client,
                             &task_room,
-                            &local_member_id,
+                            &task_legacy_member_id,
                             &task_local_key,
                             &members,
                         ).await;
@@ -289,7 +290,7 @@ impl RtcE2eeSession {
                             legacy_key_distributed = publish_local_key_legacy(
                                 &task_client,
                                 &task_room,
-                                &local_member_id,
+                                &task_legacy_member_id,
                                 &task_local_key,
                                 &members,
                             ).await;
