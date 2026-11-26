@@ -13,6 +13,7 @@ Item {
     property string roomId: ""
     property string roomName: ""
     property bool directCall: false
+    property bool incomingCall: false
     property var audioState: ({})
     // Authoritative MatrixRTC membership state shared with the room view.
     property var membershipState: ({})
@@ -273,7 +274,7 @@ Item {
         // Ringback belongs to the outgoing call attempt, not to the later
         // LiveKit audio-start callback. Start it before joining so the caller
         // hears feedback while MatrixRTC and LiveKit are connecting.
-        if (directCall) {
+        if (directCall && !incomingCall) {
             startRingback()
         }
 
