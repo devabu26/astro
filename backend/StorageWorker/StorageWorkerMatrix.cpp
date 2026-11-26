@@ -2464,13 +2464,26 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
     const auto releaseComplete = m_rtcMirReleaseComplete;
 
     qInfo() << "ASTRO_SCREEN_SHARE_STOP: starting non-blocking Mir release";
-    std::thread([screencast, connection, releaseComplete]() {
+    try {
+        std::thread([screencast, connection, releaseComplete]() {
+            if (screencast)
+                mir_screencast_release_sync(screencast);
+            if (connection)
+                mir_connection_release(connection);
+            releaseComplete->store(true, std::memory_order_release);
+        }).detach();
+    } catch (const std::exception &exception) {
+        // Preserve resource cleanup if the process cannot create another
+        // thread. This is an exceptional fallback; normal teardown remains
+        // non-blocking.
+        qWarning() << "ASTRO_SCREEN_SHARE_STOP: could not create Mir cleanup thread:"
+                   << exception.what();
         if (screencast)
             mir_screencast_release_sync(screencast);
         if (connection)
             mir_connection_release(connection);
         releaseComplete->store(true, std::memory_order_release);
-    }).detach();
+    }
 
     if (m_rtcScreenShareStopPollTimer)
         m_rtcScreenShareStopPollTimer->start();
