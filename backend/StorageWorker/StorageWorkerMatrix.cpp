@@ -44,20 +44,24 @@ static inline void rgbaToYRowNeon(
     int width
 )
 {
+    const uint8x8_t coeffR = vdup_n_u8(66);
+    const uint8x8_t coeffG = vdup_n_u8(129);
+    const uint8x8_t coeffB = vdup_n_u8(25);
+
     int x = 0;
     for (; x + 16 <= width; x += 16) {
         const uint8x16x4_t rgba = vld4q_u8(source + x * 4);
 
-        uint16x8_t yLow = vmull_n_u8(vget_low_u8(rgba.val[0]), 66);
-        yLow = vmlal_n_u8(yLow, vget_low_u8(rgba.val[1]), 129);
-        yLow = vmlal_n_u8(yLow, vget_low_u8(rgba.val[2]), 25);
+        uint16x8_t yLow = vmull_u8(vget_low_u8(rgba.val[0]), coeffR);
+        yLow = vmlal_u8(yLow, vget_low_u8(rgba.val[1]), coeffG);
+        yLow = vmlal_u8(yLow, vget_low_u8(rgba.val[2]), coeffB);
         yLow = vaddq_u16(yLow, vdupq_n_u16(128));
         yLow = vshrq_n_u16(yLow, 8);
         yLow = vaddq_u16(yLow, vdupq_n_u16(16));
 
-        uint16x8_t yHigh = vmull_n_u8(vget_high_u8(rgba.val[0]), 66);
-        yHigh = vmlal_n_u8(yHigh, vget_high_u8(rgba.val[1]), 129);
-        yHigh = vmlal_n_u8(yHigh, vget_high_u8(rgba.val[2]), 25);
+        uint16x8_t yHigh = vmull_u8(vget_high_u8(rgba.val[0]), coeffR);
+        yHigh = vmlal_u8(yHigh, vget_high_u8(rgba.val[1]), coeffG);
+        yHigh = vmlal_u8(yHigh, vget_high_u8(rgba.val[2]), coeffB);
         yHigh = vaddq_u16(yHigh, vdupq_n_u16(128));
         yHigh = vshrq_n_u16(yHigh, 8);
         yHigh = vaddq_u16(yHigh, vdupq_n_u16(16));
