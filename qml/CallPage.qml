@@ -880,10 +880,6 @@ Item {
                 }
             }
 
-            if (operation === "stopScreenShare" ||
-                operation === "stopScreenShareForHangup") {
-
-            }
         }
 
         onMatrixRtcAudioEventsUpdated: {
