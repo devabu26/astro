@@ -422,13 +422,10 @@ fn rotate_local_key(local_key: &Arc<Mutex<MediaKey>>) {
     }
 }
 
-fn is_verified(info: &matrix_sdk::deserialized_responses::EncryptionInfo) -> bool {
-    matches!(
-        info.verification_state,
-        matrix_sdk::deserialized_responses::VerificationState::Verified
-    )
-}
-
+// MSC4143 / MSC4153 require the sending device to be cross-signed by
+// its owner. Do not additionally require it to be verified by the local user:
+// that is a stronger trust relationship and would prevent ordinary room
+// participants from exchanging media keys.
 async fn device_is_cross_signed(
     client: &Client,
     user_id: &OwnedUserId,
@@ -480,9 +477,7 @@ async fn publish_local_key(
             // Encrypted rooms require authenticated member events.
             continue;
         };
-        if !is_verified(info)
-            || value.get("sender").and_then(Value::as_str) != Some(info.sender.as_str())
-        {
+        if value.get("sender").and_then(Value::as_str) != Some(info.sender.as_str()) {
             continue;
         }
 
@@ -557,10 +552,10 @@ async fn publish_local_key(
 }
 
 fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMediaKey> {
+    // Olm metadata authenticates the to-device sender. The associated
+    // membership is checked later, including the MSC4153 owner-cross-signing
+    // requirement, once its sticky event is available.
     let info = message.encryption_info?;
-    if !is_verified(&info) {
-        return None;
-    }
 
     let value: Value = serde_json::from_str(message.raw.json().get()).ok()?;
     let event_type = value.get("type").and_then(Value::as_str)?;
@@ -648,8 +643,7 @@ async fn try_store_received_key(
         }
 
         let Some(info) = event.encryption_info() else { continue };
-        if !is_verified(info)
-            || info.sender != candidate.sender
+        if info.sender != candidate.sender
             || info.sender_device.as_ref() != Some(&candidate.sender_device)
             || value.get("sender").and_then(Value::as_str) != Some(candidate.sender.as_str())
         {
