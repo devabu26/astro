@@ -494,6 +494,9 @@ private:
     QOffscreenSurface *m_rtcCameraOffscreenSurface = nullptr;
     QMutex m_rtcCameraFrameMutex;
     QCamera *m_rtcCamera = nullptr;
+    bool m_rtcBackgroundCameraStartPending = false;
+    QString m_rtcBackgroundCameraPendingRoomId;
+    QString m_rtcBackgroundCameraPendingDeviceId;
     RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
     QString m_rtcVideoRoomId;
     int m_rtcVideoWidth = 0;
