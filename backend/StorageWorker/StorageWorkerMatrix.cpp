@@ -2954,7 +2954,8 @@ void StorageWorker::captureRtcScreenShareFrame()
 
     stageClock.restart();
     const bool converted = mirRgbaFrameToI420AndCopy(
-        region.vaddr, static_cast<int>(region.stride), width, height,
+        reinterpret_cast<const uchar *>(region.vaddr),
+        static_cast<int>(region.stride), width, height,
         m_rtcScreenShareLastFrame,
         planeY, static_cast<int>(strideY),
         planeU, static_cast<int>(strideU),
