@@ -2838,7 +2838,6 @@ void StorageWorker::stopRtcScreenShare(const QString &roomId)
             << "elapsedMs:" << releaseTimer.elapsed();
 
     beginRtcScreenShareUnpublish(roomId, QString());
-    beginRtcScreenShareUnpublish(roomId, m_rtcMirReleasePendingError);
 }
 
 void StorageWorker::beginRtcScreenShareUnpublish(
