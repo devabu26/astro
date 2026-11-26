@@ -1355,37 +1355,43 @@ public:
             return true;
 
         QVideoFrame mapped(frame);
+        bool glContextCurrent = false;
 
         if (glTextureFrame) {
             // QtUbuntu's camera buffer owns the GL/EGL details. Let its
             // QAbstractVideoBuffer::map() implementation perform the
             // platform-specific GL texture readback instead of assuming
             // frame.handle() contains a usable GLuint.
-            const bool contextCurrent =
+            glContextCurrent =
                 m_worker && m_worker->makeRtcCameraOpenGLContextCurrent();
-            const bool mapOk = contextCurrent &&
+            const bool mapOk = glContextCurrent &&
                 mapped.map(QAbstractVideoBuffer::ReadOnly);
-            if (contextCurrent)
-                m_worker->releaseRtcCameraOpenGLContext();
 
             if (!mapOk) {
+                if (glContextCurrent)
+                    m_worker->releaseRtcCameraOpenGLContext();
                 if (m_loggedMapFailure.testAndSetOrdered(0, 1)) {
                     qWarning() << "RTC camera could not map GL-backed frame:"
                                << width << "x" << height
                                << "format:" << format
                                << "handle:" << frame.handle()
                                << "planes:" << frame.planeCount()
-                               << "worker GL context current:" << contextCurrent;
+                               << "worker GL context current:" << glContextCurrent;
                 }
                 // Keep the surface active so a later camera frame can recover.
                 return true;
             }
 
+            // Keep the shared context current until mapped.unmap() below.
+            // QtUbuntu's GL-backed buffer may need that context to release
+            // the mapped EGL/GL resources; releasing it immediately after
+            // map() leaves the unmap operation running without its context.
             if (m_loggedMapFailure.testAndSetOrdered(0, 1)) {
                 qInfo() << "RTC camera mapped GL-backed frame:"
                         << "planes:" << mapped.planeCount()
                         << "bytes:" << mapped.mappedBytes()
-                        << "stride:" << mapped.bytesPerLine(0);
+                        << "stride:" << mapped.bytesPerLine(0)
+                        << "keeping GL context current through unmap";
             }
         } else if (!mapped.map(QAbstractVideoBuffer::ReadOnly)) {
             if (m_loggedMapFailure.testAndSetOrdered(0, 1))
@@ -1400,6 +1406,8 @@ public:
         if (!m_pending->testAndSetOrdered(0, 1)) {
             if (mapped.isMapped())
                 mapped.unmap();
+            if (glContextCurrent)
+                m_worker->releaseRtcCameraOpenGLContext();
             return true;
         }
 
@@ -1619,6 +1627,8 @@ public:
 
         if (mapped.isMapped())
             mapped.unmap();
+        if (glContextCurrent)
+            m_worker->releaseRtcCameraOpenGLContext();
 
         if (!converted) {
             if (m_loggedUnsupportedFormat.testAndSetOrdered(0, 1)) {
