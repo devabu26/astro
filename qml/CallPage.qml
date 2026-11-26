@@ -305,7 +305,10 @@ Item {
             "waitedMs:", screenShareStopDrainElapsedMs,
             "cameraGrabPending:", cameraFrameGrabPending
         )
-        backend.stopRtcScreenShare(screenShareStopRoomId)
+        backend.stopRtcScreenShareAfterSceneGraph(
+            Window.window,
+            screenShareStopRoomId
+        )
     }
 
     function beginScreenShare(includeDeviceAudio) {
