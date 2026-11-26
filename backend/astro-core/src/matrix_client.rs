@@ -931,6 +931,33 @@ impl MatrixClientManager {
             let joined_rooms = client.joined_rooms();
             let mut room_entries = Vec::with_capacity(joined_rooms.len());
 
+            // Compute authoritative top-level Space activity from every
+            // joined descendant room. A Space room itself often has no
+            // message timestamp, so sorting its own latest-event value is
+            // insufficient.
+            let mut top_level_space_activity: HashMap<String, u64> = HashMap::new();
+            for joined_room in &joined_rooms {
+                let timestamp = joined_room
+                    .latest_event_timestamp()
+                    .map(|value| value.get())
+                    .unwrap_or(0);
+
+                if timestamp == 0 {
+                    continue;
+                }
+
+                let ancestors = space_service
+                    .top_level_ancestors_of(joined_room.room_id())
+                    .await;
+
+                for space_id in ancestors {
+                    let entry = top_level_space_activity
+                        .entry(space_id.to_string())
+                        .or_insert(0);
+                    *entry = (*entry).max(timestamp);
+                }
+            }
+
             for room in joined_rooms {
                 let info = room.clone_info();
                 let room_id = room.room_id().to_string();
@@ -993,6 +1020,10 @@ impl MatrixClientManager {
                     "unread_count": room.unread_notification_counts().notification_count,
                     "mention_count": room.unread_notification_counts().highlight_count,
                     "last_activity": room.latest_event_timestamp().map(|timestamp| timestamp.get()),
+                    "space_last_activity": top_level_space_activity
+                        .get(&room_id)
+                        .copied()
+                        .unwrap_or(0),
                     "parent_space_ids": parents
                 }));
             }
