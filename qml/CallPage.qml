@@ -552,7 +552,7 @@ Item {
 
                 // A failed start/timeout is not proof that QCamera has released
                 // the device. The worker unloads it asynchronously; request
-                ///confirm that unload and only restart the QML camera after
+                // Confirm that unload completed before restarting the QML camera
                 // the subsequent error-free stopped notification.
                 if (root.applicationActive &&
                         root.videoStarted &&
