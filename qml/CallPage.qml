@@ -34,6 +34,9 @@ Item {
     property bool screenShareChoiceVisible: false
     property bool screenShareAudioRequested: false
     property bool cameraFrameGrabPending: false
+    property bool screenShareStopDispatched: false
+    property int screenShareStopDrainElapsedMs: 0
+    property string screenShareStopRoomId: ""
     property bool applicationActive: Qt.application.state === Qt.ApplicationActive
     property bool waitingForForegroundCamera: false
     property bool nativeBackgroundCameraRunning: false
@@ -259,17 +262,41 @@ Item {
         if (screenShareStarted) {
             pendingOperation = "stopScreenShare"
 
-            // Reflect the local stop immediately. Mir release and LiveKit
-            // unpublish are asynchronous; keeping the button in its active
-            // state until both finish makes the control appear unresponsive.
+            // Reflect the local stop immediately. Before releasing Mir's
+            // screencast buffers, let an outstanding Qt Quick camera
+            // grabToImage() finish (or time out below). This avoids tearing
+            // down graphics resources while the scenegraph is reading back
+            // the local camera preview.
+            screenShareStopRoomId = roomId
+            screenShareStopDispatched = false
+            screenShareStopDrainElapsedMs = 0
             screenShareStarted = false
             screenShareAudioRequested = false
             screenShareRoomId = ""
 
-            backend.stopRtcScreenShare(roomId)
+            if (cameraFrameGrabPending)
+                screenShareStopDrainTimer.start()
+            else
+                dispatchScreenShareStop()
         } else {
             screenShareChoiceVisible = true
         }
+    }
+
+    function dispatchScreenShareStop() {
+        if (screenShareStopDispatched ||
+                pendingOperation !== "stopScreenShare" ||
+                !backend || !screenShareStopRoomId)
+            return
+
+        screenShareStopDispatched = true
+        screenShareStopDrainTimer.stop()
+        console.info(
+            "ASTRO_SCREEN_SHARE_DIAG: dispatching stop after camera grab drain",
+            "waitedMs:", screenShareStopDrainElapsedMs,
+            "cameraGrabPending:", cameraFrameGrabPending
+        )
+        backend.stopRtcScreenShare(screenShareStopRoomId)
     }
 
     function beginScreenShare(includeDeviceAudio) {
@@ -450,7 +477,8 @@ Item {
         running: root.videoStarted &&
                  root.applicationActive &&
                  !root.waitingForForegroundCamera &&
-                 !root.nativeBackgroundCameraRunning
+                 !root.nativeBackgroundCameraRunning &&
+                 root.pendingOperation !== "stopScreenShare"
 
         onTriggered: {
             if (!root.applicationActive ||
@@ -463,16 +491,39 @@ Item {
             root.cameraFrameGrabPending = true
             var accepted = localCameraPreview.grabToImage(function(result) {
                 root.cameraFrameGrabPending = false
-                if (result && root.videoStarted && root.backend) {
+                if (result && root.videoStarted && root.backend &&
+                        root.pendingOperation !== "stopScreenShare") {
                     root.backend.processRtcCameraImage(
                         root.roomId,
                         result.image
                     )
                 }
+
+                // The readback has now released its scenegraph resources;
+                // begin screencast teardown without waiting for another tick.
+                if (root.pendingOperation === "stopScreenShare" &&
+                        !root.screenShareStopDispatched) {
+                    root.dispatchScreenShareStop()
+                }
             }, Qt.size(360, 480))
 
             if (!accepted) {
                 root.cameraFrameGrabPending = false
+            }
+        }
+    }
+
+    // Bound the wait for an in-flight camera readback. A missing callback
+    // must never leave the Stop action stuck indefinitely.
+    Timer {
+        id: screenShareStopDrainTimer
+        interval: 16
+        repeat: true
+        onTriggered: {
+            root.screenShareStopDrainElapsedMs += interval
+            if (!root.cameraFrameGrabPending ||
+                    root.screenShareStopDrainElapsedMs >= 200) {
+                root.dispatchScreenShareStop()
             }
         }
     }
@@ -722,6 +773,12 @@ Item {
 
             var operation = root.pendingOperation
             root.pendingOperation = ""
+            if (operation === "stopScreenShare" ||
+                    operation === "stopScreenShareForHangup") {
+                screenShareStopDrainTimer.stop()
+                root.screenShareStopRoomId = ""
+                root.screenShareStopDispatched = false
+            }
 
             if (error && error.length > 0) {
                 root.actionError = error
