@@ -11,6 +11,7 @@ Item {
 
     // Navigation controls supplied by ChatPage.
     property string filterMode: "all"
+    property string sortMode: "name"
     property string searchText: ""
 
     property var expandedSpaceIds: []
@@ -95,6 +96,48 @@ Item {
 
     function isExpanded(spaceId) {
         return expandedSpaceIds.indexOf(spaceId) !== -1
+    }
+
+    // Return room-model indexes in the selected order. Recent uses the
+    // Matrix SDK's latest-event timestamp; rooms without one sort last.
+    function sortedRoomIndexes(kind) {
+        var indexes = []
+
+        if (!root.roomsModel)
+            return indexes
+
+        for (var i = 0; i < root.roomsModel.count; i++) {
+            var room = root.roomsModel.get(i)
+
+            if (!kind || room.kind === kind)
+                indexes.push(i)
+        }
+
+        indexes.sort(function(leftIndex, rightIndex) {
+            var left = root.roomsModel.get(leftIndex)
+            var right = root.roomsModel.get(rightIndex)
+            var leftName = String(left.name || "").toLowerCase()
+            var rightName = String(right.name || "").toLowerCase()
+
+            if (root.sortMode === "recent") {
+                var leftTime = Number(left.lastActivity || 0)
+                var rightTime = Number(right.lastActivity || 0)
+
+                if (leftTime !== rightTime)
+                    return rightTime - leftTime
+            }
+
+            if (leftName < rightName)
+                return -1
+            if (leftName > rightName)
+                return 1
+
+            return String(left.roomId || "").localeCompare(
+                String(right.roomId || "")
+            )
+        })
+
+        return indexes
     }
 
     function findNavigationRow(roomId, rowType) {
@@ -219,6 +262,7 @@ Item {
             kind: room.kind,
             unreadCount: Number(room.unreadCount || 0),
             mentionCount: Number(room.mentionCount || 0),
+            lastActivity: Number(room.lastActivity || 0),
             depth: depth,
             expanded: false
         })
@@ -360,16 +404,19 @@ Item {
 
         // Add child Spaces and ordinary rooms.
 
-        for (var i = 0; i < root.roomsModel.count; i++) {
-            var child = root.roomsModel.get(i)
+        var childIndexes = sortedRoomIndexes()
+
+        for (var childPosition = 0; childPosition < childIndexes.length; childPosition++) {
+            var childIndex = childIndexes[childPosition]
+            var child = root.roomsModel.get(childIndex)
 
             if (!hasParent(child, spaceId))
                 continue
 
             if (child.kind === "space") {
-                appendSpace(i, depth + 1, nextAncestors)
+                appendSpace(childIndex, depth + 1, nextAncestors)
             } else if (child.kind === "room") {
-                appendRoom(i, depth + 1, "room")
+                appendRoom(childIndex, depth + 1, "room")
             }
         }
     }
@@ -400,7 +447,10 @@ Item {
 
             var resultCount = 0
 
-            for (i = 0; i < root.roomsModel.count; i++) {
+            var searchIndexes = sortedRoomIndexes()
+
+            for (var searchPosition = 0; searchPosition < searchIndexes.length; searchPosition++) {
+                i = searchIndexes[searchPosition]
                 room = root.roomsModel.get(i)
 
                 if (!roomMatchesSearch(room))
@@ -459,10 +509,11 @@ Item {
                 return
             }
 
-            for (i = 0; i < root.roomsModel.count; i++) {
+            var spaceIndexes = sortedRoomIndexes("space")
+            for (var spacePosition = 0; spacePosition < spaceIndexes.length; spacePosition++) {
+                i = spaceIndexes[spacePosition]
                 room = root.roomsModel.get(i)
-
-                if (room.kind === "space" && !hasJoinedParent(room))
+                if (!hasJoinedParent(room))
                     appendSpace(i, 0, [])
             }
 
@@ -481,11 +532,10 @@ Item {
                 return
             }
 
-            for (i = 0; i < root.roomsModel.count; i++) {
-                room = root.roomsModel.get(i)
-
-                if (room.kind === "dm")
-                    appendRoom(i, 0, "dm")
+            var directIndexes = sortedRoomIndexes("dm")
+            for (var directPosition = 0; directPosition < directIndexes.length; directPosition++) {
+                i = directIndexes[directPosition]
+                appendRoom(i, 0, "dm")
             }
 
             return
@@ -506,11 +556,10 @@ Item {
                 return
             }
 
-            for (i = 0; i < root.roomsModel.count; i++) {
-                room = root.roomsModel.get(i)
-
-                if (room.kind === "room")
-                    appendRoom(i, 0, "room")
+            var roomIndexes = sortedRoomIndexes("room")
+            for (var roomPosition = 0; roomPosition < roomIndexes.length; roomPosition++) {
+                i = roomIndexes[roomPosition]
+                appendRoom(i, 0, "room")
             }
 
             return
@@ -525,10 +574,11 @@ Item {
         if (spaceCount > 0) {
             appendSection("SPACES")
 
-            for (i = 0; i < root.roomsModel.count; i++) {
+            var topSpaceIndexes = sortedRoomIndexes("space")
+            for (var topSpacePosition = 0; topSpacePosition < topSpaceIndexes.length; topSpacePosition++) {
+                i = topSpaceIndexes[topSpacePosition]
                 room = root.roomsModel.get(i)
-
-                if (room.kind === "space" && !hasJoinedParent(room))
+                if (!hasJoinedParent(room))
                     appendSpace(i, 0, [])
             }
         }
@@ -536,10 +586,11 @@ Item {
         if (standaloneCount > 0) {
             appendSection("ROOMS")
 
-            for (i = 0; i < root.roomsModel.count; i++) {
+            var standaloneIndexes = sortedRoomIndexes("room")
+            for (var standalonePosition = 0; standalonePosition < standaloneIndexes.length; standalonePosition++) {
+                i = standaloneIndexes[standalonePosition]
                 room = root.roomsModel.get(i)
-
-                if (room.kind === "room" && !hasJoinedParent(room))
+                if (!hasJoinedParent(room))
                     appendRoom(i, 0, "room")
             }
         }
@@ -547,17 +598,17 @@ Item {
         if (dmCount > 0) {
             appendSection("DIRECT MESSAGES")
 
-            for (i = 0; i < root.roomsModel.count; i++) {
-                room = root.roomsModel.get(i)
-
-                if (room.kind === "dm")
-                    appendRoom(i, 0, "dm")
+            var allDirectIndexes = sortedRoomIndexes("dm")
+            for (var allDirectPosition = 0; allDirectPosition < allDirectIndexes.length; allDirectPosition++) {
+                i = allDirectIndexes[allDirectPosition]
+                appendRoom(i, 0, "dm")
             }
         }
     }
 
     onRoomsModelChanged: rebuild()
     onFilterModeChanged: rebuild()
+    onSortModeChanged: rebuild()
     onSearchTextChanged: rebuild()
 
     Component.onCompleted: rebuild()
