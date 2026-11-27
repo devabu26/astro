@@ -5,6 +5,8 @@
 #include <QByteArray>
 #include <QPointer>
 
+class QAbstractVideoSurface;
+
 class QThread;
 class QCamera;
 class QVideoFrame;
@@ -27,6 +29,12 @@ class Backend : public QObject
         NOTIFY applicationStateChanged
     )
     Q_PROPERTY(QObject *rtcCamera READ rtcCamera NOTIFY rtcCameraChanged)
+    Q_PROPERTY(
+        QAbstractVideoSurface *videoSurface
+        READ rtcCameraVideoSurface
+        WRITE setRtcCameraVideoSurface
+        NOTIFY rtcCameraVideoSurfaceChanged
+    )
 
 public:
     explicit Backend(QObject *parent = nullptr);
@@ -49,6 +57,8 @@ public:
     bool storageReady() const;
     int applicationState() const;
     QObject *rtcCamera() const;
+    QAbstractVideoSurface *rtcCameraVideoSurface() const;
+    void setRtcCameraVideoSurface(QAbstractVideoSurface *surface);
 
     // ---------------------------------------------------------
     // Encrypted storage operations
@@ -200,6 +210,7 @@ signals:
 
     void storageReadyChanged();
     void rtcCameraChanged();
+    void rtcCameraVideoSurfaceChanged();
     void storageStatusChanged(const QString &status);
     void secretServiceTestFinished(const QString &result);
     void dataDeleted();
@@ -563,6 +574,7 @@ private:
 
     // QCamera is owned and controlled on the GUI thread; VideoOutput is its sink.
     QPointer<QCamera> m_rtcCamera;
+    QPointer<QAbstractVideoSurface> m_rtcCameraVideoSurface;
     QString m_rtcCameraRoomId;
     quint64 m_rtcCameraGeneration = 0;
     bool m_rtcCameraUnloading = false;
