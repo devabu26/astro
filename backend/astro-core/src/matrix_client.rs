@@ -32,6 +32,7 @@ use livekit::e2ee::{
 };
 use livekit::prelude::ParticipantIdentity;
 use livekit::webrtc::audio_frame::AudioFrame;
+use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::video_stream::native::NativeVideoStream;
@@ -69,8 +70,18 @@ use crate::session_storage::{delete_session, load_session, save_session};
 static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const RTC_VIDEO_FRAME_QUEUE_LIMIT: usize = 12;
+const RTC_AUDIO_FRAME_QUEUE_LIMIT: usize = 200;
 const RTC_VIDEO_MAX_WIDTH: u32 = 1920;
 const RTC_VIDEO_MAX_HEIGHT: u32 = 1080;
+
+struct RtcRemoteAudioFrame {
+    key: String,
+    room_id: String,
+    identity: String,
+    sample_rate: u32,
+    channels: u32,
+    data: Vec<u8>,
+}
 
 struct RtcRemoteVideoFrame {
     key: String,
@@ -687,6 +698,8 @@ pub struct MatrixClientManager {
     rtc_pending_screenshare_stops: HashMap<String, Arc<Mutex<Option<Result<(), String>>>>>,
     rtc_remote_video_frames: Arc<Mutex<VecDeque<RtcRemoteVideoFrame>>>,
     rtc_remote_video_tasks: HashMap<String, tokio::task::AbortHandle>,
+    rtc_remote_audio_frames: Arc<Mutex<VecDeque<RtcRemoteAudioFrame>>>,
+    rtc_remote_audio_tasks: HashMap<String, tokio::task::AbortHandle>,
     rtc_participant_profiles: HashMap<(String, String), RtcParticipantProfile>,
     rtc_last_snapshots: HashMap<String, serde_json::Value>,
     rtc_local_memberships: HashMap<String, String>,
@@ -884,6 +897,8 @@ impl MatrixClientManager {
             rtc_pending_screenshare_stops: HashMap::new(),
             rtc_remote_video_frames: Arc::new(Mutex::new(VecDeque::new())),
             rtc_remote_video_tasks: HashMap::new(),
+            rtc_remote_audio_frames: Arc::new(Mutex::new(VecDeque::new())),
+            rtc_remote_audio_tasks: HashMap::new(),
             rtc_participant_profiles: HashMap::new(),
             rtc_last_snapshots: HashMap::new(),
             rtc_local_memberships: HashMap::new(),
@@ -3910,7 +3925,9 @@ impl MatrixClientManager {
         let mut updates = Vec::new();
         let runtime = Arc::clone(&self.runtime);
         let frame_queue = Arc::clone(&self.rtc_remote_video_frames);
+        let audio_frame_queue = Arc::clone(&self.rtc_remote_audio_frames);
         let mut tasks_to_add = Vec::new();
+        let mut audio_tasks_to_add = Vec::new();
         let mut cancelled_keys = HashSet::new();
         let mut cancelled_prefixes = HashSet::new();
 
@@ -4084,6 +4101,69 @@ impl MatrixClientManager {
                             muted = track.is_muted(),
                             "LiveKit remote track subscription succeeded"
                         );
+                        if let RemoteTrack::Audio(audio_track) = &track {
+                            let identity = participant.identity().to_string();
+                            let track_sid = audio_track.sid().to_string();
+                            let key = format!("{room_id}\\u{1f}{identity}\\u{1f}{track_sid}");
+                            tracing::info!(
+                                room_id = %room_id,
+                                participant = %identity,
+                                track_sid = %track_sid,
+                                source = ?audio_track.source(),
+                                muted = audio_track.is_muted(),
+                                "LiveKit remote audio track subscribed"
+                            );
+                            let task_key = key.clone();
+                            let task_room_id = room_id.clone();
+                            let task_identity = identity.clone();
+                            let mut stream = NativeAudioStream::new(audio_track.rtc_track(), 48_000, 2);
+                            let task_audio_queue = Arc::clone(&audio_frame_queue);
+                            let task = runtime.spawn(async move {
+                                let mut logged_first_frame = false;
+                                while let Some(frame) = stream.next().await {
+                                    if frame.data.is_empty()
+                                        || frame.num_channels == 0
+                                        || frame.sample_rate == 0
+                                    {
+                                        continue;
+                                    }
+                                    let mut pcm = Vec::with_capacity(frame.data.len() * 2);
+                                    for sample in frame.data.iter() {
+                                        pcm.extend_from_slice(&sample.to_le_bytes());
+                                    }
+                                    if !logged_first_frame {
+                                        tracing::info!(
+                                            room_id = %task_room_id,
+                                            participant = %task_identity,
+                                            sample_rate = frame.sample_rate,
+                                            channels = frame.num_channels,
+                                            samples = frame.samples_per_channel,
+                                            "First decoded LiveKit remote audio frame received"
+                                        );
+                                        logged_first_frame = true;
+                                    }
+                                    if let Ok(mut frames) = task_audio_queue.lock() {
+                                        if frames.len() >= RTC_AUDIO_FRAME_QUEUE_LIMIT {
+                                            frames.pop_front();
+                                        }
+                                        frames.push_back(RtcRemoteAudioFrame {
+                                            key: task_key.clone(),
+                                            room_id: task_room_id.clone(),
+                                            identity: task_identity.clone(),
+                                            sample_rate: frame.sample_rate,
+                                            channels: frame.num_channels,
+                                            data: pcm,
+                                        });
+                                    }
+                                }
+                                tracing::info!(
+                                    room_id = %task_room_id,
+                                    participant = %task_identity,
+                                    "LiveKit remote audio stream ended"
+                                );
+                            });
+                            audio_tasks_to_add.push((key, task.abort_handle()));
+                        }
                         if let RemoteTrack::Video(video_track) = track {
                             let track_source = match video_track.source() {
                                 TrackSource::Camera => Some("camera"),
@@ -4177,6 +4257,7 @@ impl MatrixClientManager {
                         }))
                     }
                     RoomEvent::TrackUnsubscribed { participant, track, .. } => {
+                        let is_audio = matches!(&track, RemoteTrack::Audio(_));
                         let track_source = match &track {
                             RemoteTrack::Video(video_track) => match video_track.source() {
                                 TrackSource::Camera => Some("camera"),
@@ -4187,20 +4268,23 @@ impl MatrixClientManager {
                         };
                         let is_camera = track_source == Some("camera");
                         let is_screenshare = track_source == Some("screenshare");
-
-                        if let RemoteTrack::Video(video_track) = track {
-                            let key = format!(
-                                "{room_id}\u{1f}{}\u{1f}{}",
-                                participant.identity(),
-                                video_track.sid()
-                            );
-                            cancelled_keys.insert(key);
-                        }
+                        let key = match &track {
+                            RemoteTrack::Audio(audio_track) => Some(format!(
+                                "{room_id}\\u{1f}{}\\u{1f}{}",
+                                participant.identity(), audio_track.sid()
+                            )),
+                            RemoteTrack::Video(video_track) => Some(format!(
+                                "{room_id}\\u{1f}{}\\u{1f}{}",
+                                participant.identity(), video_track.sid()
+                            )),
+                        };
+                        if let Some(key) = key { cancelled_keys.insert(key); }
                         Some(serde_json::json!({
                             "room_id": room_id,
                             "type": "track_unsubscribed",
                             "is_camera": is_camera,
                             "is_screenshare": is_screenshare,
+                            "is_audio": is_audio,
                             "identity": participant.identity().to_string(),
                             "name": participant.name()
                         }))
@@ -4246,6 +4330,11 @@ impl MatrixClientManager {
                 previous.abort();
             }
         }
+        for (key, task) in audio_tasks_to_add {
+            if let Some(previous) = self.rtc_remote_audio_tasks.insert(key, task) {
+                previous.abort();
+            }
+        }
 
         if !cancelled_keys.is_empty() || !cancelled_prefixes.is_empty() {
             let task_keys: Vec<String> = self.rtc_remote_video_tasks.keys()
@@ -4256,10 +4345,20 @@ impl MatrixClientManager {
                 .cloned()
                 .collect();
 
-            for key in task_keys {
-                if let Some(task) = self.rtc_remote_video_tasks.remove(&key) {
+            for key in &task_keys {
+                if let Some(task) = self.rtc_remote_video_tasks.remove(key) {
                     task.abort();
                 }
+                if let Some(task) = self.rtc_remote_audio_tasks.remove(key) {
+                    task.abort();
+                }
+            }
+
+            if let Ok(mut frames) = self.rtc_remote_audio_frames.lock() {
+                frames.retain(|frame| {
+                    !cancelled_keys.contains(&frame.key)
+                        && !cancelled_prefixes.iter().any(|prefix| frame.key.starts_with(prefix))
+                });
             }
 
             if let Ok(mut frames) = self.rtc_remote_video_frames.lock() {
@@ -4271,6 +4370,13 @@ impl MatrixClientManager {
         }
 
         serde_json::json!({ "events": updates }).to_string()
+    }
+
+    pub fn take_rtc_audio_frame(
+        &mut self,
+    ) -> Option<(String, String, u32, u32, Vec<u8>)> {
+        let frame = self.rtc_remote_audio_frames.lock().ok()?.pop_front()?;
+        Some((frame.room_id, frame.identity, frame.sample_rate, frame.channels, frame.data))
     }
 
     pub fn take_rtc_video_frame(
