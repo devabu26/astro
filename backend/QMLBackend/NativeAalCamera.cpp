@@ -16,7 +16,7 @@ constexpr int AalPixelFormatYuv420Sp = 1;
 
 NativeAalCamera::NativeAalCamera(QObject *parent)
     : QObject(parent),
-      m_library(QStringLiteral("camera_compat_layer"))
+      m_library(QStringLiteral("/lib/aarch64-linux-gnu/libcamera.so.1"))
 {
 }
 
