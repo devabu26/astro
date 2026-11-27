@@ -2807,7 +2807,10 @@ impl MatrixClientManager {
             let mut modern_membership: Option<serde_json::Value> = None;
             let mut member_id: Option<String> = None;
 
-            if sticky_supported && livekit_transport.sfu_url.is_some() {
+            if sticky_supported
+                && livekit_transport.sfu_url.is_some()
+                && livekit_transport.legacy_service_url.is_none()
+            {
                 let slot = room.get_state_event(
                     matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room"
                 ).await.map_err(|error| format!("Could not check the MatrixRTC room-call slot: {error}"))?;
