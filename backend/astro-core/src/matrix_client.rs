@@ -2843,6 +2843,14 @@ impl MatrixClientManager {
         // Joining is idempotent within this Matrix client session. The
         // call page and the room's presence controls share this membership.
         if self.rtc_local_memberships.contains_key(room_id) {
+            eprintln!(
+                "ASTRO RTC NEGOTIATION: join request reused existing membership; room={}, notify_recipients={}, has_e2ee_session={}, has_modern_membership={}, has_livekit_transport={}",
+                room_id,
+                notify_recipients,
+                self.rtc_e2ee_sessions.contains_key(room_id),
+                self.rtc_modern_memberships.contains_key(room_id),
+                self.rtc_livekit_services.contains_key(room_id)
+            );
             return Ok(());
         }
 
@@ -2869,14 +2877,31 @@ impl MatrixClientManager {
                 .map_err(|error| format!("Could not determine room encryption state: {error}"))?.is_encrypted();
 
             let livekit_transport = discover_livekit_transport(&client).await?;
+            eprintln!(
+                "ASTRO RTC NEGOTIATION: discovered transport; modern_sfu_url_present={}, legacy_authorization_url_present={}",
+                livekit_transport.sfu_url.is_some(),
+                livekit_transport.legacy_service_url.is_some()
+            );
 
             // MSC4354 is optional. Homeservers without sticky events (or native
             // Sliding Sync) still get the established MSC3401 compatibility
             // membership and LiveKit call path; modern MatrixRTC membership and
             // per-member key exchange are enabled only when the server supports it.
-            let sticky_supported = client.supports_sticky_events().await.unwrap_or(false)
-                && client.available_sliding_sync_versions().await.iter()
-                    .any(|version| matches!(version, Version::Native));
+            let sticky_events_supported = client.supports_sticky_events().await.unwrap_or(false);
+            let native_sliding_sync_available = client.available_sliding_sync_versions().await.iter()
+                .any(|version| matches!(version, Version::Native));
+            let sticky_supported = sticky_events_supported && native_sliding_sync_available;
+            let use_modern_membership = sticky_supported
+                && livekit_transport.sfu_url.is_some()
+                && livekit_transport.legacy_service_url.is_none();
+            eprintln!(
+                "ASTRO RTC NEGOTIATION: membership decision; sticky_events_supported={}, native_sliding_sync_available={}, modern_sfu_url_present={}, legacy_authorization_url_present={}, selected_membership_format={}",
+                sticky_events_supported,
+                native_sliding_sync_available,
+                livekit_transport.sfu_url.is_some(),
+                livekit_transport.legacy_service_url.is_some(),
+                if use_modern_membership { "msc4354_sticky_m_rtc_member" } else { "legacy_msc3401_room_state" }
+            );
 
             if livekit_transport.sfu_url.is_some()
                 && livekit_transport.legacy_service_url.is_none()
@@ -2890,10 +2915,7 @@ impl MatrixClientManager {
             let mut modern_membership: Option<serde_json::Value> = None;
             let mut member_id: Option<String> = None;
 
-            if sticky_supported
-                && livekit_transport.sfu_url.is_some()
-                && livekit_transport.legacy_service_url.is_none()
-            {
+            if use_modern_membership {
                 let slot = room.get_state_event(
                     matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room"
                 ).await.map_err(|error| format!("Could not check the MatrixRTC room-call slot: {error}"))?;
@@ -2908,6 +2930,13 @@ impl MatrixClientManager {
                     let status = content["status"].as_str().unwrap_or("");
                     let application = content["application"]["type"].as_str().unwrap_or("");
                     let encryption_type = content["encryption"]["type"].as_str().unwrap_or("");
+                    eprintln!(
+                        "ASTRO RTC NEGOTIATION: existing room-call slot; status={}, application={}, encryption_type_present={}, encryption_type_m_per_member={}",
+                        status,
+                        application,
+                        !encryption_type.is_empty(),
+                        encryption_type == "m.per_member"
+                    );
                     if status != "open" { return Err("The MatrixRTC room-call slot exists but is not open; ask an administrator to open it".into()); }
                     if application != "m.call" { return Err("The MatrixRTC room-call slot has an incompatible application type".into()); }
                     if encrypted && encryption_type != "m.per_member" { return Err("The encrypted room-call slot does not enable m.per_member encryption".into()); }
@@ -2942,7 +2971,12 @@ impl MatrixClientManager {
                 member_id = Some(id);
                 modern_membership = Some(content);
             } else {
-                eprintln!("ASTRO RTC: MSC4354/native Sliding Sync unavailable; using legacy-compatible call membership only");
+                eprintln!(
+                    "ASTRO RTC NEGOTIATION: using legacy membership; reason_sticky_or_native_sync_unavailable={}, reason_no_modern_sfu_url={}, reason_legacy_authorization_also_advertised={}",
+                    !sticky_supported,
+                    livekit_transport.sfu_url.is_none(),
+                    livekit_transport.legacy_service_url.is_some()
+                );
             }
 
             let state_key = rtc_membership_state_key(&room, &user_id, &device_id);
@@ -3110,9 +3144,14 @@ impl MatrixClientManager {
                     legacy_member_id,
                 )?
             };
+            let key_identity = session.local_livekit_identity().to_owned();
             self.rtc_e2ee_sessions.insert(room_id.to_owned(), session);
-            eprintln!("ASTRO RTC E2EE: {} media-key exchange started in {room_id}",
-                if self.rtc_modern_memberships.contains_key(room_id) { "MSC4354" } else { "legacy MSC3401" });
+            eprintln!(
+                "ASTRO RTC E2EE NEGOTIATION: key exchange started; room={}, membership_format={}, local_livekit_identity={}",
+                room_id,
+                if self.rtc_modern_memberships.contains_key(room_id) { "msc4354_sticky" } else { "legacy_msc3401" },
+                key_identity
+            );
         }
 
         if let Ok(mut renewals) = self.rtc_renewals.lock() {
@@ -3179,6 +3218,14 @@ impl MatrixClientManager {
             return Err("An audio call is already active in this room".into());
         }
 
+        eprintln!(
+            "ASTRO RTC NEGOTIATION: starting LiveKit; room={}, has_membership={}, has_modern_membership={}, has_transport={}, has_e2ee_session={}",
+            room_id,
+            self.rtc_local_memberships.contains_key(&room_id),
+            self.rtc_modern_memberships.contains_key(&room_id),
+            self.rtc_livekit_services.contains_key(&room_id),
+            self.rtc_e2ee_sessions.contains_key(&room_id)
+        );
         if !self.rtc_e2ee_sessions.contains_key(&room_id) {
             let client = self.client.as_ref()
                 .ok_or_else(|| "No active Matrix session".to_string())?
@@ -3233,8 +3280,14 @@ impl MatrixClientManager {
                 );
                 Err("MatrixRTC local media key did not become active within 20 seconds; refusing an unencrypted LiveKit connection".to_string())
             })?;
+            eprintln!(
+                "ASTRO RTC E2EE NEGOTIATION: active key snapshot; local_identity={}, keys={}",
+                local_identity,
+                keys.iter().map(|(identity, index, _)| format!("{identity}#{index}")).collect::<Vec<_>>().join(",")
+            );
             Some((local_identity, keys))
         } else {
+            eprintln!("ASTRO RTC E2EE NEGOTIATION: no media E2EE session; room encryption check determines whether connection is refused");
             None
         };
 
@@ -4066,13 +4119,13 @@ impl MatrixClientManager {
                     if provider.set_key(&participant_identity, i32::from(*index), key.clone()) {
                         session.e2ee_installed_keys.insert(cache_key, key.clone());
                         eprintln!(
-                            "ASTRO RTC E2EE: installed LiveKit key index {} for participant {}",
-                            index, identity
+                            "ASTRO RTC E2EE NEGOTIATION: provider accepted remote key; room={}, identity={}, index={}",
+                            room_id, identity, index
                         );
                     } else {
                         eprintln!(
-                            "ASTRO RTC E2EE: LiveKit rejected rotated key index {} for participant {}",
-                            index, identity
+                            "ASTRO RTC E2EE NEGOTIATION: provider rejected remote key; room={}, identity={}, index={}",
+                            room_id, identity, index
                         );
                     }
                 }
@@ -4102,6 +4155,17 @@ impl MatrixClientManager {
 
                 let update = match event {
                     RoomEvent::ParticipantConnected(participant) => {
+                        let participant_identity = participant.identity().to_string();
+                        let matching_installed_keys = session.e2ee_installed_keys.keys()
+                            .filter(|(identity, _)| identity == &participant_identity)
+                            .map(|(_, index)| index.to_string())
+                            .collect::<Vec<_>>();
+                        eprintln!(
+                            "ASTRO RTC E2EE NEGOTIATION: remote participant connected; room={}, identity={}, installed_key_indexes={}",
+                            room_id,
+                            participant_identity,
+                            if matching_installed_keys.is_empty() { "<none>".to_owned() } else { matching_installed_keys.join(",") }
+                        );
                         tracing::info!(
                             room_id = %room_id,
                             participant = %participant.identity(),
