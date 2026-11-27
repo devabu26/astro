@@ -26,6 +26,7 @@ struct IncomingCallEvent {
     event_id: String,
     sender: String,
     call_intent: String,
+    expires_at_ms: u64,
 }
 
 /// A decline referencing one of Astro's outgoing MSC4075 notifications.
@@ -108,7 +109,8 @@ impl NotificationQueue {
                             "room_id": event.room_id,
                             "event_id": event.event_id,
                             "sender": event.sender,
-                            "call_intent": event.call_intent
+                            "call_intent": event.call_intent,
+                            "expires_at_ms": event.expires_at_ms
                         })
                     })
                     .collect()
@@ -221,6 +223,7 @@ pub fn register_incoming_call_handler(client: &Client, queue: NotificationQueue)
                     event_id: event.event_id.to_string(),
                     sender: event.sender.to_string(),
                     call_intent: call_intent.to_owned(),
+                    expires_at_ms,
                 });
             }
         },
