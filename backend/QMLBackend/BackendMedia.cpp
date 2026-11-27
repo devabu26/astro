@@ -1,6 +1,7 @@
 
 
 #include "Backend.h"
+#include "NativeAalCamera.h"
 #include "StorageWorker/StorageWorker.h"
 #include "notifications/NotificationManager.h"
 
@@ -262,7 +263,8 @@ void Backend::processRtcCameraImage(
     const QImage &image
 )
 {
-    if (!m_storageWorker || roomId.isEmpty() || image.isNull())
+    if (!m_storageWorker || roomId.isEmpty() || image.isNull() ||
+        roomId != m_rtcCameraRoomId)
         return;
 
     StorageWorker *worker = m_storageWorker;
