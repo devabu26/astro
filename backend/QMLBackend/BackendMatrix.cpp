@@ -724,8 +724,7 @@ void Backend::startRtcBackgroundCamera(
                 return;
 
             if (status == QCamera::LoadedStatus &&
-                guard->state() != QCamera::ActiveState &&
-                guard->state() != QCamera::StartingState) {
+                guard->state() != QCamera::ActiveState) {
                 qInfo() << "ASTRO_RTC_CAMERA: camera loaded; starting capture"
                         << "device:" << selected.deviceName();
                 guard->start();
@@ -831,8 +830,11 @@ void Backend::releaseRtcCamera(bool restartAfterUnload)
     }
 
     if (m_rtcCameraUnloading) {
+        // A start/switch request can arrive while the previous unload is
+        // already in progress. Preserve the new pending target and make sure
+        // the completion callback knows whether to recreate the camera.
+        m_rtcCameraRestartAfterUnload = restartAfterUnload;
         if (!restartAfterUnload) {
-            m_rtcCameraRestartAfterUnload = false;
             m_rtcCameraPendingRoomId.clear();
             m_rtcCameraPendingDeviceId.clear();
         }
