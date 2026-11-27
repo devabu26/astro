@@ -75,8 +75,8 @@ QString Backend::rtcRingbackToneUrl() const
         return QString();
     }
 
-    QDir directory;
-    if (!directory.mkpath(cachePath)) {
+    QDir directory(cachePath);
+    if (!directory.mkpath(QStringLiteral("."))) {
         qWarning() << "ASTRO_CALL_RINGBACK: could not create cache directory"
                    << cachePath
                    << "exists:" << QFileInfo::exists(cachePath)
