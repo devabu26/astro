@@ -3,8 +3,10 @@
 #include <QObject>
 #include <QString>
 #include <QByteArray>
+#include <QPointer>
 
-class QThread;
+#class QThread;
+class QCamera;
 class QVideoFrame;
 class QImage;
 class StorageWorker;
@@ -24,6 +26,7 @@ class Backend : public QObject
         READ applicationState
         NOTIFY applicationStateChanged
     )
+    Q_PROPERTY(QObject *rtcCamera READ rtcCamera NOTIFY rtcCameraChanged)
 
 public:
     explicit Backend(QObject *parent = nullptr);
@@ -45,6 +48,7 @@ public:
 
     bool storageReady() const;
     int applicationState() const;
+    QObject *rtcCamera() const;
 
     // ---------------------------------------------------------
     // Encrypted storage operations
@@ -195,6 +199,7 @@ signals:
     // ---------------------------------------------------------
 
     void storageReadyChanged();
+    void rtcCameraChanged();
     void storageStatusChanged(const QString &status);
     void secretServiceTestFinished(const QString &result);
     void dataDeleted();
@@ -556,9 +561,19 @@ private:
     StorageWorker *m_storageWorker = nullptr;
     NotificationManager *m_notificationManager = nullptr;
 
+    // QCamera is owned and controlled on the GUI thread; VideoOutput is its sink.
+    QPointer<QCamera> m_rtcCamera;
+    QString m_rtcCameraRoomId;
+    quint64 m_rtcCameraGeneration = 0;
+    bool m_rtcCameraUnloading = false;
+    bool m_rtcCameraRestartAfterUnload = false;
+    QString m_rtcCameraPendingRoomId;
+    QString m_rtcCameraPendingDeviceId;
+
     // ---------------------------------------------------------
     // Internal helpers
     // ---------------------------------------------------------
 
     void setStorageReady(bool ready);
+    void releaseRtcCamera(bool restartAfterUnload);
 };
