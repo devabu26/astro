@@ -2974,10 +2974,10 @@ impl MatrixClientManager {
                 eprintln!("ASTRO RTC CALL: no other joined room members to notify");
             }
 
-            Ok::<(String, String, Option<String>, Option<serde_json::Value>, bool, Option<(String, Vec<String>)>), String>((state_key, livekit_service_url, member_id, modern_membership, encrypted, outgoing_notification))
+            Ok::<(String, Option<String>, Option<serde_json::Value>, bool, Option<(String, Vec<String>)>, RtcLiveKitTransport), String>((state_key, member_id, modern_membership, encrypted, outgoing_notification, livekit_transport))
         });
 
-        let (state_key, livekit_service_url, member_id, modern_membership, encrypted, outgoing_notification) = result?;
+        let (state_key, member_id, modern_membership, encrypted, outgoing_notification, livekit_transport) = result?;
         self.rtc_local_memberships.insert(room_id.to_owned(), state_key.clone());
         if let Some(notification) = outgoing_notification {
             self.rtc_outgoing_call_notifications.insert(room_id.to_owned(), notification);
