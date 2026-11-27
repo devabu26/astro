@@ -454,51 +454,116 @@ struct RtcLiveKitTransport {
 /// the url field. Do not use only the typed legacy LiveKit variant here:
 /// that would silently discard the modern SFU URL.
 async fn discover_livekit_transport(client: &Client) -> Result<RtcLiveKitTransport, String> {
+    let access_token = client.access_token()
+        .ok_or_else(|| "Matrix access token is unavailable for RTC transport discovery".to_string())?;
+    let homeserver = client.homeserver();
+
+    // The pinned Matrix SDK's typed discovery predates the stable response
+    // field name and m.livekit transport. Fetch the raw response first so the
+    // modern SFU URL cannot be dropped by an older Ruma deserializer.
+    for path in [
+        "_matrix/client/v1/rtc/transports",
+        "_matrix/client/unstable/org.matrix.msc4143/rtc/transports",
+    ] {
+        let endpoint = homeserver.join(path)
+            .map_err(|error| format!("Could not construct MatrixRTC transport endpoint: {error}"))?;
+        let response = client.http_client()
+            .get(endpoint)
+            .bearer_auth(&access_token)
+            .send().await
+            .map_err(|error| format!("MatrixRTC transport discovery failed: {error}"))?;
+        let status = response.status();
+        let bytes = response.bytes().await
+            .map_err(|error| format!("Could not read MatrixRTC transport response: {error}"))?;
+
+        if status.as_u16() == 404 {
+            continue;
+        }
+        if !status.is_success() {
+            return Err(format!("MatrixRTC transport discovery returned HTTP {status}"));
+        }
+
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("Invalid MatrixRTC transport response: {error}"))?;
+        let entries = value.get("transports")
+            .or_else(|| value.get("rtc_transports"))
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| "MatrixRTC transport response has no transports array".to_string())?;
+
+        let mut legacy = None;
+        for entry in entries {
+            let transport_type = entry.get("type").and_then(serde_json::Value::as_str).unwrap_or("");
+            let sfu_url = entry.get("url")
+                .and_then(serde_json::Value::as_str)
+                .filter(|url| !url.is_empty())
+                .map(str::to_owned);
+            let service_url = entry.get("livekit_service_url")
+                .and_then(serde_json::Value::as_str)
+                .filter(|url| !url.is_empty())
+                .map(str::to_owned);
+
+            if transport_type == "m.livekit" {
+                if let Some(url) = sfu_url {
+                    return Ok(RtcLiveKitTransport {
+                        sfu_url: Some(url),
+                        legacy_service_url: None,
+                    });
+                }
+            } else if transport_type == "livekit" && service_url.is_some() {
+                legacy = Some(RtcLiveKitTransport {
+                    sfu_url,
+                    legacy_service_url: service_url,
+                });
+            }
+        }
+
+        return legacy.ok_or_else(|| {
+            "The homeserver did not advertise a supported LiveKit transport".into()
+        });
+    }
+
+    // Older homeservers may expose transports only through .well-known. Let
+    // the SDK retain that compatibility path after both Client-Server routes
+    // proved unavailable.
     let transports = client
         .discover_rtc_transports()
         .await
-        .map_err(|error| format!("Could not discover MatrixRTC transports: {error}"))?;
-
+        .map_err(|error| format!("Could not discover fallback MatrixRTC transports: {error}"))?;
     let Some(transports) = transports else {
         return Err("The homeserver did not advertise any MatrixRTC transports".into());
     };
 
-    let mut legacy = None;
     for transport in transports {
         let transport_type = transport.transport_type();
         let data = transport.data();
-        match transport_type {
-            "m.livekit" => {
-                if let Some(url) = data.get("url").and_then(serde_json::Value::as_str)
-                    .filter(|url| !url.is_empty())
-                {
-                    return Ok(RtcLiveKitTransport {
-                        sfu_url: Some(url.to_owned()),
-                        legacy_service_url: None,
-                    });
-                }
+        if transport_type == "m.livekit" {
+            if let Some(url) = data.get("url").and_then(serde_json::Value::as_str)
+                .filter(|url| !url.is_empty())
+            {
+                return Ok(RtcLiveKitTransport {
+                    sfu_url: Some(url.to_owned()),
+                    legacy_service_url: None,
+                });
             }
-            "livekit" => {
-                let service_url = data.get("livekit_service_url")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|url| !url.is_empty())
-                    .map(str::to_owned);
+        } else if transport_type == "livekit" {
+            let service_url = data.get("livekit_service_url")
+                .and_then(serde_json::Value::as_str)
+                .filter(|url| !url.is_empty())
+                .map(str::to_owned);
+            if service_url.is_some() {
                 let sfu_url = data.get("url")
                     .and_then(serde_json::Value::as_str)
                     .filter(|url| !url.is_empty())
                     .map(str::to_owned);
-                if service_url.is_some() {
-                    legacy = Some(RtcLiveKitTransport {
-                        sfu_url,
-                        legacy_service_url: service_url,
-                    });
-                }
+                return Ok(RtcLiveKitTransport {
+                    sfu_url,
+                    legacy_service_url: service_url,
+                });
             }
-            _ => {}
         }
     }
 
-    legacy.ok_or_else(|| "The homeserver did not advertise a supported LiveKit transport".into())
+    Err("The homeserver did not advertise a supported LiveKit transport".into())
 }
 
 async fn fetch_modern_rtc_livekit_token(
