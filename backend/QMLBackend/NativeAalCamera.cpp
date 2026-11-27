@@ -265,10 +265,12 @@ bool NativeAalCamera::start(int cameraId, int sensorOrientation,
         qint64 selectedPixels = 0;
         double selectedAspectError = 1.0e9;
         for (const QSize &size : candidates) {
+            const qint64 pixels = qint64(size.width()) * size.height();
             if (size.width() < 2 || size.height() < 2 ||
+                size.width() > 1920 || size.height() > 1920 ||
+                pixels > 1920LL * 1920LL ||
                 (size.width() & 1) || (size.height() & 1))
                 continue;
-            const qint64 pixels = qint64(size.width()) * size.height();
             const double aspect =
                 double(qMax(size.width(), size.height())) /
                 qMax(1, qMin(size.width(), size.height()));
