@@ -933,10 +933,6 @@ Item {
             }
 
             root.pendingOperation = ""
-            if (operation === "stopScreenShare" ||
-                    operation === "stopScreenShareForHangup") {
-            }
-
             if (error && error.length > 0) {
                 root.actionError = error
                 if (operation === "startScreenShare") {
