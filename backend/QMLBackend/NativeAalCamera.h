@@ -57,6 +57,7 @@ private:
     using StopPreview = void (*)(void *);
 
     static void previewFrameCallback(void *data, uint32_t size, void *context);
+    static void previewTextureCallback(void *context);
     static void previewSizeCallback(void *context, int width, int height);
     void receivePreviewFrame(const void *data, uint32_t size);
     bool resolveApi(QString *error);
