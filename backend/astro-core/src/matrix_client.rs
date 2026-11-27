@@ -8,7 +8,6 @@ use matrix_sdk::ruma::api::client::device::delete_device;
 use matrix_sdk::ruma::api::client::push::{PusherIds, PusherInit, PusherKind};
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk::ruma::api::client::uiaa;
-use matrix_sdk::ruma::api::client::rtc::RtcTransport;
 use matrix_sdk::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk::ruma::events::room::message::{
     RoomMessageEventContent, RoomMessageEventContentWithoutRelation,
@@ -510,25 +509,46 @@ async fn fetch_modern_rtc_livekit_token(
 ) -> Result<String, String> {
     let access_token = client.access_token()
         .ok_or_else(|| "Matrix access token is unavailable for MSC4195 LiveKit authorization".to_string())?;
-    let endpoint = client.homeserver()
-        .join("_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token")
-        .map_err(|error| format!("Could not construct MSC4195 token endpoint: {error}"))?;
     let body = serde_json::json!({
         "url": sfu_url,
         "room_id": room.room_id().as_str(),
         "slot_id": "m.call#room",
         "member_id": member_id
     });
-    let response = client.http_client()
-        .post(endpoint)
-        .bearer_auth(access_token)
-        .json(&body)
-        .send().await
-        .map_err(|error| format!("MSC4195 LiveKit token request failed: {error}"))?;
-    let status = response.status();
-    let bytes = response.bytes().await
-        .map_err(|error| format!("Could not read MSC4195 LiveKit token response: {error}"))?;
-    if !status.is_success() {
+    let homeserver = client.homeserver();
+    // MSC4195 has both its stable and unstable client-server paths. Try the
+    // stable route first, then fall back only when that route is absent.
+    let endpoint_paths = [
+        "_matrix/client/v1/rtc/livekit/get_token",
+        "_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token",
+    ];
+    let mut last_status = None;
+    for path in endpoint_paths {
+        let endpoint = homeserver.join(path)
+            .map_err(|error| format!("Could not construct MSC4195 token endpoint: {error}"))?;
+        let response = client.http_client()
+            .post(endpoint)
+            .bearer_auth(&access_token)
+            .json(&body)
+            .send().await
+            .map_err(|error| format!("MSC4195 LiveKit token request failed: {error}"))?;
+        let status = response.status();
+        let bytes = response.bytes().await
+            .map_err(|error| format!("Could not read MSC4195 LiveKit token response: {error}"))?;
+        if status.is_success() {
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("Invalid MSC4195 LiveKit token response: {error}"))?;
+            return value.get("jwt").and_then(serde_json::Value::as_str)
+                .filter(|jwt| !jwt.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| "MSC4195 LiveKit token response has no JWT".to_string());
+        }
+
+        if status.as_u16() == 404 {
+            last_status = Some(status);
+            continue;
+        }
+
         let detail = serde_json::from_slice::<serde_json::Value>(&bytes).ok()
             .and_then(|value| value.get("error").and_then(serde_json::Value::as_str).map(str::to_owned));
         return Err(match detail {
@@ -536,12 +556,11 @@ async fn fetch_modern_rtc_livekit_token(
             None => format!("Homeserver MSC4195 token endpoint returned HTTP {status}"),
         });
     }
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("Invalid MSC4195 LiveKit token response: {error}"))?;
-    value.get("jwt").and_then(serde_json::Value::as_str)
-        .filter(|jwt| !jwt.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| "MSC4195 LiveKit token response has no JWT".to_string())
+
+    Err(format!(
+        "Homeserver does not expose either MSC4195 token endpoint (last response: HTTP {})",
+        last_status.map(|status| status.as_u16()).unwrap_or(404)
+    ))
 }
 
 async fn fetch_rtc_livekit_credentials(
@@ -2711,7 +2730,7 @@ impl MatrixClientManager {
             let mut modern_membership: Option<serde_json::Value> = None;
             let mut member_id: Option<String> = None;
 
-            if sticky_supported {
+            if sticky_supported && livekit_transport.sfu_url.is_some() {
                 let slot = room.get_state_event(
                     matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room"
                 ).await.map_err(|error| format!("Could not check the MatrixRTC room-call slot: {error}"))?;
