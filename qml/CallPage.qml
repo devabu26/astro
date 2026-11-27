@@ -691,8 +691,8 @@ Item {
 
     onVideoStartedChanged: {
         if (videoStarted) {
-            // C++ owns the only QCamera. Application foreground/background
-            // transitions do not stop or recreate it.
+            // Native libhybris owns capture directly. It bypasses the QtUbuntu
+            // QCamera control that unloads when the app is backgrounded.
             if (backend && roomId) {
                 nativeCameraRunning = false
                 nativeCameraRoomId = roomId
