@@ -56,6 +56,12 @@ private slots:
         int height,
         const QByteArray &i420
     );
+    void receiveLocalFrame(
+        const QString &roomId,
+        int width,
+        int height,
+        const QByteArray &i420
+    );
 
 private:
     Backend *m_backend = nullptr;
@@ -63,7 +69,9 @@ private:
     QString m_identity;
     QString m_source = QStringLiteral("camera");
     QMetaObject::Connection m_frameConnection;
+    QMetaObject::Connection m_localFrameConnection;
     mutable QMutex m_imageMutex;
     QImage m_image;
     bool m_loggedFirstRemoteFrame = false;
+    bool m_loggedFirstLocalFrame = false;
 };
