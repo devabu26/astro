@@ -261,8 +261,17 @@ void NativeAalCamera::receivePreviewFrame(const void *data, uint32_t size)
     QImage image = convertYuv420Sp(
         static_cast<const uint8_t *>(data), size
     );
-    if (image.isNull())
+    if (image.isNull()) {
+        int expected = 0;
+        if (m_invalidBufferLogged.compare_exchange_strong(expected, 1)) {
+            qWarning() << "ASTRO_RTC_AAL: rejected native YUV preview buffer"
+                       << "bytes:" << size
+                       << "expectedTightBytes:"
+                       << (qint64(m_width) * m_height * 3 / 2)
+                       << "size:" << m_width << "x" << m_height;
+        }
         return;
+    }
 
     const unsigned count = m_frameCount.fetch_add(1) + 1;
     if (count <= 3 || count % 30 == 0) {
