@@ -55,9 +55,9 @@ Backend::Backend(QObject *parent)
         m_nativeRtcCamera,
         &NativeAalCamera::frameReceived,
         this,
-        [this](const QImage &image) {
-            if (!m_rtcCameraRoomId.isEmpty())
-                processRtcCameraImage(m_rtcCameraRoomId, image);
+        [this](const QString &roomId, const QImage &image) {
+            if (roomId == m_rtcCameraRoomId)
+                processRtcCameraImage(roomId, image);
         },
         Qt::QueuedConnection
     );
