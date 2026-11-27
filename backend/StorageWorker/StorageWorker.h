@@ -12,6 +12,7 @@
 #include <QMutex>
 #include <QCamera>
 #include <QAudioInput>
+#include <QAudioOutput>
 #include <QAudioDeviceInfo>
 #include <QAudioFormat>
 #include <QIODevice>
@@ -198,6 +199,7 @@ public slots:
     // Matrix timeline subscriptions.
     void pollRoomTimelineUpdates();
     void pollRtcRemoteVideoFrames();
+    void pollRtcRemoteAudioFrames();
 
 
     // ---------------------------------------------------------
@@ -553,6 +555,11 @@ private:
     qint64 m_rtcScreenSharePerfCompareUs = 0;
     qint64 m_rtcScreenSharePerfCopyConvertUs = 0;
     qint64 m_rtcScreenSharePerfSubmitUs = 0;
+    QAudioOutput *m_rtcRemoteAudioOutput = nullptr;
+    QIODevice *m_rtcRemoteAudioDevice = nullptr;
+    QByteArray m_rtcRemoteAudioPending;
+    bool m_loggedFirstRemoteRtcAudioFrame = false;
+
     QAudioInput *m_rtcScreenShareAudioInput = nullptr;
     QIODevice *m_rtcScreenShareAudioDevice = nullptr;
     QByteArray m_rtcScreenShareAudioBuffer;
