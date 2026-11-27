@@ -316,7 +316,7 @@ QString Backend::rtcConnectionToneUrl() const
         return QString();
 
     const QString filePath =
-        directory.filePath(QStringLiteral("rtc-connected.wav"));
+        directory.filePath(QStringLiteral("rtc-connected-v2.wav"));
     constexpr quint32 sampleRate = 48000;
     constexpr quint32 sampleCount = sampleRate / 2;
     constexpr quint32 pcmBytes = sampleCount * 2;
@@ -335,7 +335,7 @@ QString Backend::rtcConnectionToneUrl() const
     auto *samples = reinterpret_cast<qint16 *>(pcm.data());
     constexpr quint32 fadeSamples = sampleRate / 100;
     for (quint32 i = 0; i < sampleCount; ++i) {
-        const double frequency = i < sampleRate * 15 / 100 ? 660.0 : 880.0;
+        const double frequency = i < sampleRate * 15 / 100 ? 622.0 : 784.0;
         const quint32 edge = std::min(i, sampleCount - 1 - i);
         const double envelope = std::min(
             1.0, static_cast<double>(edge) / fadeSamples
@@ -473,4 +473,82 @@ void Backend::setStorageReady(bool ready)
     m_storageReady = ready;
 
     emit storageReadyChanged();
+
+QString Backend::rtcHangupToneUrl() const
+{
+    const QString cachePath =
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (cachePath.isEmpty())
+        return QString();
+
+    QDir directory(cachePath);
+    if (!directory.mkpath(QStringLiteral(".")))
+        return QString();
+
+    const QString filePath =
+        directory.filePath(QStringLiteral("rtc-hangup-v1.wav"));
+    constexpr quint32 sampleRate = 48000;
+    constexpr quint32 sampleCount = sampleRate * 35 / 100;
+    constexpr quint32 pcmBytes = sampleCount * 2;
+    constexpr qint64 expectedFileSize = 44 + pcmBytes;
+
+    QFile existing(filePath);
+    if (existing.open(QIODevice::ReadOnly)) {
+        const bool valid = existing.size() == expectedFileSize &&
+            existing.read(12).mid(0, 4) == QByteArrayLiteral("RIFF");
+        existing.close();
+        if (valid)
+            return QUrl::fromLocalFile(filePath).toString();
+    }
+
+    QByteArray pcm(static_cast<int>(pcmBytes), '\0');
+    auto *samples = reinterpret_cast<qint16 *>(pcm.data());
+    constexpr quint32 fadeSamples = sampleRate / 100;
+    for (quint32 i = 0; i < sampleCount; ++i) {
+        const double frequency =
+            i < sampleRate * 17 / 100 ? 392.0 : 330.0;
+        const quint32 edge = std::min(i, sampleCount - 1 - i);
+        const double envelope = std::min(
+            1.0, static_cast<double>(edge) / fadeSamples
+        );
+        const double phase = 2.0 * 3.14159265358979323846 *
+            frequency * static_cast<double>(i) / sampleRate;
+        samples[i] = static_cast<qint16>(
+            std::sin(phase) * 4200.0 * envelope
+        );
+    }
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return QString();
+
+    QDataStream stream(&file);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    file.write("RIFF", 4);
+    stream << static_cast<quint32>(36 + pcmBytes);
+    file.write("WAVEfmt ", 8);
+    stream << static_cast<quint32>(16)
+           << static_cast<quint16>(1)
+           << static_cast<quint16>(1)
+           << sampleRate
+           << static_cast<quint32>(sampleRate * 2)
+           << static_cast<quint16>(2)
+           << static_cast<quint16>(16);
+    file.write("data", 4);
+    stream << pcmBytes;
+    if (stream.status() != QDataStream::Ok ||
+        file.write(pcm.constData(), pcm.size()) != pcm.size() ||
+        !file.flush()) {
+        file.close();
+        QFile::remove(filePath);
+        return QString();
+    }
+
+    file.close();
+    if (QFileInfo(filePath).size() != expectedFileSize) {
+        QFile::remove(filePath);
+        return QString();
+    }
+    return QUrl::fromLocalFile(filePath).toString();
+}
 }
