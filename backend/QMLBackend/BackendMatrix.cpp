@@ -792,7 +792,16 @@ void Backend::startRtcBackgroundCamera(
     // Notify QML before loading so VideoOutput attaches its renderer surface
     // before the AAL backend attempts to start the camera preview.
     emit rtcCameraChanged();
-    camera->load();
+
+    // Let QML evaluate the rtcCamera binding and attach VideoOutput's
+    // renderer surface before QCamera begins loading the AAL service.
+    QTimer::singleShot(0, this, [this, guard, generation]() {
+        if (!guard || m_rtcCamera != guard.data() ||
+            m_rtcCameraGeneration != generation ||
+            m_rtcCameraUnloading)
+            return;
+        guard->load();
+    });
 
     QTimer::singleShot(10000, this, [this, guard, generation, roomId, selected]() {
         if (!guard || m_rtcCamera != guard.data() ||
