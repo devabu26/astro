@@ -4,12 +4,10 @@
 #include <QString>
 #include <QByteArray>
 #include <QPointer>
-#include <QAbstractVideoSurface>
 
 
 class QThread;
 class NativeAalCamera;
-class QCamera;
 class QVideoFrame;
 class QImage;
 class StorageWorker;
