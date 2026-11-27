@@ -5602,7 +5602,7 @@ impl MatrixClientManager {
                 ];
                 let actions = vec![
                     PushAction::Notify,
-                    PushAction::SetTweak(Tweak::Sound("ring".to_owned())),
+                    PushAction::SetTweak(Tweak::Sound("ring".to_owned().into())),
                 ];
 
                 match notification_settings
