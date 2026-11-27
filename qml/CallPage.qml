@@ -55,6 +55,7 @@ Item {
     property string nativeBackgroundCameraDeviceId: ""
     property bool remoteAnswered: false
     property bool connectionTonePlayed: false
+    property bool connectionToneRequested: false
     property string ringbackSource: ""
     property bool ringbackRequested: false
 
@@ -587,15 +588,12 @@ Item {
             return
 
         connectionTonePlayed = true
+        connectionToneRequested = true
         stopRingback()
-        connectionDing.stop()
-        if (connectionDing.status === SoundEffect.Ready)
+        if (connectionDing.status === SoundEffect.Ready) {
             connectionDing.play()
-        else
-            console.info(
-                "ASTRO_CALL_TONE: connection ding requested before WAV ready",
-                "status:", connectionDing.status
-            )
+            connectionToneRequested = false
+        }
     }
 
     function startRingback(restartPlayback) {
@@ -637,9 +635,16 @@ Item {
     // A single playback of the same cached WAV marks a successful connection.
     SoundEffect {
         id: connectionDing
-        source: root.ringbackSource
+        source: root.backend ? root.backend.rtcConnectionToneUrl() : ""
         loops: 1
         volume: 1.0
+
+        onStatusChanged: {
+            if (root.connectionToneRequested && status === SoundEffect.Ready) {
+                play()
+                root.connectionToneRequested = false
+            }
+        }
     }
 
     // SoundEffect uses Qt's short-WAV sound-effects backend rather than
