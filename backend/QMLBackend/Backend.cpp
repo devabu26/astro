@@ -40,6 +40,13 @@
 
 Backend::~Backend()
 {
+    // QCamera lives on this (GUI) thread, independently of StorageWorker.
+    // Release it before the Matrix worker is shut down.
+    if (m_rtcCamera) {
+        m_rtcCamera->stop();
+        m_rtcCamera->unload();
+    }
+
     if (m_storageThread && m_storageThread->isRunning()) {
 
         // Close Rust-side resources on the worker thread.
