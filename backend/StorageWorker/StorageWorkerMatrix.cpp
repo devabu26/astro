@@ -2064,7 +2064,9 @@ void StorageWorker::startRtcVideo(
                 << "cameraStatus:" << (m_rtcCamera
                     ? static_cast<int>(m_rtcCamera->status()) : -1)
                 << "unloadPending:" << m_rtcBackgroundCameraStopPending;
-        stopRtcBackgroundCamera(roomId);
+        // Stop the camera using the room that owns its current track. The
+        // requested new room is retained separately for the deferred start.
+        stopRtcBackgroundCamera(m_rtcVideoRoomId);
         return;
     }
 
