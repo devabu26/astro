@@ -693,14 +693,33 @@ void Backend::startRtcBackgroundCamera(
             }
         }
     }
+    if (selected.deviceName().isEmpty() && !deviceId.isEmpty()) {
+        const QString message = QStringLiteral(
+            "The requested camera device is no longer available"
+        );
+        emit matrixRtcBackgroundCameraActionFinished(
+            roomId, false, QString(), message
+        );
+        if (m_rtcCameraSwitchPending) {
+            m_rtcCameraSwitchPending = false;
+            emit matrixRtcVideoActionFinished(roomId, message);
+        }
+        return;
+    }
     if (selected.deviceName().isEmpty())
         selected = QCameraInfo::defaultCamera();
 
     if (selected.deviceName().isEmpty()) {
-        emit matrixRtcBackgroundCameraActionFinished(
-            roomId, false, QString(),
-            QStringLiteral("No native camera device is available")
+        const QString message = QStringLiteral(
+            "No native camera device is available"
         );
+        emit matrixRtcBackgroundCameraActionFinished(
+            roomId, false, QString(), message
+        );
+        if (m_rtcCameraSwitchPending) {
+            m_rtcCameraSwitchPending = false;
+            emit matrixRtcVideoActionFinished(roomId, message);
+        }
         return;
     }
 
