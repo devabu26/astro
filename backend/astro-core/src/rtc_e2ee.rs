@@ -18,6 +18,7 @@ use matrix_sdk::{
     Client, Room,
 };
 use serde_json::Value;
+use sha2::Digest;
 use tokio::runtime::Runtime;
 use tokio::task::AbortHandle;
 
