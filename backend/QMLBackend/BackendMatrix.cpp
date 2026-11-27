@@ -16,6 +16,7 @@
 #include <QList>
 #include <QThread>
 #include <QCamera>
+#include <QAbstractVideoSurface>
 #include <QCameraInfo>
 #include <QTimer>
 #include <QMetaObject>
@@ -593,6 +594,29 @@ QObject *Backend::rtcCamera() const
     return m_rtcCamera.data();
 }
 
+QAbstractVideoSurface *Backend::rtcCameraVideoSurface() const
+{
+    return m_rtcCameraVideoSurface.data();
+}
+
+void Backend::setRtcCameraVideoSurface(QAbstractVideoSurface *surface)
+{
+    if (m_rtcCameraVideoSurface == surface)
+        return;
+
+    m_rtcCameraVideoSurface = surface;
+    if (m_rtcCamera) {
+        m_rtcCamera->setViewfinder(surface);
+        qInfo() << "ASTRO_RTC_CAMERA: VideoOutput viewfinder surface"
+                << (surface ? "attached" : "detached")
+                << "cameraStatus:" << static_cast<int>(m_rtcCamera->status());
+    } else {
+        qInfo() << "ASTRO_RTC_CAMERA: VideoOutput surface registered"
+                << "waitingForCamera:" << (surface != nullptr);
+    }
+    emit rtcCameraVideoSurfaceChanged();
+}
+
 void Backend::switchRtcCamera(const QString &roomId)
 {
     if (!m_storageReady || roomId.isEmpty() ||
@@ -726,6 +750,13 @@ void Backend::startRtcBackgroundCamera(
     QCamera *camera = new QCamera(selected, this);
     m_rtcCamera = camera;
     m_rtcCameraRoomId = roomId;
+    // Attach VideoOutput's QAbstractVideoSurface before loading AAL.
+    if (m_rtcCameraVideoSurface) {
+        camera->setViewfinder(m_rtcCameraVideoSurface.data());
+        qInfo() << "ASTRO_RTC_CAMERA: attached VideoOutput viewfinder before load";
+    } else {
+        qWarning() << "ASTRO_RTC_CAMERA: no VideoOutput viewfinder surface registered yet";
+    }
     const quint64 generation = ++m_rtcCameraGeneration;
     const QPointer<QCamera> guard(camera);
 
@@ -871,6 +902,8 @@ void Backend::releaseRtcCamera(bool restartAfterUnload)
 
     m_rtcCameraRestartAfterUnload = restartAfterUnload;
     QCamera *camera = m_rtcCamera.data();
+    // Detach the QML-owned surface before camera teardown.
+    camera->setViewfinder(static_cast<QAbstractVideoSurface *>(nullptr));
     const quint64 generation = ++m_rtcCameraGeneration;
     m_rtcCameraUnloading = true;
 
