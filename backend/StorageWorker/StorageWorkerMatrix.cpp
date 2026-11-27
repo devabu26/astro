@@ -2930,8 +2930,6 @@ void StorageWorker::finishRtcBackgroundCameraStop()
         stoppedRoomId = m_rtcBackgroundCameraStopRoomId;
         if (m_rtcBackgroundCameraWatchdogTimer)
             m_rtcBackgroundCameraWatchdogTimer->stop();
-        delete m_rtcCameraVideoProbe;
-        m_rtcCameraVideoProbe = nullptr;
         m_rtcCamera->setViewfinder(
             static_cast<QAbstractVideoSurface *>(nullptr)
         );
@@ -4585,8 +4583,6 @@ void StorageWorker::stopRtcCamera()
     QMutexLocker frameLocker(&m_rtcCameraFrameMutex);
     ++m_rtcCameraGeneration;
 
-    delete m_rtcCameraVideoProbe;
-    m_rtcCameraVideoProbe = nullptr;
 
     if (m_rtcCamera) {
         m_rtcCamera->stop();
