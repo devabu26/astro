@@ -32,6 +32,9 @@ Item {
     property bool muted: false
     property bool pendingMuted: false
     property bool videoStarted: false
+    property bool cameraResolutionMenuVisible: false
+    property int cameraResolutionWidth: 480
+    property int cameraResolutionHeight: 640
     property bool screenShareStarted: false
     property string screenShareRoomId: ""
     property bool screenShareChoiceVisible: false
@@ -348,6 +351,14 @@ Item {
         backend.setRtcAudioMuted(roomId, pendingMuted)
     }
 
+    function selectCameraResolution(width, height) {
+        cameraResolutionWidth = width
+        cameraResolutionHeight = height
+        cameraResolutionMenuVisible = false
+        console.info("ASTRO_RTC_CAMERA: selected outgoing resolution", width, "x", height,
+                     videoStarted ? "(applies next time camera starts)" : "")
+    }
+
     function toggleCamera() {
         if (!backend || !roomId ||
                 pendingOperation.length > 0 ||
@@ -361,7 +372,7 @@ Item {
             backend.stopRtcVideo(roomId)
         } else {
             pendingOperation = "startVideo"
-            backend.startRtcVideo(roomId, 480, 640)
+            backend.startRtcVideo(roomId, cameraResolutionWidth, cameraResolutionHeight)
         }
     }
 
@@ -1609,6 +1620,7 @@ Item {
 
                     // Camera
                     Rectangle {
+                        id: cameraControl
                         width: (parent.width - units.gu(5)) / 6
                         height: units.gu(7)
                         radius: units.gu(1)
@@ -1642,6 +1654,29 @@ Item {
                             enabled: root.callActive &&
                                      root.pendingOperation.length === 0
                             onClicked: root.toggleCamera()
+                        }
+
+                        Rectangle {
+                            width: units.gu(2.5)
+                            height: units.gu(2.5)
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            radius: units.gu(0.5)
+                            color: root.cameraResolutionMenuVisible ? "#52718a" : "#40596d"
+                            z: 2
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "⌃"
+                                color: "white"
+                                font.pixelSize: units.gu(1.8)
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: root.cameraResolutionMenuVisible =
+                                        !root.cameraResolutionMenuVisible
+                            }
                         }
                     }
 
@@ -1806,6 +1841,85 @@ Item {
             }
         }
     }
+    // Camera resolution picker, positioned above the camera control.
+    Rectangle {
+        id: cameraResolutionMenu
+        z: 1000
+        visible: root.cameraResolutionMenuVisible
+        width: units.gu(25)
+        height: units.gu(22)
+        radius: units.gu(1)
+        color: "#172633"
+        border.color: "#60798c"
+        border.width: 1
+        x: Math.max(0, Math.min(root.width - width,
+                                cameraControl.mapToItem(root, 0, 0).x))
+        y: Math.max(0, cameraControl.mapToItem(root, 0, 0).y - height - units.gu(1))
+
+        Column {
+            anchors.fill: parent
+            anchors.margins: units.gu(1)
+            spacing: units.gu(0.5)
+
+            Text {
+                width: parent.width
+                text: "Camera resolution"
+                color: "white"
+                font.bold: true
+                font.pixelSize: units.gu(1.7)
+            }
+
+            Repeater {
+                model: [
+                    { width: 240, height: 320, label: "240 × 320  ·  Low bandwidth" },
+                    { width: 360, height: 480, label: "360 × 480  ·  Balanced" },
+                    { width: 480, height: 640, label: "480 × 640  ·  High quality" }
+                ]
+
+                delegate: Rectangle {
+                    width: parent.width
+                    height: units.gu(4.5)
+                    radius: units.gu(0.6)
+                    color: root.cameraResolutionWidth === modelData.width &&
+                           root.cameraResolutionHeight === modelData.height
+                           ? "#315d48" : "#263b4a"
+
+                    Text {
+                        anchors.fill: parent
+                        anchors.leftMargin: units.gu(1)
+                        verticalAlignment: Text.AlignVCenter
+                        text: modelData.label +
+                              (root.cameraResolutionWidth === modelData.width &&
+                               root.cameraResolutionHeight === modelData.height
+                               ? "  ✓" : "")
+                        color: "white"
+                        font.pixelSize: units.gu(1.35)
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: root.selectCameraResolution(
+                                       modelData.width, modelData.height)
+                    }
+                }
+            }
+
+            Text {
+                width: parent.width
+                visible: root.videoStarted
+                text: "Applies the next time the camera starts."
+                color: "#b8c8d4"
+                wrapMode: Text.WordWrap
+                font.pixelSize: units.gu(1.15)
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            z: -1
+        }
+    }
+
     // Ask before starting display capture so device playback is never shared implicitly.
     Item {
         anchors.fill: parent
