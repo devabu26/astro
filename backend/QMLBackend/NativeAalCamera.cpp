@@ -62,12 +62,19 @@ void NativeAalCamera::previewSizeCallback(void *context, int width, int height)
         self->m_supportedSizes.append(QSize(width, height));
 }
 
-bool NativeAalCamera::start(int cameraId, QString *error)
+bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
 {
     stop();
     if (!resolveApi(error))
         return false;
 
+    if (roomId.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Room ID is empty");
+        return false;
+    }
+
+    m_roomId = roomId;
     m_listener = {};
     m_listener.context = this;
     m_listener.onPreviewFrame = &NativeAalCamera::previewFrameCallback;
@@ -146,7 +153,6 @@ bool NativeAalCamera::start(int cameraId, QString *error)
 
 void NativeAalCamera::stop()
 {
-    QMutexLocker locker(&m_callbackMutex);
     m_running.store(false);
 
     if (m_control) {
@@ -161,6 +167,9 @@ void NativeAalCamera::stop()
         m_control = nullptr;
     }
 
+    // Wait for a callback already in flight before unloading the shared library.
+    QMutexLocker locker(&m_callbackMutex);
+    m_roomId.clear();
     m_width = 0;
     m_height = 0;
     m_supportedSizes.clear();
@@ -232,5 +241,5 @@ void NativeAalCamera::receivePreviewFrame(const void *data, uint32_t size)
                 << "size:" << image.size()
                 << "centre RGB:" << centre.red() << centre.green() << centre.blue();
     }
-    emit frameReceived(image);
+    emit frameReceived(m_roomId, image);
 }
