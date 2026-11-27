@@ -2303,50 +2303,6 @@ void StorageWorker::startRtcBackgroundCamera(
                 const quint64 cameraGeneration = ++m_rtcCameraGeneration;
                 const QPointer<QCamera> cameraGuard(m_rtcCamera);
 
-                // Observe frames at the QMediaObject level without mapping or
-                // retaining them. This distinguishes AAL camera-service frame
-                // delivery from failures in our custom QAbstractVideoSurface.
-                m_rtcCameraVideoProbe = new QVideoProbe(this);
-                m_rtcCameraProbeFrameCount.storeRelease(0);
-                m_rtcCameraProbeElapsedTimer.start();
-                connect(
-                    m_rtcCameraVideoProbe,
-                    &QVideoProbe::videoFrameProbed,
-                    this,
-                    [this, roomId, cameraGuard, cameraGeneration](
-                        const QVideoFrame &frame
-                    ) {
-                        if (!cameraGuard ||
-                            m_rtcCamera != cameraGuard.data() ||
-                            m_rtcCameraGeneration != cameraGeneration)
-                            return;
-
-                        const int frameNumber =
-                            m_rtcCameraProbeFrameCount.fetchAndAddRelaxed(1) + 1;
-                        if (frameNumber <= 3 || frameNumber % 30 == 0) {
-                            qInfo() << "ASTRO_CAMERA_PROBE: frame received"
-                                    << "room:" << roomId
-                                    << "frames:" << frameNumber
-                                    << "elapsedMs:"
-                                    << m_rtcCameraProbeElapsedTimer.elapsed()
-                                    << "size:" << frame.size()
-                                    << "format:" << frame.pixelFormat()
-                                    << "handleType:" << frame.handleType()
-                                    << "handle:" << frame.handle()
-                                    << "planes:" << frame.planeCount()
-                                    << "valid:" << frame.isValid()
-                                    << "thread:" << QThread::currentThreadId();
-                        }
-                    }
-                );
-                const bool probeAttached =
-                    m_rtcCameraVideoProbe->setSource(m_rtcCamera);
-                qInfo() << "ASTRO_CAMERA_PROBE: attached to native QCamera"
-                        << "attached:" << probeAttached
-                        << "active:" << m_rtcCameraVideoProbe->isActive()
-                        << "camera:" << m_rtcCamera
-                        << "generation:" << cameraGeneration;
-
                 connect(
                     m_rtcCamera,
                     &QCamera::stateChanged,
