@@ -603,13 +603,10 @@ async fn device_is_cross_signed(
         Ok(Some(device)) => {
             let owner_cross_signed = device.is_cross_signed_by_owner();
             eprintln!(
-                "ASTRO RTC E2EE trust diagnostic: user={}, device={}, owner_cross_signed={}, cross_signing_trusted={}, locally_trusted={}, sdk_verified={}",
+                "ASTRO RTC E2EE trust diagnostic: user={}, device={}, owner_cross_signed={}",
                 user_id,
                 device_id,
-                owner_cross_signed,
-                device.is_cross_signing_trusted(),
-                device.is_locally_trusted(),
-                device.is_verified()
+                owner_cross_signed
             );
             owner_cross_signed
         }
