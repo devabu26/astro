@@ -643,11 +643,10 @@ void Backend::switchRtcCamera(const QString &roomId)
         return;
     }
 
-    // startRtcBackgroundCamera() releases the current camera asynchronously
-    // and creates the replacement only after UnloadedStatus.
+    // Release the current camera asynchronously and report completion through
+    // the video-action signal expected by CallPage.qml.
+    m_rtcCameraSwitchPending = true;
     startRtcBackgroundCamera(roomId, selected.deviceName());
-    // The camera action completion reports the result; this signal clears
-    // the QML switch operation once the replacement becomes active.
 }
 
 void Backend::startRtcBackgroundCamera(
@@ -740,6 +739,10 @@ void Backend::startRtcBackgroundCamera(
                 emit matrixRtcBackgroundCameraActionFinished(
                     roomId, true, selected.deviceName(), QString()
                 );
+                if (m_rtcCameraSwitchPending) {
+                    m_rtcCameraSwitchPending = false;
+                    emit matrixRtcVideoActionFinished(roomId, QString());
+                }
             }
         }
     );
@@ -759,6 +762,10 @@ void Backend::startRtcBackgroundCamera(
             emit matrixRtcBackgroundCameraActionFinished(
                 roomId, false, QString(), message
             );
+            if (m_rtcCameraSwitchPending) {
+                m_rtcCameraSwitchPending = false;
+                emit matrixRtcVideoActionFinished(roomId, message);
+            }
             releaseRtcCamera(false);
         }
     );
@@ -785,6 +792,10 @@ void Backend::startRtcBackgroundCamera(
         emit matrixRtcBackgroundCameraActionFinished(
             roomId, false, QString(), message
         );
+        if (m_rtcCameraSwitchPending) {
+            m_rtcCameraSwitchPending = false;
+            emit matrixRtcVideoActionFinished(roomId, message);
+        }
         releaseRtcCamera(false);
     });
 }
@@ -796,6 +807,7 @@ void Backend::stopRtcBackgroundCamera(const QString &roomId)
         return;
 
     m_rtcCameraRestartAfterUnload = false;
+    m_rtcCameraSwitchPending = false;
     m_rtcCameraPendingRoomId.clear();
     m_rtcCameraPendingDeviceId.clear();
     releaseRtcCamera(false);
