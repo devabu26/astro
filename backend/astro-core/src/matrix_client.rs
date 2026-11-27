@@ -73,7 +73,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::{Builder, Runtime};
 
 use crate::media::MediaManager;
-use crate::rtc_e2ee::RtcE2eeSession;
+use crate::rtc_e2ee::{has_active_legacy_membership, has_active_modern_membership, RtcE2eeSession};
 use crate::notifications::{register_incoming_call_handler, register_notification_handler, NotificationQueue};
 use crate::session_storage::{delete_session, load_session, save_session};
 
@@ -531,7 +531,11 @@ async fn discover_livekit_transport(client: &Client) -> Result<RtcLiveKitTranspo
             .and_then(serde_json::Value::as_array)
             .ok_or_else(|| "MatrixRTC transport response has no transports array".to_string())?;
 
-        let mut legacy = None;
+        // Preserve both generations when the homeserver advertises them.
+        // Membership format is selected from the active call, not inferred
+        // from whichever transport entry happens to appear first.
+        let mut modern_sfu_url = None;
+        let mut legacy_service_url = None;
         for entry in entries {
             let transport_type = entry.get("type").and_then(serde_json::Value::as_str).unwrap_or("");
             let sfu_url = entry.get("url")
@@ -544,23 +548,24 @@ async fn discover_livekit_transport(client: &Client) -> Result<RtcLiveKitTranspo
                 .map(str::to_owned);
 
             if transport_type == "m.livekit" {
-                if let Some(url) = sfu_url {
-                    return Ok(RtcLiveKitTransport {
-                        sfu_url: Some(url),
-                        legacy_service_url: None,
-                    });
+                modern_sfu_url = sfu_url.or(modern_sfu_url);
+            } else if transport_type == "livekit" {
+                if legacy_service_url.is_none() {
+                    legacy_service_url = service_url;
                 }
-            } else if transport_type == "livekit" && service_url.is_some() {
-                legacy = Some(RtcLiveKitTransport {
-                    sfu_url,
-                    legacy_service_url: service_url,
-                });
+                if modern_sfu_url.is_none() {
+                    modern_sfu_url = sfu_url;
+                }
             }
         }
 
-        return legacy.ok_or_else(|| {
-            "The homeserver did not advertise a supported LiveKit transport".into()
-        });
+        if modern_sfu_url.is_some() || legacy_service_url.is_some() {
+            return Ok(RtcLiveKitTransport {
+                sfu_url: modern_sfu_url,
+                legacy_service_url,
+            });
+        }
+        return Err("The homeserver did not advertise a supported LiveKit transport".into());
     }
 
     // Older homeservers may expose transports only through .well-known. Let
@@ -574,37 +579,38 @@ async fn discover_livekit_transport(client: &Client) -> Result<RtcLiveKitTranspo
         return Err("The homeserver did not advertise any MatrixRTC transports".into());
     };
 
+    let mut modern_sfu_url = None;
+    let mut legacy_service_url = None;
     for transport in transports {
         let transport_type = transport.transport_type();
         let data = transport.data();
+        let url = data.get("url")
+            .and_then(serde_json::Value::as_str)
+            .filter(|url| !url.is_empty())
+            .map(str::to_owned);
         if transport_type == "m.livekit" {
-            if let Some(url) = data.get("url").and_then(serde_json::Value::as_str)
-                .filter(|url| !url.is_empty())
-            {
-                return Ok(RtcLiveKitTransport {
-                    sfu_url: Some(url.to_owned()),
-                    legacy_service_url: None,
-                });
-            }
+            modern_sfu_url = url.or(modern_sfu_url);
         } else if transport_type == "livekit" {
-            let service_url = data.get("livekit_service_url")
-                .and_then(serde_json::Value::as_str)
-                .filter(|url| !url.is_empty())
-                .map(str::to_owned);
-            if service_url.is_some() {
-                let sfu_url = data.get("url")
+            if legacy_service_url.is_none() {
+                legacy_service_url = data.get("livekit_service_url")
                     .and_then(serde_json::Value::as_str)
                     .filter(|url| !url.is_empty())
                     .map(str::to_owned);
-                return Ok(RtcLiveKitTransport {
-                    sfu_url,
-                    legacy_service_url: service_url,
-                });
+            }
+            if modern_sfu_url.is_none() {
+                modern_sfu_url = url;
             }
         }
     }
 
-    Err("The homeserver did not advertise a supported LiveKit transport".into())
+    if modern_sfu_url.is_some() || legacy_service_url.is_some() {
+        Ok(RtcLiveKitTransport {
+            sfu_url: modern_sfu_url,
+            legacy_service_url,
+        })
+    } else {
+        Err("The homeserver did not advertise a supported LiveKit transport".into())
+    }
 }
 
 async fn fetch_modern_rtc_livekit_token(
@@ -2840,15 +2846,72 @@ impl MatrixClientManager {
         if room_id.is_empty() {
             return Err("Room ID is empty".into());
         }
-        // Joining is idempotent within this Matrix client session. The
-        // call page and the room's presence controls share this membership.
+        // Reuse an existing membership, but repair any missing transport or
+        // E2EE session before reporting a successful join. A previous attempt
+        // can publish membership successfully and then fail while creating the
+        // media-key exchange; returning here would leave encrypted calls
+        // permanently unable to start.
         if self.rtc_local_memberships.contains_key(room_id) {
+            let has_e2ee_session = self.rtc_e2ee_sessions.contains_key(room_id);
+            let has_transport = self.rtc_livekit_services.contains_key(room_id);
+            if has_e2ee_session && has_transport {
+                eprintln!(
+                    "ASTRO RTC NEGOTIATION: reusing complete membership; room={}, notify_recipients={}",
+                    room_id, notify_recipients
+                );
+                return Ok(());
+            }
+
+            let client = self.client.as_ref()
+                .ok_or_else(|| "No active Matrix session".to_string())?
+                .clone();
+            let lookup_client = client.clone();
+            let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+                .map_err(|error| format!("Invalid room ID: {error}"))?;
+            let existing_transport = self.rtc_livekit_services.get(room_id).cloned();
+            let (room, encrypted, transport) = self.runtime.block_on(async move {
+                let room = lookup_client.get_room(&parsed_room_id)
+                    .ok_or_else(|| "The existing MatrixRTC membership refers to an unavailable room".to_string())?;
+                let encrypted = room.latest_encryption_state().await
+                    .map_err(|error| format!("Could not determine room encryption state: {error}"))?
+                    .is_encrypted();
+                let transport = match existing_transport {
+                    Some(transport) => transport,
+                    None => discover_livekit_transport(&lookup_client).await?,
+                };
+                Ok::<_, String>((room, encrypted, transport))
+            })?;
+            self.rtc_livekit_services.insert(room_id.to_owned(), transport);
+
+            if encrypted && !self.rtc_e2ee_sessions.contains_key(room_id) {
+                let session = if let Some((member_id, _)) = self.rtc_modern_memberships.get(room_id) {
+                    RtcE2eeSession::start(
+                        self.runtime.as_ref(), client.clone(), room, member_id.clone()
+                    )?
+                } else {
+                    let user_id = client.user_id()
+                        .ok_or_else(|| "Matrix user ID is unavailable for legacy RTC E2EE".to_string())?;
+                    let device_id = client.device_id()
+                        .ok_or_else(|| "Matrix device ID is unavailable for legacy RTC E2EE".to_string())?;
+                    RtcE2eeSession::start_legacy(
+                        self.runtime.as_ref(),
+                        client.clone(),
+                        room,
+                        format!("{user_id}:{device_id}"),
+                    )?
+                };
+                eprintln!(
+                    "ASTRO RTC NEGOTIATION: repaired missing E2EE session for existing membership; room={}, membership_format={}",
+                    room_id,
+                    if self.rtc_modern_memberships.contains_key(room_id) { "msc4354_sticky" } else { "legacy_msc3401" }
+                );
+                self.rtc_e2ee_sessions.insert(room_id.to_owned(), session);
+            }
+
             eprintln!(
-                "ASTRO RTC NEGOTIATION: join request reused existing membership; room={}, notify_recipients={}, has_e2ee_session={}, has_modern_membership={}, has_livekit_transport={}",
-                room_id,
-                notify_recipients,
+                "ASTRO RTC NEGOTIATION: existing membership repaired; room={}, encrypted={}, had_e2ee_session={}, had_transport={}, has_e2ee_session={}, has_transport={}",
+                room_id, encrypted, has_e2ee_session, has_transport,
                 self.rtc_e2ee_sessions.contains_key(room_id),
-                self.rtc_modern_memberships.contains_key(room_id),
                 self.rtc_livekit_services.contains_key(room_id)
             );
             return Ok(());
@@ -2883,33 +2946,55 @@ impl MatrixClientManager {
                 livekit_transport.legacy_service_url.is_some()
             );
 
-            // MSC4354 is optional. Homeservers without sticky events (or native
-            // Sliding Sync) still get the established MSC3401 compatibility
-            // membership and LiveKit call path; modern MatrixRTC membership and
-            // per-member key exchange are enabled only when the server supports it.
+            // The active call's membership generation takes precedence over
+            // local capability and transport discovery. In particular, older
+            // Element Call/Cinny sessions publish MSC3401 room-state members
+            // even when the homeserver also advertises the newer m.livekit
+            // transport. Selecting MSC4354 solely from local capabilities can
+            // connect to the SFU with an incompatible member/key identity.
             let sticky_events_supported = client.supports_sticky_events().await.unwrap_or(false);
             let native_sliding_sync_available = client.available_sliding_sync_versions().await.iter()
                 .any(|version| matches!(version, Version::Native));
             let sticky_supported = sticky_events_supported && native_sliding_sync_available;
-            let use_modern_membership = sticky_supported
-                && livekit_transport.sfu_url.is_some()
-                && livekit_transport.legacy_service_url.is_none();
+            let active_legacy_membership = has_active_legacy_membership(&room).await;
+            let active_modern_membership = has_active_modern_membership(&room);
+            let modern_transport_available = livekit_transport.sfu_url.is_some();
+            let legacy_transport_available = livekit_transport.legacy_service_url.is_some();
+
+            if active_modern_membership && (!sticky_supported || !modern_transport_available) {
+                return Err("This call already has MSC4354 sticky members, but Astro cannot use the matching modern MatrixRTC transport".into());
+            }
+            if active_legacy_membership && !active_modern_membership && !legacy_transport_available {
+                return Err("This call uses legacy MSC3401 membership, but the homeserver did not advertise the legacy LiveKit authorization service required to join it".into());
+            }
+
+            let use_modern_membership = if active_modern_membership {
+                true
+            } else if active_legacy_membership {
+                false
+            } else {
+                sticky_supported && modern_transport_available
+            };
             eprintln!(
-                "ASTRO RTC NEGOTIATION: membership decision; sticky_events_supported={}, native_sliding_sync_available={}, modern_sfu_url_present={}, legacy_authorization_url_present={}, selected_membership_format={}",
+                "ASTRO RTC NEGOTIATION: membership decision; active_legacy_membership={}, active_modern_membership={}, sticky_events_supported={}, native_sliding_sync_available={}, modern_sfu_url_present={}, legacy_authorization_url_present={}, selected_membership_format={}, selection_reason={}",
+                active_legacy_membership,
+                active_modern_membership,
                 sticky_events_supported,
                 native_sliding_sync_available,
-                livekit_transport.sfu_url.is_some(),
-                livekit_transport.legacy_service_url.is_some(),
-                if use_modern_membership { "msc4354_sticky_m_rtc_member" } else { "legacy_msc3401_room_state" }
+                modern_transport_available,
+                legacy_transport_available,
+                if use_modern_membership { "msc4354_sticky_m_rtc_member" } else { "legacy_msc3401_room_state" },
+                if active_modern_membership { "existing_modern_call_member" }
+                    else if active_legacy_membership { "existing_legacy_call_member" }
+                    else if use_modern_membership { "new_call_modern_capability" }
+                    else { "new_call_legacy_fallback" }
             );
 
-            if livekit_transport.sfu_url.is_some()
-                && livekit_transport.legacy_service_url.is_none()
-                && !sticky_supported
-            {
-                return Err(
-                    "The homeserver advertises the MSC4195 LiveKit transport, but Astro cannot use it without MatrixRTC sticky-event support".into()
-                );
+            if use_modern_membership && !sticky_supported {
+                return Err("The homeserver advertises the MSC4195 LiveKit transport, but Astro cannot use it without MatrixRTC sticky-event support".into());
+            }
+            if !use_modern_membership && !legacy_transport_available {
+                return Err("The homeserver did not advertise the legacy LiveKit authorization service required for MSC3401 membership".into());
             }
 
             let mut modern_membership: Option<serde_json::Value> = None;
