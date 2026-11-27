@@ -750,6 +750,10 @@ MainView {
             notificationPushClient.clearPersistent(["astro-call-" + eventId])
         }
 
+        onCallExpired: {
+            notificationPushClient.clearPersistent(["astro-call-" + eventId])
+        }
+
         onAcceptRequested: {
             incomingCallAlert.stop()
             notificationPushClient.clearPersistent(["astro-call-" + eventId])
