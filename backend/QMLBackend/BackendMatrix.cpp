@@ -1,6 +1,7 @@
 
 
 #include "Backend.h"
+#include "NativeAalCamera.h"
 #include "StorageWorker/StorageWorker.h"
 #include "notifications/NotificationManager.h"
 
@@ -591,43 +592,20 @@ void Backend::stopRtcScreenShare(const QString &roomId)
 
 QObject *Backend::rtcCamera() const
 {
-    return m_rtcCamera.data();
-}
-
-QAbstractVideoSurface *Backend::rtcCameraVideoSurface() const
-{
-    return m_rtcCameraVideoSurface.data();
-}
-
-void Backend::setRtcCameraVideoSurface(QAbstractVideoSurface *surface)
-{
-    if (m_rtcCameraVideoSurface == surface)
-        return;
-
-    m_rtcCameraVideoSurface = surface;
-    if (m_rtcCamera) {
-        m_rtcCamera->setViewfinder(surface);
-        qInfo() << "ASTRO_RTC_CAMERA: VideoOutput viewfinder surface"
-                << (surface ? "attached" : "detached")
-                << "cameraStatus:" << static_cast<int>(m_rtcCamera->status());
-    } else {
-        qInfo() << "ASTRO_RTC_CAMERA: VideoOutput surface registered"
-                << "waitingForCamera:" << (surface != nullptr);
-    }
-    emit rtcCameraVideoSurfaceChanged();
+    return m_nativeRtcCamera && m_nativeRtcCamera->isRunning()
+        ? static_cast<QObject *>(m_nativeRtcCamera) : nullptr;
 }
 
 void Backend::switchRtcCamera(const QString &roomId)
 {
     if (!m_storageReady || roomId.isEmpty() ||
-        !m_rtcCamera || m_rtcCameraRoomId != roomId) {
+        !m_nativeRtcCamera || !m_nativeRtcCamera->isRunning() ||
+        m_rtcCameraRoomId != roomId) {
         emit matrixRtcVideoActionFinished(
             roomId,
             !m_storageReady
                 ? QStringLiteral("Encrypted storage is not open")
-                : !m_rtcCamera
-                    ? QStringLiteral("Camera is not running")
-                    : QStringLiteral("Camera belongs to another room")
+                : QStringLiteral("Camera is not running for this room")
         );
         return;
     }
@@ -640,35 +618,21 @@ void Backend::switchRtcCamera(const QString &roomId)
         return;
     }
 
-    const QCameraInfo current(*m_rtcCamera);
     QCameraInfo selected;
-    for (const QCameraInfo &candidate : cameras) {
-        if (candidate.deviceName() != current.deviceName() &&
-            candidate.position() != QCamera::UnspecifiedPosition &&
-            current.position() != QCamera::UnspecifiedPosition &&
-            candidate.position() != current.position()) {
-            selected = candidate;
+    for (int i = 0; i < cameras.size(); ++i) {
+        if (cameras.at(i).deviceName() == m_nativeRtcCameraDeviceId) {
+            selected = cameras.at((i + 1) % cameras.size());
             break;
         }
     }
-    if (selected.deviceName().isEmpty()) {
-        for (int i = 0; i < cameras.size(); ++i) {
-            if (cameras.at(i).deviceName() == current.deviceName()) {
-                selected = cameras.at((i + 1) % cameras.size());
-                break;
-            }
-        }
-    }
     if (selected.deviceName().isEmpty() ||
-        selected.deviceName() == current.deviceName()) {
+        selected.deviceName() == m_nativeRtcCameraDeviceId) {
         emit matrixRtcVideoActionFinished(
             roomId, QStringLiteral("Could not find another camera device")
         );
         return;
     }
 
-    // Release the current camera asynchronously and report completion through
-    // the video-action signal expected by CallPage.qml.
     m_rtcCameraSwitchPending = true;
     startRtcBackgroundCamera(roomId, selected.deviceName());
 }
@@ -678,33 +642,32 @@ void Backend::startRtcBackgroundCamera(
     const QString &deviceId
 )
 {
-    if (!m_storageReady || roomId.isEmpty()) {
+    if (!m_storageReady || roomId.isEmpty() || !m_nativeRtcCamera) {
         emit matrixRtcBackgroundCameraActionFinished(
             roomId, false, QString(),
             !m_storageReady
                 ? QStringLiteral("Encrypted storage is not open")
-                : QStringLiteral("Room ID is empty")
+                : roomId.isEmpty()
+                    ? QStringLiteral("Room ID is empty")
+                    : QStringLiteral("Native camera service is unavailable")
         );
         return;
     }
 
-    if (m_rtcCamera) {
-        const QString currentDevice =
-            QCameraInfo(*m_rtcCamera).deviceName();
-        if (!m_rtcCameraUnloading &&
-            m_rtcCameraRoomId == roomId &&
-            (deviceId.isEmpty() || deviceId == currentDevice) &&
-            m_rtcCamera->status() == QCamera::ActiveStatus) {
-            emit matrixRtcBackgroundCameraActionFinished(
-                roomId, true, currentDevice, QString()
-            );
-            return;
-        }
-
-        m_rtcCameraPendingRoomId = roomId;
-        m_rtcCameraPendingDeviceId = deviceId;
-        releaseRtcCamera(true);
+    if (m_nativeRtcCamera->isRunning() &&
+        m_rtcCameraRoomId == roomId &&
+        (deviceId.isEmpty() || deviceId == m_nativeRtcCameraDeviceId)) {
+        emit matrixRtcBackgroundCameraActionFinished(
+            roomId, true, m_nativeRtcCameraDeviceId, QString()
+        );
         return;
+    }
+
+    if (m_nativeRtcCamera->isRunning()) {
+        m_nativeRtcCamera->stop();
+        m_rtcCameraRoomId.clear();
+        m_nativeRtcCameraDeviceId.clear();
+        emit rtcCameraChanged();
     }
 
     const QList<QCameraInfo> cameras = QCameraInfo::availableCameras();
@@ -716,239 +679,77 @@ void Backend::startRtcBackgroundCamera(
                 break;
             }
         }
-    }
-    if (selected.deviceName().isEmpty() && !deviceId.isEmpty()) {
-        const QString message = QStringLiteral(
-            "The requested camera device is no longer available"
-        );
-        emit matrixRtcBackgroundCameraActionFinished(
-            roomId, false, QString(), message
-        );
-        if (m_rtcCameraSwitchPending) {
-            m_rtcCameraSwitchPending = false;
-            emit matrixRtcVideoActionFinished(roomId, message);
-        }
-        return;
-    }
-    if (selected.deviceName().isEmpty())
+    } else {
         selected = QCameraInfo::defaultCamera();
+    }
 
     if (selected.deviceName().isEmpty()) {
-        const QString message = QStringLiteral(
-            "No native camera device is available"
-        );
+        const QString error = deviceId.isEmpty()
+            ? QStringLiteral("No native camera device is available")
+            : QStringLiteral("The requested camera device is unavailable");
         emit matrixRtcBackgroundCameraActionFinished(
-            roomId, false, QString(), message
+            roomId, false, QString(), error
         );
         if (m_rtcCameraSwitchPending) {
             m_rtcCameraSwitchPending = false;
-            emit matrixRtcVideoActionFinished(roomId, message);
+            emit matrixRtcVideoActionFinished(roomId, error);
         }
         return;
     }
 
-    QCamera *camera = new QCamera(selected, this);
-    m_rtcCamera = camera;
-    m_rtcCameraRoomId = roomId;
-    // Attach VideoOutput's QAbstractVideoSurface before loading AAL.
-    if (m_rtcCameraVideoSurface) {
-        camera->setViewfinder(m_rtcCameraVideoSurface.data());
-        qInfo() << "ASTRO_RTC_CAMERA: attached VideoOutput viewfinder before load";
-    } else {
-        qWarning() << "ASTRO_RTC_CAMERA: no VideoOutput viewfinder surface registered yet";
-    }
-    const quint64 generation = ++m_rtcCameraGeneration;
-    const QPointer<QCamera> guard(camera);
-
-    qInfo() << "ASTRO_RTC_CAMERA: creating C++ camera for VideoOutput"
-            << "room:" << roomId
-            << "device:" << selected.deviceName()
-            << "description:" << selected.description()
-            << "thread:" << QThread::currentThreadId();
-
-    connect(
-        camera, &QCamera::statusChanged, this,
-        [this, guard, generation, roomId, selected](QCamera::Status status) {
-            if (!guard || m_rtcCamera != guard.data() ||
-                m_rtcCameraGeneration != generation)
-                return;
-
-            if (status == QCamera::LoadedStatus &&
-                guard->state() != QCamera::ActiveState) {
-                qInfo() << "ASTRO_RTC_CAMERA: camera loaded; starting capture"
-                        << "device:" << selected.deviceName();
-                guard->start();
-                return;
-            }
-
-            if (status == QCamera::ActiveStatus) {
-                qInfo() << "ASTRO_RTC_CAMERA: C++ camera active"
-                        << "device:" << selected.deviceName()
-                        << "videoOutputSource:" << (rtcCamera() == guard.data());
-                emit matrixRtcBackgroundCameraActionFinished(
-                    roomId, true, selected.deviceName(), QString()
-                );
-                if (m_rtcCameraSwitchPending) {
-                    m_rtcCameraSwitchPending = false;
-                    emit matrixRtcVideoActionFinished(roomId, QString());
-                }
-            }
-        }
-    );
-
-    connect(
-        camera, QOverload<QCamera::Error>::of(&QCamera::error), this,
-        [this, guard, generation, roomId](QCamera::Error error) {
-            if (!guard || m_rtcCamera != guard.data() ||
-                m_rtcCameraGeneration != generation ||
-                error == QCamera::NoError)
-                return;
-            const QString message = guard->errorString().isEmpty()
-                ? QStringLiteral("The native camera failed")
-                : guard->errorString();
-            qWarning() << "ASTRO_RTC_CAMERA: C++ camera error"
-                       << static_cast<int>(error) << message;
-            emit matrixRtcBackgroundCameraActionFinished(
-                roomId, false, QString(), message
-            );
-            if (m_rtcCameraSwitchPending) {
-                m_rtcCameraSwitchPending = false;
-                emit matrixRtcVideoActionFinished(roomId, message);
-            }
-            releaseRtcCamera(false);
-        }
-    );
-
-    camera->setCaptureMode(QCamera::CaptureVideo);
-    // Notify QML before loading so VideoOutput attaches its renderer surface
-    // before the AAL backend attempts to start the camera preview.
-    emit rtcCameraChanged();
-
-    // Let QML evaluate the rtcCamera binding and attach VideoOutput's
-    // renderer surface before QCamera begins loading the AAL service.
-    QTimer::singleShot(0, this, [this, guard, generation]() {
-        if (!guard || m_rtcCamera != guard.data() ||
-            m_rtcCameraGeneration != generation ||
-            m_rtcCameraUnloading)
-            return;
-        guard->load();
-    });
-
-    QTimer::singleShot(10000, this, [this, guard, generation, roomId, selected]() {
-        if (!guard || m_rtcCamera != guard.data() ||
-            m_rtcCameraGeneration != generation ||
-            guard->status() == QCamera::ActiveStatus ||
-            m_rtcCameraUnloading)
-            return;
-        const QString message = guard->errorString().isEmpty()
-            ? QStringLiteral("The camera did not become active within 10 seconds")
-            : guard->errorString();
-        qWarning() << "ASTRO_RTC_CAMERA: camera startup timed out"
-                   << "device:" << selected.deviceName()
-                   << "status:" << static_cast<int>(guard->status())
-                   << "state:" << static_cast<int>(guard->state());
+    bool cameraIdOk = false;
+    const int cameraId = selected.deviceName().toInt(&cameraIdOk);
+    if (!cameraIdOk) {
+        const QString error = QStringLiteral(
+            "AAL camera device ID is not numeric: %1"
+        ).arg(selected.deviceName());
         emit matrixRtcBackgroundCameraActionFinished(
-            roomId, false, QString(), message
+            roomId, false, QString(), error
         );
         if (m_rtcCameraSwitchPending) {
             m_rtcCameraSwitchPending = false;
-            emit matrixRtcVideoActionFinished(roomId, message);
+            emit matrixRtcVideoActionFinished(roomId, error);
         }
-        releaseRtcCamera(false);
-    });
+        return;
+    }
+
+    QString error;
+    if (!m_nativeRtcCamera->start(cameraId, &error)) {
+        qWarning() << "ASTRO_RTC_AAL: native camera start failed:" << error;
+        emit matrixRtcBackgroundCameraActionFinished(
+            roomId, false, QString(), error
+        );
+        if (m_rtcCameraSwitchPending) {
+            m_rtcCameraSwitchPending = false;
+            emit matrixRtcVideoActionFinished(roomId, error);
+        }
+        return;
+    }
+
+    m_rtcCameraRoomId = roomId;
+    m_nativeRtcCameraDeviceId = selected.deviceName();
+    emit rtcCameraChanged();
+    emit matrixRtcBackgroundCameraActionFinished(
+        roomId, true, m_nativeRtcCameraDeviceId, QString()
+    );
+    if (m_rtcCameraSwitchPending) {
+        m_rtcCameraSwitchPending = false;
+        emit matrixRtcVideoActionFinished(roomId, QString());
+    }
 }
 
 void Backend::stopRtcBackgroundCamera(const QString &roomId)
 {
-    if (m_rtcCamera && !roomId.isEmpty() &&
+    if (!m_rtcCameraRoomId.isEmpty() && !roomId.isEmpty() &&
         roomId != m_rtcCameraRoomId)
         return;
 
-    m_rtcCameraRestartAfterUnload = false;
+    if (m_nativeRtcCamera)
+        m_nativeRtcCamera->stop();
+    m_rtcCameraRoomId.clear();
+    m_nativeRtcCameraDeviceId.clear();
     m_rtcCameraSwitchPending = false;
-    m_rtcCameraPendingRoomId.clear();
-    m_rtcCameraPendingDeviceId.clear();
-    releaseRtcCamera(false);
-}
-
-void Backend::releaseRtcCamera(bool restartAfterUnload)
-{
-    if (!m_rtcCamera) {
-        m_rtcCameraUnloading = false;
-        if (restartAfterUnload && !m_rtcCameraPendingRoomId.isEmpty()) {
-            const QString room = m_rtcCameraPendingRoomId;
-            const QString device = m_rtcCameraPendingDeviceId;
-            m_rtcCameraRestartAfterUnload = false;
-            m_rtcCameraPendingRoomId.clear();
-            m_rtcCameraPendingDeviceId.clear();
-            QTimer::singleShot(0, this, [this, room, device]() {
-                startRtcBackgroundCamera(room, device);
-            });
-        }
-        return;
-    }
-
-    if (m_rtcCameraUnloading) {
-        // A start/switch request can arrive while the previous unload is
-        // already in progress. Preserve the new pending target and make sure
-        // the completion callback knows whether to recreate the camera.
-        m_rtcCameraRestartAfterUnload = restartAfterUnload;
-        if (!restartAfterUnload) {
-            m_rtcCameraPendingRoomId.clear();
-            m_rtcCameraPendingDeviceId.clear();
-        }
-        return;
-    }
-
-    m_rtcCameraRestartAfterUnload = restartAfterUnload;
-    QCamera *camera = m_rtcCamera.data();
-    // Detach the QML-owned surface before camera teardown.
-    camera->setViewfinder(static_cast<QAbstractVideoSurface *>(nullptr));
-    const quint64 generation = ++m_rtcCameraGeneration;
-    m_rtcCameraUnloading = true;
-
-    auto finishUnload = [this, camera, generation]() {
-        if (!camera || m_rtcCamera != camera ||
-            m_rtcCameraGeneration != generation ||
-            !m_rtcCameraUnloading)
-            return;
-
-        m_rtcCamera = nullptr;
-        m_rtcCameraRoomId.clear();
-        m_rtcCameraUnloading = false;
-        emit rtcCameraChanged();
-        camera->deleteLater();
-
-        const bool restart = m_rtcCameraRestartAfterUnload;
-        const QString room = m_rtcCameraPendingRoomId;
-        const QString device = m_rtcCameraPendingDeviceId;
-        m_rtcCameraRestartAfterUnload = false;
-        m_rtcCameraPendingRoomId.clear();
-        m_rtcCameraPendingDeviceId.clear();
-
-        if (restart && !room.isEmpty()) {
-            QTimer::singleShot(0, this, [this, room, device]() {
-                startRtcBackgroundCamera(room, device);
-            });
-        }
-    };
-
-    connect(
-        camera, &QCamera::statusChanged, this,
-        [finishUnload](QCamera::Status status) {
-            if (status == QCamera::UnloadedStatus)
-                finishUnload();
-        }
-    );
-
-    qInfo() << "ASTRO_RTC_CAMERA: unloading C++ camera"
-            << "room:" << m_rtcCameraRoomId
-            << "status:" << static_cast<int>(camera->status())
-            << "state:" << static_cast<int>(camera->state());
-    camera->stop();
-    camera->unload();
-    if (camera->status() == QCamera::UnloadedStatus)
-        finishUnload();
+    emit rtcCameraChanged();
 }
 
 void Backend::stopRtcVideo(const QString &roomId)
