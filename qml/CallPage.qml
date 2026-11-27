@@ -1753,7 +1753,7 @@ Item {
 
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: "↔"
+                                text: "⟳"
                                 color: "white"
                                 font.pixelSize: units.gu(2.5)
                             }
