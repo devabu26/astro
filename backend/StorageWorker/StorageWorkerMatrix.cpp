@@ -3106,8 +3106,8 @@ void StorageWorker::processRtcCameraImage(
     if (!m_rtcVideoSurface || roomId != m_rtcVideoRoomId)
         return;
 
-    // QML's VideoOutput grab supplies a CPU-backed QImage. This avoids
-    // trying to attach Ubuntu Touch's camera GL texture to a 2D framebuffer.
+    // The direct AAL preview callback supplies a CPU-backed QImage. This
+    // avoids depending on Qt Quick's GL renderer for camera capture.
     const QVideoFrame frame(image);
     if (frame.isValid())
         m_rtcVideoSurface->present(frame);
