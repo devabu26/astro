@@ -657,8 +657,10 @@ MainView {
         }
 
         onVisibleChanged: {
-            if (!visible)
+            if (!visible) {
+                incomingCallAlert.alertRequested = false
                 incomingCallAlert.stop()
+            }
         }
 
         onAcceptRequested: {
