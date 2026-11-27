@@ -4,6 +4,8 @@
 #include <QImage>
 #include <QLibrary>
 #include <QMutex>
+#include <QOffscreenSurface>
+#include <QOpenGLContext>
 #include <QString>
 #include <QVector>
 #include <QSize>
@@ -52,6 +54,8 @@ private:
     using SetPreviewSize = void (*)(void *, int, int);
     using GetPreviewSize = void (*)(void *, int *, int *);
     using EnumeratePreviewSizes = void (*)(void *, void (*)(void *, int, int), void *);
+    using SetPreviewTexture = void (*)(void *, int);
+    using UpdatePreviewTexture = void (*)(void *);
     using StartPreview = void (*)(void *);
     using StopPreview = void (*)(void *);
 
@@ -59,10 +63,16 @@ private:
     static void previewTextureCallback(void *context);
     static void previewSizeCallback(void *context, int width, int height);
     void receivePreviewFrame(const void *data, uint32_t size);
+    bool initialisePreviewTexture(QString *error);
+    void destroyPreviewTexture();
+    Q_INVOKABLE void updatePreviewTexture();
     bool resolveApi(QString *error);
     QImage convertYuv420Sp(const uint8_t *data, uint32_t size) const;
 
     QLibrary m_library;
+    QOffscreenSurface *m_previewSurface = nullptr;
+    QOpenGLContext *m_previewContext = nullptr;
+    unsigned int m_previewTexture = 0;
     Listener m_listener;
     void *m_control = nullptr;
     QString m_roomId;
@@ -74,6 +84,8 @@ private:
     SetPreviewSize m_setPreviewSize = nullptr;
     GetPreviewSize m_getPreviewSize = nullptr;
     EnumeratePreviewSizes m_enumeratePreviewSizes = nullptr;
+    SetPreviewTexture m_setPreviewTexture = nullptr;
+    UpdatePreviewTexture m_updatePreviewTexture = nullptr;
     StartPreview m_startPreview = nullptr;
     StopPreview m_stopPreview = nullptr;
     QVector<QSize> m_supportedSizes;

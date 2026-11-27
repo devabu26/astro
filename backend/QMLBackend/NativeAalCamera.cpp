@@ -2,8 +2,11 @@
 
 #include <QDebug>
 #include <QColor>
+#include <QMetaObject>
 #include <QMutexLocker>
+#include <QOpenGLFunctions>
 #include <QSize>
+#include <QSurfaceFormat>
 #include <QTimer>
 #include <algorithm>
 #include <cstring>
@@ -12,6 +15,7 @@ namespace {
 constexpr int AalPreviewCallbackEnabled = 1;
 constexpr int AalPreviewCallbackDisabled = 0;
 constexpr int AalPixelFormatYuv420Sp = 1;
+constexpr unsigned int GlTextureExternalOes = 0x8D65;
 }
 
 NativeAalCamera::NativeAalCamera(QObject *parent)
@@ -49,6 +53,8 @@ bool NativeAalCamera::resolveApi(QString *error)
     RESOLVE(m_setPreviewSize, "android_camera_set_preview_size")
     RESOLVE(m_getPreviewSize, "android_camera_get_preview_size")
     RESOLVE(m_enumeratePreviewSizes, "android_camera_enumerate_supported_preview_sizes")
+    RESOLVE(m_setPreviewTexture, "android_camera_set_preview_texture")
+    RESOLVE(m_updatePreviewTexture, "android_camera_update_preview_texture")
     RESOLVE(m_startPreview, "android_camera_start_preview")
     RESOLVE(m_stopPreview, "android_camera_stop_preview")
 
@@ -61,6 +67,80 @@ void NativeAalCamera::previewSizeCallback(void *context, int width, int height)
     auto *self = static_cast<NativeAalCamera *>(context);
     if (self && width > 0 && height > 0)
         self->m_supportedSizes.append(QSize(width, height));
+}
+
+bool NativeAalCamera::initialisePreviewTexture(QString *error)
+{
+    // libhybris requires update_preview_texture() to run on the same thread
+    // that owns the EGL context used to create the external-OES texture.
+    // Keep that context on this QObject's thread; texture callbacks from the
+    // camera service are marshalled here with a queued invocation.
+    m_previewSurface = new QOffscreenSurface;
+    m_previewSurface->setFormat(QSurfaceFormat::defaultFormat());
+    m_previewSurface->create();
+    if (!m_previewSurface->isValid()) {
+        if (error)
+            *error = QStringLiteral("Could not create the native camera offscreen GL surface");
+        destroyPreviewTexture();
+        return false;
+    }
+
+    m_previewContext = new QOpenGLContext;
+    m_previewContext->setFormat(m_previewSurface->format());
+    if (!m_previewContext->create() ||
+        !m_previewContext->makeCurrent(m_previewSurface)) {
+        if (error)
+            *error = QStringLiteral("Could not create or activate the native camera GL context");
+        destroyPreviewTexture();
+        return false;
+    }
+
+    QOpenGLFunctions *gl = m_previewContext->functions();
+    gl->initializeOpenGLFunctions();
+    gl->glGenTextures(1, &m_previewTexture);
+    gl->glBindTexture(GlTextureExternalOes, m_previewTexture);
+    gl->glTexParameteri(GlTextureExternalOes, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl->glTexParameteri(GlTextureExternalOes, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl->glTexParameteri(GlTextureExternalOes, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl->glTexParameteri(GlTextureExternalOes, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl->glBindTexture(GlTextureExternalOes, 0);
+
+    const GLenum glError = gl->glGetError();
+    if (!m_previewTexture || glError != GL_NO_ERROR) {
+        if (error)
+            *error = QStringLiteral("Could not allocate the native camera external texture (GL error 0x%1)")
+                         .arg(glError, 0, 16);
+        m_previewContext->doneCurrent();
+        destroyPreviewTexture();
+        return false;
+    }
+
+    m_setPreviewTexture(m_control, static_cast<int>(m_previewTexture));
+    m_previewContext->doneCurrent();
+
+    qInfo() << "ASTRO_RTC_AAL: native preview texture configured"
+            << "texture:" << m_previewTexture
+            << "contextThread:" << QThread::currentThread();
+    return true;
+}
+
+void NativeAalCamera::destroyPreviewTexture()
+{
+    if (m_previewContext && m_previewSurface &&
+        m_previewContext->makeCurrent(m_previewSurface)) {
+        if (m_previewTexture) {
+            QOpenGLFunctions *gl = m_previewContext->functions();
+            gl->initializeOpenGLFunctions();
+            gl->glDeleteTextures(1, &m_previewTexture);
+        }
+        m_previewContext->doneCurrent();
+    }
+
+    m_previewTexture = 0;
+    delete m_previewContext;
+    m_previewContext = nullptr;
+    delete m_previewSurface;
+    m_previewSurface = nullptr;
 }
 
 bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
@@ -88,8 +168,13 @@ bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
         return false;
     }
 
-    // The preview callback delivers CPU-backed Android camera buffers. This
-    // avoids the QtUbuntu plugin's GL-texture-only viewfinder path entirely.
+    if (!initialisePreviewTexture(error)) {
+        stop();
+        return false;
+    }
+
+    // The CPU callback supplies frames for LiveKit. The external-OES preview
+    // target is also required by the Android camera stack to start its preview.
     m_enumeratePreviewSizes(m_control, &NativeAalCamera::previewSizeCallback, this);
     QSize selectedSize;
     for (const QSize &size : m_supportedSizes) {
@@ -114,11 +199,7 @@ bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
         m_setPreviewSize(m_control, selectedSize.width(), selectedSize.height());
 
     m_setPreviewFormat(m_control, AalPixelFormatYuv420Sp);
-    // libhybris' public wrapper exposes the preview-format setter but not
-    // android_camera_get_preview_format. Validate the negotiated buffer layout
-    // when the first CPU preview callback arrives instead of resolving a
-    // getter that the wrapper does not export.
-
+    // Validate the negotiated CPU buffer layout when the first callback arrives.
     m_getPreviewSize(m_control, &m_width, &m_height);
     if (m_width < 2 || m_height < 2 ||
         (m_width & 1) || (m_height & 1)) {
@@ -137,6 +218,7 @@ bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
     }
 
     m_frameCount.store(0);
+    m_invalidBufferLogged.store(0);
     m_running.store(true);
     m_startPreview(m_control);
 
@@ -144,6 +226,7 @@ bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
             << "cameraId:" << cameraId
             << "size:" << m_width << "x" << m_height
             << "format: YUV420SP"
+            << "texture:" << m_previewTexture
             << "callback: enabled";
 
     QTimer::singleShot(3000, this, [this, roomId, cameraId]() {
@@ -174,18 +257,42 @@ void NativeAalCamera::stop()
         m_control = nullptr;
     }
 
-    // Wait for a callback already in flight before unloading the shared library.
+    // Wait for a CPU callback already in flight before releasing the GL
+    // texture/context and clearing callback-owned state.
     QMutexLocker locker(&m_callbackMutex);
     m_roomId.clear();
     m_width = 0;
     m_height = 0;
     m_supportedSizes.clear();
+    locker.unlock();
+    destroyPreviewTexture();
 }
 
 void NativeAalCamera::previewTextureCallback(void *context)
 {
-    Q_UNUSED(context);
-    // The native CPU callback path does not consume the AAL GL texture.
+    auto *self = static_cast<NativeAalCamera *>(context);
+    if (!self || !self->m_running.load())
+        return;
+
+    // libhybris may invoke this callback on any camera-service thread. Its
+    // API explicitly requires update_preview_texture() on the GL-context
+    // setup thread, so never make the context current in this callback.
+    QMetaObject::invokeMethod(self, "updatePreviewTexture", Qt::QueuedConnection);
+}
+
+void NativeAalCamera::updatePreviewTexture()
+{
+    if (!m_running.load() || !m_control ||
+        !m_previewContext || !m_previewSurface)
+        return;
+
+    if (!m_previewContext->makeCurrent(m_previewSurface)) {
+        qWarning() << "ASTRO_RTC_AAL: could not activate preview GL context for texture update";
+        return;
+    }
+
+    m_updatePreviewTexture(m_control);
+    m_previewContext->doneCurrent();
 }
 
 void NativeAalCamera::previewFrameCallback(
