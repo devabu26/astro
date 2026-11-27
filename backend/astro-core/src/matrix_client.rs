@@ -5595,6 +5595,34 @@ impl MatrixClientManager {
                     PushAction::SetTweak(Tweak::Sound("ring".to_owned())),
                 ];
 
+                match notification_settings
+                    .is_push_rule_enabled(RuleKind::Override, rule_id)
+                    .await
+                {
+                    Ok(true) => {
+                        eprintln!("ASTRO PUSH: {} push rule already enabled", rule_id);
+                        continue;
+                    }
+                    Ok(false) => {
+                        match notification_settings
+                            .set_push_rule_enabled(RuleKind::Override, rule_id, true)
+                            .await
+                        {
+                            Ok(()) => {
+                                eprintln!("ASTRO PUSH: re-enabled {} push rule", rule_id);
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "ASTRO PUSH: could not re-enable {} push rule: {}",
+                                    rule_id, error
+                                );
+                            }
+                        }
+                        continue;
+                    }
+                    Err(_) => {}
+                }
+
                 if let Err(error) = notification_settings
                     .create_custom_conditional_push_rule(
                         rule_id.to_owned(),
