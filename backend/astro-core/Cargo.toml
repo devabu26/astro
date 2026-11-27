@@ -9,8 +9,6 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d", features = ["unstable-msc4354", "experimental-send-custom-to-device"] }
-# Enable MSC4195 request types on the exact Ruma revision already used by matrix-sdk.
-ruma = { git = "https://github.com/ruma/ruma", rev = "caf1ac05a9fd347158b60505ef8546a2ff18ae7c", features = ["unstable-msc4195"] }
 sha2 = "=0.10.9"
 mime = "=0.3.18"
 eyeball = "=0.8.8"
