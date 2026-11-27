@@ -51,6 +51,8 @@ Item {
     property bool waitingForForegroundCamera: false
     property bool nativeBackgroundCameraStartPending: false
     property bool nativeBackgroundCameraAttempted: false
+    property int nativeBackgroundCameraRetryCount: 0
+    property bool nativeBackgroundCameraRetryScheduled: false
     property bool nativeBackgroundCameraRunning: false
     property string nativeBackgroundCameraDeviceId: ""
     property bool remoteAnswered: false
@@ -749,6 +751,26 @@ Item {
     // Reopening the Qt Quick camera too soon can crash qmlscene inside the
     // platform camera backend. Keep the handover asynchronous and allow the
     // service a longer settling window before reopening the preview.
+    // A transient Hybris/QCamera start failure should not permanently disable
+    // background video for the rest of the call. Retry slowly and only a
+    // bounded number of times; the backend still owns unload/device handoff.
+    Timer {
+        id: backgroundCameraRetryTimer
+        interval: 2000
+        repeat: false
+        onTriggered: {
+            root.nativeBackgroundCameraRetryScheduled = false
+            if (!root.applicationActive && root.videoStarted &&
+                    root.nativeBackgroundCameraRetryCount <= 2) {
+                root.nativeBackgroundCameraAttempted = false
+                console.info(
+                    "ASTRO_BACKGROUND_CAMERA: retrying native capture after backoff",
+                    "retry:", root.nativeBackgroundCameraRetryCount
+                )
+            }
+        }
+    }
+
     Timer {
         id: foregroundCameraRestartTimer
         interval: 1500
@@ -965,6 +987,9 @@ Item {
 
         foregroundCameraRestartTimer.stop()
         backgroundCameraStartTimer.stop()
+        backgroundCameraRetryTimer.stop()
+        nativeBackgroundCameraRetryScheduled = false
+        nativeBackgroundCameraRetryCount = 0
         if (active) {
             nativeBackgroundCameraAttempted = false
             // If a background-camera request was already in flight, wait
@@ -998,6 +1023,9 @@ Item {
         } else {
             foregroundCameraRestartTimer.stop()
             backgroundCameraStartTimer.stop()
+            backgroundCameraRetryTimer.stop()
+            nativeBackgroundCameraRetryScheduled = false
+            nativeBackgroundCameraRetryCount = 0
             waitingForForegroundCamera = false
             nativeBackgroundCameraStartPending = false
             nativeBackgroundCameraAttempted = false
@@ -1081,6 +1109,9 @@ Item {
             root.nativeBackgroundCameraStartPending = false
             root.nativeBackgroundCameraRunning = running
             if (running) {
+                backgroundCameraRetryTimer.stop()
+                root.nativeBackgroundCameraRetryScheduled = false
+                root.nativeBackgroundCameraRetryCount = 0
                 root.nativeBackgroundCameraDeviceId = deviceId || ""
             } else {
                 root.nativeBackgroundCameraDeviceId = ""
@@ -1101,6 +1132,24 @@ Item {
                         root.videoStarted &&
                         root.waitingForForegroundCamera) {
                     root.backend.stopRtcBackgroundCamera(root.roomId)
+                } else if (!root.applicationActive && root.videoStarted) {
+                    // Keep the attempted flag set during the backoff so the
+                    // 100 ms start poll cannot spin on a broken camera service.
+                    if (root.nativeBackgroundCameraRetryCount < 2) {
+                        root.nativeBackgroundCameraRetryCount += 1
+                        root.nativeBackgroundCameraRetryScheduled = true
+                        backgroundCameraRetryTimer.restart()
+                        console.warn(
+                            "ASTRO_BACKGROUND_CAMERA: scheduling bounded native retry",
+                            "retry:", root.nativeBackgroundCameraRetryCount,
+                            "delayMs:", backgroundCameraRetryTimer.interval
+                        )
+                    } else {
+                        console.warn(
+                            "ASTRO_BACKGROUND_CAMERA: background retry limit reached",
+                            "attempts:", root.nativeBackgroundCameraRetryCount + 1
+                        )
+                    }
                 }
                 return
             }
