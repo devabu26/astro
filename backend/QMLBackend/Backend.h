@@ -8,6 +8,7 @@
 
 
 class QThread;
+class NativeAalCamera;
 class QCamera;
 class QVideoFrame;
 class QImage;
