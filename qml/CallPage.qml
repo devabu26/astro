@@ -1067,24 +1067,15 @@ Item {
             radius: units.gu(0.8)
         }
 
-        VideoOutput {
-            id: localCameraCaptureOutput
+        // Preview is a consumer of the converted local video frames.
+        // It does not own or drive the camera capture surface.
+        RtcVideoItem {
+            id: localCameraPreviewOutput
             anchors.fill: parent
-            visible: root.backend !== null &&
-                     root.backend.rtcCamera !== null
-            // VideoOutput assigns its internal QAbstractVideoSurface to
-            // Backend.videoSurface. C++ forwards it to QCamera::setViewfinder.
-            source: root.backend
-            // Rotate only the local preview. The outgoing camera frames keep
-            // their existing orientation and LiveKit conversion path.
-            orientation: 90
-            fillMode: VideoOutput.PreserveAspectFit
-            filters: [
-                RtcCameraVideoFilter {
-                    backend: root.backend
-                    roomId: root.roomId
-                }
-            ]
+            backend: root.backend
+            roomId: root.roomId
+            source: "local"
+            visible: hasFrame
         }
 
         // Drag and flick the local camera preview within the call page.
