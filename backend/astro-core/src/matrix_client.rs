@@ -4215,17 +4215,49 @@ impl MatrixClientManager {
                     }
                 }
 
+                let mut active_local_key_index = None;
                 if let Some((index, key)) = local_key {
                     let cache_key = (local_identity.clone(), index);
                     let local_key_changed = session.e2ee_installed_keys.get(&cache_key) != Some(&key);
                     if remote_key_attempted || local_key_changed {
                         let participant_identity = ParticipantIdentity::from(local_identity.clone());
                         if provider.set_key(&participant_identity, i32::from(index), key.clone()) {
-                            session.e2ee_installed_keys.insert(cache_key, key);
+                            session.e2ee_installed_keys.insert(cache_key.clone(), key.clone());
                         } else {
                             eprintln!(
                                 "ASTRO RTC E2EE: LiveKit rejected local sender key index {}",
                                 index
+                            );
+                        }
+                    }
+
+                    // livekit-rust-sdk 0.9.7 stores a newly supplied local key
+                    // in the provider, but does not advance existing sender
+                    // FrameCryptors to that key index. Element Call's JS SDK
+                    // does advance its sender cryptors when a key is set.
+                    // Keep every local audio/video sender on the same index
+                    // that MatrixRTC has distributed, including tracks
+                    // published after a rotation.
+                    if session.e2ee_installed_keys.get(&cache_key) == Some(&key) {
+                        active_local_key_index = Some(index);
+                    }
+                }
+
+                if let Some(index) = active_local_key_index {
+                    let expected_index = i32::from(index);
+                    for ((identity, track_sid), cryptor) in
+                        session.room.e2ee_manager().frame_cryptors()
+                    {
+                        if identity.to_string() != local_identity {
+                            continue;
+                        }
+
+                        let current_index = cryptor.key_index();
+                        if current_index != expected_index {
+                            cryptor.set_key_index(expected_index);
+                            eprintln!(
+                                "ASTRO RTC E2EE: synchronized local LiveKit frame cryptor index; room={}, track={}, previous_index={}, key_index={}",
+                                room_id, track_sid, current_index, expected_index
                             );
                         }
                     }
