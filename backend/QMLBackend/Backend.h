@@ -154,6 +154,8 @@ public:
     );
     Q_INVOKABLE void stopRtcBackgroundCamera(const QString &roomId);
 
+    // Legacy Qt Quick filter entry point retained for the existing build target.
+    void processRtcCameraFrame(const QString &roomId, const QVideoFrame &frame);
     Q_INVOKABLE void processRtcCameraImage(const QString &roomId, const QImage &image);
 
     Q_INVOKABLE void sendRoomAttachment(
