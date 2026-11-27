@@ -147,6 +147,20 @@ function roomNameForId(id) {
     return id
 }
 
+function roomIsEncrypted(id) {
+    if (!id)
+        return false
+
+    for (var i = 0; i < roomModel.count; i++) {
+        var room = roomModel.get(i)
+        if (room.roomId === id)
+            return room.isEncrypted === true
+    }
+
+    // Fail closed when the room is not in the current room model.
+    return false
+}
+
 function openNotification(roomId, eventId) {
     if (!roomId)
         return
