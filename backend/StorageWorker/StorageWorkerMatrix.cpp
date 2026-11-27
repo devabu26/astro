@@ -2148,8 +2148,7 @@ void StorageWorker::startRtcBackgroundCamera(
             m_rtcBackgroundCameraRestartDeviceId = deviceId;
             qInfo() << "RTC background camera restart deferred until unload completes";
             return;
-        } else if (cameraGuard && m_rtcCamera == cameraGuard.data() &&
-                            m_rtcCameraGeneration == cameraGeneration) {
+        } else if (m_rtcCamera) {
             // Never destroy a QCamera while its backend may still be using
             // its viewfinder. All camera replacement must pass through the
             // asynchronous unload path.
@@ -2287,7 +2286,7 @@ void StorageWorker::startRtcBackgroundCamera(
                     m_rtcCamera,
                     &QCamera::statusChanged,
                     this,
-                    [this, roomId](QCamera::Status status) {
+                    [this, roomId, cameraGuard, cameraGeneration](QCamera::Status status) {
                         if (!cameraGuard || m_rtcCamera != cameraGuard.data() ||
                             m_rtcCameraGeneration != cameraGeneration ||
                             !m_rtcBackgroundCameraStartPending ||
