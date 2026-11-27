@@ -593,11 +593,17 @@ async fn publish_local_key(
     let own_device = client.device_id().map(ToString::to_string);
     let mut recipients: BTreeMap<OwnedUserId, Vec<DeviceIdOrAllDevices>> = BTreeMap::new();
     let mut seen = HashSet::<(String, String)>::new();
+    let mut sticky_events_seen = 0usize;
+    let mut active_members_seen = 0usize;
+    let mut missing_encryption_metadata = 0usize;
+    let mut missing_sender_device = 0usize;
+    let mut owner_cross_signing_rejected = 0usize;
 
     for event in room.sticky_events().live() {
         if event.key.event_type.to_string() != RTC_MEMBER_EVENT {
             continue;
         }
+        sticky_events_seen += 1;
 
         let value: Value = match serde_json::from_str(event.raw().json().get()) {
             Ok(value) => value,
@@ -613,16 +619,21 @@ async fn publish_local_key(
         {
             continue;
         }
+        active_members_seen += 1;
 
         let Some(info) = event.encryption_info() else {
             // Encrypted rooms require authenticated member events.
+            missing_encryption_metadata += 1;
             continue;
         };
         if value.get("sender").and_then(Value::as_str) != Some(info.sender.as_str()) {
             continue;
         }
 
-        let Some(device_id) = info.sender_device.as_ref() else { continue };
+        let Some(device_id) = info.sender_device.as_ref() else {
+            missing_sender_device += 1;
+            continue;
+        };
         if own_user.as_deref() == Some(info.sender.as_str())
             && own_device.as_deref() == Some(device_id.as_str())
         {
@@ -635,6 +646,7 @@ async fn publish_local_key(
         }
 
         if !device_is_cross_signed(client, &info.sender, device_id).await {
+            owner_cross_signing_rejected += 1;
             continue;
         }
 
@@ -645,11 +657,15 @@ async fn publish_local_key(
     }
 
     if recipients.is_empty() {
-        eprintln!("ASTRO RTC E2EE: no eligible cross-signed sticky members to receive the current media key");
+        eprintln!(
+            "ASTRO RTC E2EE: no eligible sticky recipients; sticky_member_events={sticky_events_seen}, active_room_members={active_members_seen}, missing_authenticated_event_metadata={missing_encryption_metadata}, missing_sender_device={missing_sender_device}, rejected_not_owner_cross_signed={owner_cross_signing_rejected}"
+        );
         return false;
     }
     let recipient_count: usize = recipients.values().map(Vec::len).sum();
-    eprintln!("ASTRO RTC E2EE: sending stable media key to {recipient_count} sticky member device(s)");
+    eprintln!(
+        "ASTRO RTC E2EE: sending stable media key to {recipient_count} sticky member device(s); sticky_member_events={sticky_events_seen}, active_room_members={active_members_seen}, rejected_not_owner_cross_signed={owner_cross_signing_rejected}"
+    );
 
     let content = serde_json::json!({
         "room_id": room.room_id().as_str(),
@@ -924,6 +940,7 @@ async fn publish_local_key_legacy(
     let own_device = client.device_id().map(ToString::to_string);
     let mut recipients: BTreeMap<OwnedUserId, Vec<DeviceIdOrAllDevices>> = BTreeMap::new();
     let mut seen = HashSet::<(String, String)>::new();
+    let mut rejected_not_owner_cross_signed = 0usize;
 
     for member in members {
         if own_user.as_deref() == Some(member.user_id.as_str())
@@ -935,6 +952,7 @@ async fn publish_local_key_legacy(
             continue;
         }
         if !device_is_cross_signed(client, &member.user_id, &member.device_id).await {
+            rejected_not_owner_cross_signed += 1;
             continue;
         }
         let Ok(device) = DeviceIdOrAllDevices::try_from(member.device_id.as_str()) else {
@@ -944,7 +962,10 @@ async fn publish_local_key_legacy(
     }
 
     if recipients.is_empty() {
-        eprintln!("ASTRO RTC E2EE legacy: no eligible cross-signed MSC3401 members to receive the current media key");
+        eprintln!(
+            "ASTRO RTC E2EE legacy: no eligible recipients; parsed_legacy_members={}, rejected_not_owner_cross_signed={rejected_not_owner_cross_signed}",
+            members.len()
+        );
         return false;
     }
     let recipient_count: usize = recipients.values().map(Vec::len).sum();
