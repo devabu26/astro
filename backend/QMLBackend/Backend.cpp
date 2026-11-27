@@ -331,7 +331,7 @@ QString Backend::rtcConnectionToneUrl() const
             return QUrl::fromLocalFile(filePath).toString();
     }
 
-    QByteArray pcm(static_cast<int>(pcmBytes), '\\0');
+    QByteArray pcm(static_cast<int>(pcmBytes), '\0');
     auto *samples = reinterpret_cast<qint16 *>(pcm.data());
     constexpr quint32 fadeSamples = sampleRate / 100;
     for (quint32 i = 0; i < sampleCount; ++i) {
