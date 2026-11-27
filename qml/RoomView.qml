@@ -290,6 +290,7 @@ Item {
     property bool reactionPickerVisible: false
     property string roomId: ""
     property string roomName: "Welcome to Astro"
+    property bool isEncrypted: false
     property string avatarUrl: ""
     property string avatarFallbackColour: "#a16b9b"
 
@@ -1980,7 +1981,7 @@ Item {
                             left: conversationAvatar.right
                             leftMargin: units.gu(2)
                             verticalCenter: parent.verticalCenter
-                            right: callButton.left
+                            right: roomEncryptionLock.left
                             rightMargin: units.gu(1)
                         }
 
@@ -1991,6 +1992,22 @@ Item {
                         font.bold: true
 
                         elide: Text.ElideRight
+                    }
+
+                    // A persistent lock marks rooms whose Matrix state
+                    // confirms end-to-end encryption.
+                    Text {
+                        id: roomEncryptionLock
+                        anchors {
+                            right: callButton.left
+                            rightMargin: units.gu(1.5)
+                            verticalCenter: parent.verticalCenter
+                        }
+                        visible: root.isEncrypted
+                        text: "🔒"
+                        color: "#8cf0ad"
+                        font.pixelSize: units.gu(2.2)
+                        verticalAlignment: Text.AlignVCenter
                     }
 
                     // A red glow marks this room when the logged-in
