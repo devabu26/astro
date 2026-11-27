@@ -592,9 +592,8 @@ Item {
             return
         }
 
-        // Restart the player without clearing the request flag. Calling
-        // stopRingback() here also clears ringbackRequested; if the WAV is
-        // still loading, onStatusChanged then never starts playback.
+        // Keep the request flag set while restarting: the WAV may still be
+        // loading, in which case onStatusChanged starts it once it is ready.
         if (restartPlayback === true)
             ringbackAudio.stop()
 
@@ -603,14 +602,13 @@ Item {
         console.info(
             "ASTRO_CALL_RINGBACK: requested",
             "source:", ringbackSource,
-            "audioStatus:", ringbackAudio.status,
-            "playbackState:", ringbackAudio.playbackState,
+            "soundEffectStatus:", ringbackAudio.status,
+            "playing:", ringbackAudio.playing,
             "restart:", restartPlayback === true
         )
 
-        if ((ringbackAudio.status === Audio.Loaded ||
-             ringbackAudio.status === Audio.Buffered) &&
-                ringbackAudio.playbackState !== Audio.PlayingState) {
+        if (ringbackAudio.status === SoundEffect.Ready &&
+                !ringbackAudio.playing) {
             ringbackAudio.play()
         }
 
@@ -618,52 +616,41 @@ Item {
             noAnswerTimer.restart()
     }
 
-    Audio {
+    // SoundEffect uses Qt's short-WAV sound-effects backend rather than
+    // QMediaPlayer/MediaHub, which failed to recognise this valid PCM WAV.
+    SoundEffect {
         id: ringbackAudio
-        // Prefer the ringtone route when advertised; fall back to the
-        // generic music role on Ubuntu Touch backends with limited roles.
-        audioRole: supportedAudioRoles().indexOf(Audio.RingtoneRole) >= 0
-                   ? Audio.RingtoneRole : Audio.MusicRole
         source: root.ringbackSource
-        autoLoad: true
-        loops: Audio.Infinite
+        loops: SoundEffect.Infinite
         volume: 1.0
 
         onStatusChanged: {
             console.info(
-                "ASTRO_CALL_RINGBACK: audio status",
+                "ASTRO_CALL_RINGBACK: sound effect status",
                 status,
                 "source:", source,
-                "hasAudio:", hasAudio,
-                "duration:", duration,
+                "playing:", playing,
                 "requested:", root.ringbackRequested
             )
 
             if (root.ringbackRequested &&
-                    (status === Audio.Loaded || status === Audio.Buffered) &&
-                    playbackState !== Audio.PlayingState) {
-                console.info("ASTRO_CALL_RINGBACK: source ready; starting playback")
+                    status === SoundEffect.Ready &&
+                    !playing) {
+                console.info("ASTRO_CALL_RINGBACK: WAV ready; starting SoundEffect")
                 play()
-            }
-        }
-
-        onPlaybackStateChanged: {
-            console.info(
-                "ASTRO_CALL_RINGBACK: playback state",
-                playbackState,
-                "audioRole:", audioRole
-            )
-        }
-
-        onError: {
-            if (error !== Audio.NoError) {
+            } else if (status === SoundEffect.Error) {
                 console.warn(
-                    "ASTRO_CALL_RINGBACK: playback error",
-                    error,
-                    errorString,
+                    "ASTRO_CALL_RINGBACK: SoundEffect could not load WAV",
                     "source:", source
                 )
             }
+        }
+
+        onPlayingChanged: {
+            console.info(
+                "ASTRO_CALL_RINGBACK: SoundEffect playing:",
+                playing
+            )
         }
     }
 
