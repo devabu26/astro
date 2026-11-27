@@ -66,9 +66,10 @@ void RtcVideoItem::setBackend(Backend *backend)
         return;
     }
 
-    if (m_frameConnection) {
+    if (m_frameConnection)
         disconnect(m_frameConnection);
-    }
+    if (m_localFrameConnection)
+        disconnect(m_localFrameConnection);
 
     m_backend = backend;
 
@@ -79,9 +80,29 @@ void RtcVideoItem::setBackend(Backend *backend)
             this,
             &RtcVideoItem::receiveRemoteFrame
         );
+        m_localFrameConnection = connect(
+            m_backend,
+            &Backend::matrixRtcLocalVideoFrame,
+            this,
+            &RtcVideoItem::receiveLocalFrame
+        );
     }
 
     emit backendChanged();
+}
+
+void RtcVideoItem::receiveLocalFrame(
+    const QString &roomId,
+    int width,
+    int height,
+    const QByteArray &i420
+)
+{
+    if (roomId != m_roomId || !m_identity.isEmpty() ||
+        m_source != QStringLiteral("camera"))
+        return;
+
+    setI420Frame(i420, width, height);
 }
 
 void RtcVideoItem::receiveRemoteFrame(
