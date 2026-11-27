@@ -1075,6 +1075,9 @@ Item {
             // VideoOutput assigns its internal QAbstractVideoSurface to
             // Backend.videoSurface. C++ forwards it to QCamera::setViewfinder.
             source: root.backend
+            // Rotate only the local preview. The outgoing camera frames keep
+            // their existing orientation and LiveKit conversion path.
+            orientation: 90
             fillMode: VideoOutput.PreserveAspectFit
             filters: [
                 RtcCameraVideoFilter {
