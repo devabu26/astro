@@ -1221,6 +1221,11 @@ impl MatrixClientManager {
 
                 let is_space = info.room_type() == Some(&RoomType::Space);
                 let is_dm = !is_space && room.is_dm();
+                // Use the room's current Matrix encryption state for the chat
+                // header indicator. If state cannot be read, fail closed.
+                let is_encrypted = room.latest_encryption_state().await
+                    .map(|state| state.is_encrypted())
+                    .unwrap_or(false);
 
                 let kind = if is_space {
                     "space"
@@ -1270,6 +1275,7 @@ impl MatrixClientManager {
                 room_entries.push(serde_json::json!({
                     "room_id": room_id,
                     "kind": kind,
+                    "is_encrypted": is_encrypted,
                     "name": name,
                     "topic": info.topic(),
                     "avatar_url": avatar_url,
