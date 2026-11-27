@@ -309,6 +309,12 @@ signals:
         int height,
         const QByteArray &i420
     );
+    void matrixRtcLocalVideoFrame(
+        const QString &roomId,
+        int width,
+        int height,
+        const QByteArray &i420
+    );
 
     void notificationReceived(
         const QString &sender,
