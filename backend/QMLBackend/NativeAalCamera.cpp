@@ -8,6 +8,7 @@
 #include <QSize>
 #include <QSurfaceFormat>
 #include <QTimer>
+#include <QThread>
 #include <algorithm>
 #include <cstring>
 
