@@ -49,6 +49,7 @@ Item {
     property int cameraFrameGrabFailures: 0
     property double cameraFrameGrabStartedAt: 0
     property bool waitingForForegroundCamera: false
+    property int foregroundCameraActivationAttempts: 0
     property bool nativeBackgroundCameraStartPending: false
     property bool nativeBackgroundCameraAttempted: false
     property int nativeBackgroundCameraRetryCount: 0
@@ -771,6 +772,55 @@ Item {
         }
     }
 
+    // A successful native-camera release is only the beginning of the
+    // foreground handoff. Keep the handoff pending until Qt confirms that
+    // the QML camera is actually Active, rather than treating LoadedStatus
+    // as a successful restart.
+    Timer {
+        id: foregroundCameraActivationTimer
+        interval: 1000
+        repeat: false
+        onTriggered: {
+            if (!root.videoStarted ||
+                    !root.applicationActive ||
+                    !root.waitingForForegroundCamera ||
+                    root.nativeBackgroundCameraRunning ||
+                    root.nativeBackgroundCameraStartPending)
+                return
+
+            if (localCamera.cameraStatus === Camera.ActiveStatus &&
+                    localCamera.cameraState === Camera.ActiveState) {
+                root.waitingForForegroundCamera = false
+                root.foregroundCameraActivationAttempts = 0
+                return
+            }
+
+            if (root.foregroundCameraActivationAttempts >= 3) {
+                console.warn(
+                    "ASTRO_BACKGROUND_CAMERA: foreground activation failed after bounded retries",
+                    "status:", localCamera.cameraStatus,
+                    "state:", localCamera.cameraState,
+                    "error:", localCamera.errorString
+                )
+                root.actionError = localCamera.errorString.length > 0
+                        ? localCamera.errorString
+                        : "Camera could not resume after returning to Astro"
+                return
+            }
+
+            root.foregroundCameraActivationAttempts += 1
+            console.warn(
+                "ASTRO_BACKGROUND_CAMERA: retrying foreground activation",
+                "attempt:", root.foregroundCameraActivationAttempts,
+                "status:", localCamera.cameraStatus,
+                "state:", localCamera.cameraState
+            )
+            localCamera.cameraState = Camera.ActiveState
+            localCamera.start()
+            restart()
+        }
+    }
+
     Timer {
         id: foregroundCameraRestartTimer
         interval: 1500
@@ -783,11 +833,13 @@ Item {
                     root.nativeBackgroundCameraStartPending)
                 return
 
-            root.waitingForForegroundCamera = false
             console.info(
-                "ASTRO_BACKGROUND_CAMERA: restarting foreground QML camera"
+                "ASTRO_BACKGROUND_CAMERA: requesting foreground QML camera activation"
             )
+            root.foregroundCameraActivationAttempts = 1
+            localCamera.cameraState = Camera.ActiveState
             localCamera.start()
+            foregroundCameraActivationTimer.restart()
         }
     }
 
@@ -967,6 +1019,24 @@ Item {
         backend.startRtcBackgroundCamera(roomId, localCamera.deviceId)
     }
 
+    function requestForegroundCameraActivation() {
+        if (!videoStarted || !applicationActive ||
+                nativeBackgroundCameraRunning ||
+                nativeBackgroundCameraStartPending)
+            return
+
+        waitingForForegroundCamera = true
+        foregroundCameraActivationAttempts = 1
+        console.info(
+            "ASTRO_BACKGROUND_CAMERA: requesting foreground camera activation",
+            "status:", localCamera.cameraStatus,
+            "state:", localCamera.cameraState
+        )
+        localCamera.cameraState = Camera.ActiveState
+        localCamera.start()
+        foregroundCameraActivationTimer.restart()
+    }
+
     function updateCameraForApplicationState(active) {
         applicationActive = active
         applicationState = backend
@@ -1015,13 +1085,15 @@ Item {
     onVideoStartedChanged: {
         if (videoStarted) {
             if (applicationActive) {
-                localCamera.start()
+                requestForegroundCameraActivation()
             } else if (backend && roomId) {
                 localCamera.cameraState = Camera.UnloadedState
                 nativeBackgroundCameraAttempted = false
             }
         } else {
             foregroundCameraRestartTimer.stop()
+            foregroundCameraActivationTimer.stop()
+            foregroundCameraActivationAttempts = 0
             backgroundCameraStartTimer.stop()
             backgroundCameraRetryTimer.stop()
             nativeBackgroundCameraRetryScheduled = false
@@ -1479,8 +1551,18 @@ Item {
                 "videoStarted:", root.videoStarted,
                 "error:", errorString
             )
-            if (cameraStatus === Camera.UnloadedStatus &&
-                    !root.applicationActive) {
+            if (cameraStatus === Camera.ActiveStatus &&
+                    cameraState === Camera.ActiveState &&
+                    root.applicationActive &&
+                    root.videoStarted) {
+                foregroundCameraActivationTimer.stop()
+                root.foregroundCameraActivationAttempts = 0
+                root.waitingForForegroundCamera = false
+                console.info(
+                    "ASTRO_BACKGROUND_CAMERA: foreground QML camera is active again"
+                )
+            } else if (cameraStatus === Camera.UnloadedStatus &&
+                       !root.applicationActive) {
                 console.info(
                     "ASTRO_BACKGROUND_CAMERA: QML camera confirmed unloaded"
                 )
@@ -1490,6 +1572,15 @@ Item {
         onError: {
             root.actionError = errorString
             console.warn("ASTRO RTC camera error:", errorString)
+        }
+
+        onCameraStateChanged: {
+            console.info(
+                "ASTRO_BACKGROUND_CAMERA: QML camera state changed:",
+                cameraState,
+                "status:", cameraStatus,
+                "active:", root.applicationActive
+            )
         }
     }
 
