@@ -813,7 +813,7 @@ fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMed
         return None;
     }
 
-    let (member_id, index, encoded_key) = if event_type == RTC_KEY_EVENT {
+    let (member_id, key_candidates) = if event_type == RTC_KEY_EVENT {
         let Some(member_id) = content.get("member_id").and_then(Value::as_str) else {
             eprintln!("ASTRO RTC E2EE: rejected modern key event; reason=missing_member_id");
             return None;
@@ -822,15 +822,7 @@ fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMed
             eprintln!("ASTRO RTC E2EE: rejected modern key event; reason=missing_media_key");
             return None;
         };
-        let Some(index) = media_key.get("index").and_then(Value::as_u64).and_then(|v| u8::try_from(v).ok()) else {
-            eprintln!("ASTRO RTC E2EE: rejected modern key event; reason=missing_or_invalid_key_index");
-            return None;
-        };
-        let Some(encoded_key) = media_key.get("key").and_then(Value::as_str) else {
-            eprintln!("ASTRO RTC E2EE: rejected modern key event; reason=missing_or_invalid_key_string");
-            return None;
-        };
-        (member_id.to_owned(), index, encoded_key)
+        (member_id.to_owned(), vec![("media_key", media_key)])
     } else {
         let Some(member) = content.get("member") else {
             eprintln!("ASTRO RTC E2EE: rejected legacy key event; reason=missing_member_object");
@@ -851,47 +843,86 @@ fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMed
             .or_else(|| member.get("id").and_then(Value::as_str))
             .map(str::to_owned)
             .unwrap_or_else(|| format!("{}:{claimed_device_id}", info.sender));
-        let Some(media_key) = content.get("media_key").or_else(|| content.get("keys")) else {
+        let mut candidates = Vec::new();
+        if let Some(media_key) = content.get("media_key") {
+            candidates.push(("media_key", media_key));
+        }
+        // Element Call sends this deprecated alias for older clients. Try it
+        // if media_key is malformed instead of letting a bad preferred field
+        // hide an otherwise valid compatibility value.
+        if let Some(keys) = content.get("keys") {
+            candidates.push(("keys", keys));
+        }
+        if candidates.is_empty() {
             eprintln!(
                 "ASTRO RTC E2EE: rejected legacy key event; reason=missing_media_key_and_keys, content_fields={}",
                 content.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_else(|| "<non-object>".to_owned())
             );
             return None;
-        };
-        let Some(index) = media_key.get("index").and_then(Value::as_u64).and_then(|v| u8::try_from(v).ok()) else {
-            eprintln!("ASTRO RTC E2EE: rejected legacy key event; reason=missing_or_invalid_key_index");
-            return None;
-        };
-        let Some(encoded_key) = media_key.get("key").and_then(Value::as_str) else {
-            eprintln!("ASTRO RTC E2EE: rejected legacy key event; reason=missing_or_invalid_key_string");
-            return None;
-        };
-        (member_id, index, encoded_key)
+        }
+        (member_id, candidates)
     };
 
     if member_id.is_empty() {
         eprintln!("ASTRO RTC E2EE: rejected incoming key event; reason=empty_member_id");
         return None;
     }
-    let Some(bytes) = decode_base64_no_pad(encoded_key) else {
+
+    let mut parsed_key = None;
+    for (field, media_key) in key_candidates {
+        let Some(index) = media_key.get("index").and_then(Value::as_u64).and_then(|v| u8::try_from(v).ok()) else {
+            eprintln!(
+                "ASTRO RTC E2EE: media-key candidate rejected; event_type={}, field={}, reason=missing_or_invalid_key_index",
+                event_type, field
+            );
+            continue;
+        };
+        let Some(encoded_key) = media_key.get("key").and_then(Value::as_str) else {
+            eprintln!(
+                "ASTRO RTC E2EE: media-key candidate rejected; event_type={}, field={}, reason=missing_or_invalid_key_string",
+                event_type, field
+            );
+            continue;
+        };
+        let Some(bytes) = decode_matrix_base64(encoded_key) else {
+            let has_padding = encoded_key.contains('=');
+            let has_url_safe = encoded_key.contains('-') || encoded_key.contains('_');
+            let has_standard_special = encoded_key.contains('+') || encoded_key.contains('/');
+            eprintln!(
+                "ASTRO RTC E2EE: media-key candidate rejected; event_type={}, field={}, reason=invalid_base64, encoded_length={}, has_padding={}, alphabet={}",
+                event_type,
+                field,
+                encoded_key.len(),
+                has_padding,
+                if has_url_safe && has_standard_special { "mixed" }
+                else if has_url_safe { "url_safe" }
+                else if has_standard_special { "standard" }
+                else { "alphanumeric" }
+            );
+            continue;
+        };
+        if bytes.len() != RTC_KEY_BYTES {
+            eprintln!(
+                "ASTRO RTC E2EE: media-key candidate rejected; event_type={}, field={}, reason=invalid_key_length, encoded_length={}, decoded_bytes={}",
+                event_type, field, encoded_key.len(), bytes.len()
+            );
+            continue;
+        }
         eprintln!(
-            "ASTRO RTC E2EE: rejected incoming key event; reason=invalid_unpadded_base64, encoded_key_length={}",
-            encoded_key.len()
+            "ASTRO RTC E2EE: selected media-key candidate; event_type={}, field={}, index={}, encoded_length={}, decoded_bytes={}",
+            event_type, field, index, encoded_key.len(), bytes.len()
+        );
+        parsed_key = Some((index, bytes));
+        break;
+    }
+
+    let Some((index, bytes)) = parsed_key else {
+        eprintln!(
+            "ASTRO RTC E2EE: rejected incoming key event; reason=no_valid_32_byte_media_key, event_type={}",
+            event_type
         );
         return None;
     };
-    if bytes.len() != RTC_KEY_BYTES {
-        eprintln!(
-            "ASTRO RTC E2EE: rejected incoming key event; reason=invalid_key_length, decoded_bytes={}",
-            bytes.len()
-        );
-        return None;
-    }
-
-    eprintln!(
-        "ASTRO RTC E2EE: parsed encrypted media-key event; event_type={}, sender={}, device={}, member_id={}, index={}, key_bytes={}",
-        event_type, info.sender, sender_device, member_id, index, bytes.len()
-    );
 
     Some(PendingMediaKey {
         room_id: room_id.to_owned(),
@@ -1280,33 +1311,70 @@ fn encode_base64_no_pad(bytes: &[u8]) -> String {
     output
 }
 
-fn decode_base64_no_pad(input: &str) -> Option<Vec<u8>> {
+fn decode_matrix_base64(input: &str) -> Option<Vec<u8>> {
     fn value(byte: u8) -> Option<u8> {
         match byte {
             b'A'..=b'Z' => Some(byte - b'A'),
             b'a'..=b'z' => Some(byte - b'a' + 26),
             b'0'..=b'9' => Some(byte - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
+            b'+' | b'-' => Some(62),
+            b'/' | b'_' => Some(63),
             _ => None,
         }
     }
 
-    if input.is_empty() || input.contains('=') || input.len() % 4 == 1 {
+    if input.is_empty() {
         return None;
     }
 
-    let mut output = Vec::with_capacity(input.len() * 3 / 4);
+    let bytes = input.as_bytes();
+    let data_len = bytes.iter().position(|byte| *byte == b'=').unwrap_or(bytes.len());
+    let padding_len = bytes.len() - data_len;
+    if padding_len > 2 || bytes[data_len..].iter().any(|byte| *byte != b'=') {
+        return None;
+    }
+
+    let remainder = data_len % 4;
+    if remainder == 1 {
+        return None;
+    }
+    if padding_len > 0 {
+        let expected_padding = match remainder {
+            0 => 0,
+            2 => 2,
+            3 => 1,
+            _ => return None,
+        };
+        if bytes.len() % 4 != 0 || padding_len != expected_padding {
+            return None;
+        }
+    }
+
+    // Matrix permits both standard and URL-safe Base64, but reject strings
+    // which mix the two alphabets.
+    let has_standard_special = bytes[..data_len].iter().any(|byte| matches!(byte, b'+' | b'/'));
+    let has_url_safe_special = bytes[..data_len].iter().any(|byte| matches!(byte, b'-' | b'_'));
+    if has_standard_special && has_url_safe_special {
+        return None;
+    }
+
+    let mut output = Vec::with_capacity(data_len * 3 / 4);
     let mut accumulator = 0u32;
     let mut bits = 0u8;
 
-    for byte in input.bytes() {
-        accumulator = (accumulator << 6) | value(byte)? as u32;
+    for byte in &bytes[..data_len] {
+        accumulator = (accumulator << 6) | value(*byte)? as u32;
         bits += 6;
         if bits >= 8 {
             bits -= 8;
             output.push(((accumulator >> bits) & 0xff) as u8);
         }
+    }
+
+    // Reject non-zero unused bits; this prevents accepting malformed or
+    // non-canonical encodings that happen to decode to the same bytes.
+    if bits > 0 && (accumulator & ((1u32 << bits) - 1)) != 0 {
+        return None;
     }
 
     Some(output)
@@ -1315,7 +1383,42 @@ fn decode_base64_no_pad(input: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::modern_livekit_identity;
+    use super::{decode_matrix_base64, encode_base64_no_pad, modern_livekit_identity};
+
+    #[test]
+    fn matrix_base64_accepts_unpadded_standard_encoding() {
+        let key = [0xfb; 32];
+        let encoded = encode_base64_no_pad(&key);
+        assert_eq!(decode_matrix_base64(&encoded).as_deref(), Some(key.as_slice()));
+    }
+
+    #[test]
+    fn matrix_base64_accepts_padded_standard_encoding() {
+        let key = [0xfb; 32];
+        let mut encoded = encode_base64_no_pad(&key);
+        while encoded.len() % 4 != 0 {
+            encoded.push('=');
+        }
+        assert_eq!(decode_matrix_base64(&encoded).as_deref(), Some(key.as_slice()));
+    }
+
+    #[test]
+    fn matrix_base64_accepts_url_safe_encoding() {
+        let key = [0xfb; 32];
+        let encoded = encode_base64_no_pad(&key)
+            .replace('+', "-")
+            .replace('/', "_");
+        assert_eq!(decode_matrix_base64(&encoded).as_deref(), Some(key.as_slice()));
+    }
+
+    #[test]
+    fn matrix_base64_rejects_invalid_padding_and_alphabet_mixing() {
+        assert!(decode_matrix_base64("Zm9v=").is_none());
+        assert!(decode_matrix_base64("Zm=v").is_none());
+        assert!(decode_matrix_base64("+_8").is_none());
+        assert!(decode_matrix_base64("Zg=").is_none());
+        assert!(decode_matrix_base64("A").is_none());
+    }
 
     #[test]
     fn msc4195_participant_identity_matches_spec_test_vector() {
