@@ -5602,14 +5602,14 @@ impl MatrixClientManager {
                 if room_mention {
                     conditions.push(PushCondition::EventPropertyIs(
                         EventPropertyIsConditionData::new(
-                            r"content.m\\.mentions.room".to_owned(),
+                            r"content.m\.mentions.room".to_owned(),
                             serde_json::Value::Bool(true),
                         ),
                     ));
                 } else {
                     conditions.push(PushCondition::EventPropertyContains(
                         EventPropertyContainsConditionData::new(
-                            r"content.m\\.mentions.user_ids".to_owned(),
+                            r"content.m\.mentions.user_ids".to_owned(),
                             own_user_id.clone().into(),
                         ),
                     ));
