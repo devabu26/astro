@@ -13,7 +13,7 @@ The currently deployed `astro-push-gateway` endpoint was previously only a scaff
 
 ## What it sends
 
-- Incoming MSC4075 ring events (`org.matrix.msc4075.rtc.notification` and `m.rtc.notification`) become persistent Ubuntu notifications with a click-through `astro://open?kind=call` URI.
+- Incoming MSC4075 RTC ring events (`org.matrix.msc4075.rtc.notification` and `m.rtc.notification`) and legacy call-notify events (`org.matrix.msc4075.call.notify` and `m.call.notify`) become persistent Ubuntu notifications with a click-through `astro://open?kind=call` URI. Push rules cover both explicit user mentions and MSC room mentions.
 - Other Matrix push events become ordinary, non-persistent message notifications.
 - The Matrix pusher's `privacy_level` setting controls whether message bodies are included in ordinary message notification cards.
 - Calls use the Matrix ring's `sender_ts` and `lifetime` to set the upstream push expiry and to let Astro reject stale call alerts.
