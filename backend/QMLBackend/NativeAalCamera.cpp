@@ -242,7 +242,10 @@ bool NativeAalCamera::start(int cameraId, int sensorOrientation,
 
         QList<QSize> aspectMatched;
         for (const QSize &size : m_supportedSizes) {
+            const qint64 capturePixels = qint64(size.width()) * size.height();
             if (size.width() < 2 || size.height() < 2 ||
+                size.width() > 1920 || size.height() > 1920 ||
+                capturePixels > 1920LL * 1920LL ||
                 (size.width() & 1) || (size.height() & 1))
                 continue;
             const double aspect =
