@@ -641,7 +641,9 @@ Item {
         id: connectionDing
         source: root.backend ? root.backend.rtcConnectionToneUrl() : ""
         loops: 1
-        volume: 1.0
+        // Keep the connection confirmation gentle; the previous full-volume
+        // high-pitched chime was uncomfortable on device speakers.
+        volume: 0.35
 
         onStatusChanged: {
             if (root.connectionToneRequested && status === SoundEffect.Ready) {
@@ -649,6 +651,13 @@ Item {
                 root.connectionToneRequested = false
             }
         }
+    }
+
+    SoundEffect {
+        id: remoteHangupTone
+        source: root.backend ? root.backend.rtcConnectionToneUrl() : ""
+        loops: 1
+        volume: 0.25
     }
 
     // SoundEffect uses Qt's short-WAV sound-effects backend rather than
@@ -1376,6 +1385,24 @@ Item {
                     } else if (event.type === "participant_disconnected") {
                         root.remoteVideoCleared(event.identity, "camera")
                         root.remoteVideoCleared(event.identity, "screenshare")
+
+                        // In a direct call, the remote participant leaving is
+                        // the remote hang-up signal. End our local MatrixRTC /
+                        // LiveKit session too, rather than leaving the caller
+                        // stranded in an empty call.
+                        if (root.directCall && root.remoteAnswered &&
+                                (root.audioStarted ||
+                                 root.audioState.active === true) &&
+                                root.pendingOperation.length === 0) {
+                            console.info(
+                                "ASTRO_CALL: remote participant hung up; ending local call",
+                                "identity:", event.identity
+                            )
+                            root.stopRingback()
+                            noAnswerTimer.stop()
+                            remoteHangupTone.play()
+                            root.hangUp()
+                        }
                     }
                 }
             } catch (error) {
