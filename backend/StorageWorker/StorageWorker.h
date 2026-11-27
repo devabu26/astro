@@ -146,7 +146,8 @@ public slots:
         int width,
         int height,
         const QByteArray &i420,
-        bool nativeCameraFrame = false
+        bool nativeCameraFrame = false,
+        bool localCameraFrame = false
     );
     void stopRtcVideo(const QString &roomId);
 
@@ -370,6 +371,12 @@ signals:
         const QString &roomId,
         const QString &identity,
         const QString &source,
+        int width,
+        int height,
+        const QByteArray &i420
+    );
+    void matrixRtcLocalVideoFrame(
+        const QString &roomId,
         int width,
         int height,
         const QByteArray &i420
