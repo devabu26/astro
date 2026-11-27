@@ -303,6 +303,8 @@ Item {
         // close the associated LiveKit session and clear all local media UI.
         noAnswerTimer.stop()
         root.stopRingback()
+        connectionToneRequested = false
+        connectionDing.stop()
         localCamera.stop()
         waitingForForegroundCamera = false
 
@@ -485,6 +487,8 @@ Item {
         actionError = ""
         noAnswerTimer.stop()
         root.stopRingback()
+        connectionToneRequested = false
+        connectionDing.stop()
         screenShareChoiceVisible = false
 
         // Stop local capture immediately, but do not make leaving depend on
