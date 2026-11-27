@@ -4,8 +4,8 @@
 #include <QString>
 #include <QByteArray>
 #include <QPointer>
+#include <QAbstractVideoSurface>
 
-class QAbstractVideoSurface;
 
 class QThread;
 class QCamera;
