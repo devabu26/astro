@@ -93,9 +93,9 @@ impl RtcE2eeSession {
 
         let handle = runtime.spawn(async move {
             // Listen to both the current MatrixRTC key event and the legacy
-            // Element Call event. Astro publishes both memberships while it
-            // uses the legacy /sfu/get token flow, so mixed-version clients
-            // need to receive the key format they understand.
+            // Element Call event. Astro publishes sticky membership for the
+            // modern transport and legacy state membership for call
+            // compatibility, so distribute keys in both event formats.
             let event_types = vec![
                 ToDeviceEventType::from(RTC_KEY_EVENT),
                 ToDeviceEventType::from(LEGACY_RTC_KEY_EVENT),
