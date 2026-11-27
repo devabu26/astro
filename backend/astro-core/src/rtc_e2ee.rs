@@ -986,6 +986,31 @@ struct LegacyRtcMember {
     device_id: OwnedDeviceId,
 }
 
+/// Whether the room currently contains an active legacy MSC3401 call member.
+pub(crate) async fn has_active_legacy_membership(room: &Room) -> bool {
+    legacy_memberships(room).await.is_some_and(|members| !members.is_empty())
+}
+
+/// Whether the room currently contains an active MSC4354 sticky MatrixRTC member.
+pub(crate) fn has_active_modern_membership(room: &Room) -> bool {
+    room.sticky_events().live().iter().any(|event| {
+        if event.key.event_type.to_string() != RTC_MEMBER_EVENT {
+            return false;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(event.raw().json().get()) else {
+            return false;
+        };
+        let Some(content) = value.get("content") else { return false };
+        let Some(member) = content.get("member") else { return false };
+        let Some(member_id) = member.get("id").and_then(Value::as_str) else {
+            return false;
+        };
+        content.get("slot_id").and_then(Value::as_str) == Some(RTC_SLOT_ID)
+            && content.get("sticky_key").and_then(Value::as_str) == Some(member_id)
+            && member.get("membership").and_then(Value::as_str) == Some("join")
+    })
+}
+
 async fn legacy_memberships(room: &Room) -> Option<Vec<LegacyRtcMember>> {
     let events = room.get_state_events(
         matrix_sdk::ruma::events::StateEventType::from(
