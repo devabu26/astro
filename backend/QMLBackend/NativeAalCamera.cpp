@@ -46,7 +46,6 @@ bool NativeAalCamera::resolveApi(QString *error)
     RESOLVE(m_deleteControl, "android_camera_delete")
     RESOLVE(m_setCallbackMode, "android_camera_set_preview_callback_mode")
     RESOLVE(m_setPreviewFormat, "android_camera_set_preview_format")
-    RESOLVE(m_getPreviewFormat, "android_camera_get_preview_format")
     RESOLVE(m_setPreviewSize, "android_camera_set_preview_size")
     RESOLVE(m_getPreviewSize, "android_camera_get_preview_size")
     RESOLVE(m_enumeratePreviewSizes, "android_camera_enumerate_supported_preview_sizes")
@@ -115,15 +114,10 @@ bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
         m_setPreviewSize(m_control, selectedSize.width(), selectedSize.height());
 
     m_setPreviewFormat(m_control, AalPixelFormatYuv420Sp);
-    int pixelFormat = -1;
-    m_getPreviewFormat(m_control, &pixelFormat);
-    if (pixelFormat != AalPixelFormatYuv420Sp) {
-        if (error)
-            *error = QStringLiteral("Camera did not accept YUV420SP preview format (reported %1)")
-                         .arg(pixelFormat);
-        stop();
-        return false;
-    }
+    // libhybris' public wrapper exposes the preview-format setter but not
+    // android_camera_get_preview_format. Validate the negotiated buffer layout
+    // when the first CPU preview callback arrives instead of resolving a
+    // getter that the wrapper does not export.
 
     m_getPreviewSize(m_control, &m_width, &m_height);
     if (m_width < 2 || m_height < 2 ||
