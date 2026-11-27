@@ -701,7 +701,6 @@ Item {
         } else {
             nativeCameraRunning = false
             nativeCameraDeviceId = ""
-            localCameraPreview.clearFrame()
             if (backend && (nativeCameraRoomId || roomId))
                 backend.stopRtcBackgroundCamera(nativeCameraRoomId || roomId)
             nativeCameraRoomId = ""
@@ -1048,50 +1047,26 @@ Item {
         }
     }
 
-    Connections {
-        target: root.backend
-        ignoreUnknownSignals: true
-
-        onMatrixRtcLocalVideoFrame: {
-            if (roomId === root.roomId && root.videoStarted)
-                localCameraPreview.setI420Frame(i420, width, height)
-        }
-    }
-
-    // Keep a real Qt Quick video renderer attached to the C++-owned
-    // QCamera. Ubuntu Touch's AAL backend uses this renderer path to create
-    // and attach its preview texture; the filter forwards frames to C++.
+    // This is both the visible local preview and the AAL-compatible
+    // Qt Quick camera renderer. The filter forwards each captured frame
+    // into the existing C++ I420/LiveKit pipeline.
     VideoOutput {
-        id: localCameraCaptureOutput
-        x: 0
-        y: 0
-        width: root.width
-        height: root.height
-        z: -1
-        visible: root.videoStarted && root.backend !== null &&
-                 root.backend.rtcCamera !== null
-        opacity: 0.001
-        source: root.backend ? root.backend.rtcCamera : null
-        filters: [
-            RtcCameraVideoFilter {
-                backend: root.backend
-                roomId: root.roomId
-            }
-        ]
-    }
-
-    RtcVideoItem {
         id: localCameraPreview
         z: 50
         x: parent.width - width - units.gu(2)
         y: units.gu(10)
         width: units.gu(20)
         height: width * 4 / 3
-        visible: root.videoStarted
-        backend: root.backend
-        roomId: root.roomId
-        identity: "__local_camera__"
-        source: "camera"
+        visible: root.videoStarted && root.backend !== null &&
+                 root.backend.rtcCamera !== null
+        source: root.backend ? root.backend.rtcCamera : null
+        fillMode: VideoOutput.PreserveAspectFit
+        filters: [
+            RtcCameraVideoFilter {
+                backend: root.backend
+                roomId: root.roomId
+            }
+        ]
         // Drag and flick the local camera preview within the call page.
         MouseArea {
             id: localCameraPreviewDrag
