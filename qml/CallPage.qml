@@ -54,6 +54,7 @@ Item {
     property bool nativeBackgroundCameraRunning: false
     property string nativeBackgroundCameraDeviceId: ""
     property bool remoteAnswered: false
+    property bool connectionTonePlayed: false
     property string ringbackSource: ""
     property bool ringbackRequested: false
 
@@ -270,6 +271,7 @@ Item {
         }
 
         remoteAnswered = false
+        connectionTonePlayed = false
 
         // Ringback belongs to the outgoing call attempt, not to the later
         // LiveKit audio-start callback. Start it before joining so the caller
@@ -580,6 +582,22 @@ Item {
         ringbackAudio.stop()
     }
 
+    function playConnectionTone() {
+        if (connectionTonePlayed)
+            return
+
+        connectionTonePlayed = true
+        stopRingback()
+        connectionDing.stop()
+        if (connectionDing.status === SoundEffect.Ready)
+            connectionDing.play()
+        else
+            console.info(
+                "ASTRO_CALL_TONE: connection ding requested before WAV ready",
+                "status:", connectionDing.status
+            )
+    }
+
     function startRingback(restartPlayback) {
         if (!directCall || remoteAnswered)
             return
@@ -614,6 +632,14 @@ Item {
 
         if (!noAnswerTimer.running)
             noAnswerTimer.restart()
+    }
+
+    // A single playback of the same cached WAV marks a successful connection.
+    SoundEffect {
+        id: connectionDing
+        source: root.ringbackSource
+        loops: 1
+        volume: 1.0
     }
 
     // SoundEffect uses Qt's short-WAV sound-effects backend rather than
@@ -661,6 +687,17 @@ Item {
         onTriggered: {
             if (!root.directCall || root.remoteAnswered)
                 return
+
+            // A connected local LiveKit session is not a failed call. Stop
+            // ringback at the timeout, but never hang up an established room.
+            if (root.audioStarted || root.audioState.active === true) {
+                console.info(
+                    "ASTRO_CALL_RINGBACK: timeout reached after local connection; stopping tone without hanging up"
+                )
+                root.stopRingback()
+                return
+            }
+
             root.stopRingback()
             if (root.pendingOperation.length > 0) {
                 root.startRingback(true)
@@ -1153,10 +1190,8 @@ Item {
             if (operation === "start") {
                 root.audioStarted = true
                 root.muted = false
-                // LiveKit may reconfigure the platform audio route while
-                // connecting. Restart ringback after that transition.
-                if (root.directCall && !root.remoteAnswered)
-                    root.startRingback(true);
+                // Do not restart ringback here: the timeout must never turn a
+                // successfully established local LiveKit session into hangup.
 
             } else if (operation === "mute") {
                 root.muted = root.pendingMuted
@@ -1318,7 +1353,10 @@ Item {
                             event.type === "participant_active") {
                         root.remoteAnswered = true
                         noAnswerTimer.stop()
-                        root.stopRingback()
+                        if (event.type === "participant_connected")
+                            root.playConnectionTone()
+                        else
+                            root.stopRingback()
                     }
 
                     if (event.type === "track_unsubscribed") {
