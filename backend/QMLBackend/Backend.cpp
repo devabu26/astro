@@ -473,6 +473,7 @@ void Backend::setStorageReady(bool ready)
     m_storageReady = ready;
 
     emit storageReadyChanged();
+}
 
 QString Backend::rtcHangupToneUrl() const
 {
@@ -550,5 +551,4 @@ QString Backend::rtcHangupToneUrl() const
         return QString();
     }
     return QUrl::fromLocalFile(filePath).toString();
-}
 }
