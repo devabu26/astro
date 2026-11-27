@@ -1069,10 +1069,7 @@ Item {
 
         RtcVideoItem {
             id: localCameraPreviewItem
-            width: parent.height
-            height: parent.width
-            anchors.centerIn: parent
-            rotation: 90
+            anchors.fill: parent
             backend: root.backend
             roomId: root.roomId
             identity: ""
