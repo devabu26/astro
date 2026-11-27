@@ -1058,6 +1058,28 @@ Item {
         }
     }
 
+    // Keep a real Qt Quick video renderer attached to the C++-owned
+    // QCamera. Ubuntu Touch's AAL backend uses this renderer path to create
+    // and attach its preview texture; the filter forwards frames to C++.
+    VideoOutput {
+        id: localCameraCaptureOutput
+        x: 0
+        y: 0
+        width: root.width
+        height: root.height
+        z: -1
+        visible: root.videoStarted && root.backend !== null &&
+                 root.backend.rtcCamera !== null
+        opacity: 0.001
+        source: root.backend ? root.backend.rtcCamera : null
+        filters: [
+            RtcCameraVideoFilter {
+                backend: root.backend
+                roomId: root.roomId
+            }
+        ]
+    }
+
     RtcVideoItem {
         id: localCameraPreview
         z: 50
