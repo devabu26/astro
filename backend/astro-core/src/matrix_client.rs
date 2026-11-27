@@ -3142,14 +3142,34 @@ impl MatrixClientManager {
             let local_identity = e2ee_session.local_livekit_identity().to_owned();
             let runtime = Arc::clone(&self.runtime);
             let keys = runtime.block_on(async {
-                for _ in 0..80 {
+                // Membership changes can rotate the local MatrixRTC key while
+                // an incoming call is being accepted. Each successful key
+                // distribution restarts the protocol's five-second activation
+                // grace, so an eight-second connection deadline is too short
+                // when the first membership snapshot is still settling.
+                let activation_wait_started = std::time::Instant::now();
+                for _ in 0..200 {
                     let snapshot = e2ee_session.livekit_key_snapshot();
-                    if snapshot.iter().any(|(identity, _, _)| identity == &local_identity) {
+                    if let Some((_, index, _)) = snapshot.iter()
+                        .find(|(identity, _, _)| identity == &local_identity)
+                    {
+                        eprintln!(
+                            "ASTRO RTC E2EE: local media key index {} became active after {} ms",
+                            index,
+                            activation_wait_started.elapsed().as_millis()
+                        );
                         return Ok(snapshot);
                     }
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                Err("MatrixRTC local media key did not become active; refusing an unencrypted LiveKit connection".to_string())
+                let snapshot = e2ee_session.livekit_key_snapshot();
+                eprintln!(
+                    "ASTRO RTC E2EE: local media key activation timed out after {} ms; active_key_count={}, expected_local_identity_present={}",
+                    activation_wait_started.elapsed().as_millis(),
+                    snapshot.len(),
+                    snapshot.iter().any(|(identity, _, _)| identity == &local_identity)
+                );
+                Err("MatrixRTC local media key did not become active within 20 seconds; refusing an unencrypted LiveKit connection".to_string())
             })?;
             Some((local_identity, keys))
         } else {
