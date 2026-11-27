@@ -470,6 +470,7 @@ private:
         const QPointer<QCamera> &cameraGuard,
         quint64 cameraGeneration
     );
+    void finishRtcCameraSwitch(const QString &roomId, const QString &deviceId);
     void stopRtcScreenShareCapture(const QString &releaseRoomId = QString());
     void releaseRtcScreenShareMirConnection(const QString &roomId);
     void beginRtcScreenShareUnpublish(const QString &roomId, const QString &completionError);
@@ -531,6 +532,13 @@ private:
     QString m_rtcStopVideoAfterBackgroundUnloadRoomId;
     bool m_rtcStopAudioAfterBackgroundUnload = false;
     QString m_rtcStopAudioAfterBackgroundUnloadRoomId;
+    bool m_rtcStartVideoAfterBackgroundUnload = false;
+    QString m_rtcStartVideoAfterBackgroundUnloadRoomId;
+    int m_rtcStartVideoAfterBackgroundUnloadWidth = 0;
+    int m_rtcStartVideoAfterBackgroundUnloadHeight = 0;
+    bool m_rtcSwitchCameraAfterBackgroundUnload = false;
+    QString m_rtcSwitchCameraAfterBackgroundUnloadRoomId;
+    QString m_rtcSwitchCameraAfterBackgroundUnloadDeviceId;
     RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
     QString m_rtcVideoRoomId;
     int m_rtcVideoWidth = 0;
