@@ -5675,7 +5675,17 @@ impl MatrixClientManager {
                 .pusher()
                 .delete(pusher_ids)
                 .await
-                .map_err(|error| format!("Could not unregister Matrix push pusher: {error}"))
+                .map_err(|error| format!("Could not unregister Matrix push pusher: {error}"))?;
+
+            let legacy_ids = PusherIds::new(
+                push_token.to_owned(),
+                "astro.madabu".to_owned(),
+            );
+            if let Err(error) = client.pusher().delete(legacy_ids).await {
+                eprintln!("ASTRO PUSH: legacy pusher cleanup failed: {}", error);
+            }
+
+            Ok(())
         })
     }
 
