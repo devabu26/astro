@@ -116,6 +116,7 @@ dependencies = [
  "livekit",
  "livekit-signaling",
  "matrix-sdk",
+ "matrix-sdk-base",
  "matrix-sdk-sqlite",
  "matrix-sdk-store-encryption",
  "matrix-sdk-ui",
