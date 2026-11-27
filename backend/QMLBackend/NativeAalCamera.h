@@ -21,7 +21,8 @@ public:
     explicit NativeAalCamera(QObject *parent = nullptr);
     ~NativeAalCamera() override;
 
-    bool start(int cameraId, const QString &roomId, QString *error);
+    bool start(int cameraId, int sensorOrientation, bool frontFacing,
+               const QString &roomId, QString *error);
     void stop();
     bool isRunning() const { return m_running.load(); }
 
@@ -92,6 +93,9 @@ private:
     int m_width = 0;
     int m_height = 0;
     std::atomic_bool m_running{false};
+    std::atomic_bool m_previewUpdatePending{false};
+    int m_sensorOrientation = 0;
+    bool m_frontFacing = false;
     QMutex m_callbackMutex;
     std::atomic_uint m_frameCount{0};
     std::atomic_int m_invalidBufferLogged{0};

@@ -9,6 +9,7 @@
 #include <QSurfaceFormat>
 #include <QTimer>
 #include <QThread>
+#include <QTransform>
 #include <algorithm>
 #include <cstring>
 
@@ -144,7 +145,8 @@ void NativeAalCamera::destroyPreviewTexture()
     m_previewSurface = nullptr;
 }
 
-bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
+bool NativeAalCamera::start(int cameraId, int sensorOrientation, bool frontFacing,
+                            const QString &roomId, QString *error)
 {
     stop();
     if (!resolveApi(error))
@@ -157,6 +159,9 @@ bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
     }
 
     m_roomId = roomId;
+    m_sensorOrientation = ((sensorOrientation % 360) + 360) % 360;
+    m_frontFacing = frontFacing;
+    m_previewUpdatePending.store(false);
     m_listener = {};
     m_listener.context = this;
     m_listener.onPreviewTexture = &NativeAalCamera::previewTextureCallback;
@@ -227,6 +232,8 @@ bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
             << "cameraId:" << cameraId
             << "size:" << m_width << "x" << m_height
             << "format: YUV420SP"
+            << "sensorOrientation:" << m_sensorOrientation
+            << "frontFacing:" << m_frontFacing
             << "texture:" << m_previewTexture
             << "callback: enabled";
 
@@ -245,6 +252,7 @@ bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
 void NativeAalCamera::stop()
 {
     m_running.store(false);
+    m_previewUpdatePending.store(false);
 
     if (m_control) {
         if (m_setCallbackMode)
@@ -278,22 +286,33 @@ void NativeAalCamera::previewTextureCallback(void *context)
     // libhybris may invoke this callback on any camera-service thread. Its
     // API explicitly requires update_preview_texture() on the GL-context
     // setup thread, so never make the context current in this callback.
-    QMetaObject::invokeMethod(self, "updatePreviewTexture", Qt::QueuedConnection);
+    bool expected = false;
+    if (!self->m_previewUpdatePending.compare_exchange_strong(expected, true))
+        return;
+
+    if (!QMetaObject::invokeMethod(
+            self, "updatePreviewTexture", Qt::QueuedConnection)) {
+        self->m_previewUpdatePending.store(false);
+    }
 }
 
 void NativeAalCamera::updatePreviewTexture()
 {
     if (!m_running.load() || !m_control ||
-        !m_previewContext || !m_previewSurface)
+        !m_previewContext || !m_previewSurface) {
+        m_previewUpdatePending.store(false);
         return;
+    }
 
     if (!m_previewContext->makeCurrent(m_previewSurface)) {
         qWarning() << "ASTRO_RTC_AAL: could not activate preview GL context for texture update";
+        m_previewUpdatePending.store(false);
         return;
     }
 
     m_updatePreviewTexture(m_control);
     m_previewContext->doneCurrent();
+    m_previewUpdatePending.store(false);
 }
 
 void NativeAalCamera::previewFrameCallback(
@@ -350,8 +369,10 @@ QImage NativeAalCamera::convertYuv420Sp(
         for (int x = 0; x < m_width; ++x) {
             const int yy = qMax(0, int(yPlane[yRow + x]) - 16);
             const int chroma = chromaRow + (x & ~1);
-            const int v = int(vuPlane[chroma]) - 128;
-            const int u = int(vuPlane[chroma + 1]) - 128;
+            const int first = int(vuPlane[chroma]) - 128;
+            const int second = int(vuPlane[chroma + 1]) - 128;
+            const int v = m_frontFacing ? second : first;
+            const int u = m_frontFacing ? first : second;
             const int c = 298 * yy;
             line[x] = qRgb(
                 qBound(0, (c + 409 * v + 128) >> 8, 255),
@@ -360,6 +381,22 @@ QImage NativeAalCamera::convertYuv420Sp(
             );
         }
     }
+    // Android camera preview callbacks contain sensor-oriented bytes; the
+    // legacy display-orientation API does not rotate callback buffers. The
+    // downstream I420 path rotates landscape frames clockwise by 90 degrees
+    // to match Astro's portrait track, so compensate relative to that fixed
+    // rotation using the selected camera's sensor orientation.
+    const int additionalRotation = (m_sensorOrientation - 90 + 360) % 360;
+    if (additionalRotation != 0) {
+        image = image.transformed(
+            QTransform().rotate(additionalRotation),
+            Qt::FastTransformation
+        );
+    }
+
+    // Some front-camera HALs expose the semiplanar chroma bytes as UV (NV12)
+    // even when YUV420SP was requested; the rear camera commonly supplies VU
+    // (NV21). Swap U/V during conversion for front-facing devices.
     return image;
 }
 
