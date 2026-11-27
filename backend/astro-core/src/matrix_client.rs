@@ -3036,9 +3036,10 @@ impl MatrixClientManager {
         Ok(())
     }
 
-    /// Obtain legacy LiveKit credentials for an active MatrixRTC membership.
+    /// Obtain LiveKit credentials for an active MatrixRTC membership.
     ///
-    /// Returns JSON containing the LiveKit WebSocket URL and JWT.
+    /// Uses the MSC4195 homeserver endpoint for modern transports and the
+    /// standalone /sfu/get service for legacy transports.
     fn rtc_livekit_credentials_json(
         &mut self,
         room_id: &str,
