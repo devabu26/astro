@@ -1,6 +1,7 @@
 
 
 #include "Backend.h"
+#include "NativeAalCamera.h"
 #include "StorageWorker/StorageWorker.h"
 #include "notifications/NotificationManager.h"
 
@@ -48,6 +49,18 @@ Backend::Backend(QObject *parent)
     );
 
     m_notificationManager = new NotificationManager(this);
+
+    m_nativeRtcCamera = new NativeAalCamera(this);
+    connect(
+        m_nativeRtcCamera,
+        &NativeAalCamera::frameReceived,
+        this,
+        [this](const QImage &image) {
+            if (!m_rtcCameraRoomId.isEmpty())
+                processRtcCameraImage(m_rtcCameraRoomId, image);
+        },
+        Qt::QueuedConnection
+    );
 
     if (qGuiApp) {
         m_applicationState = static_cast<int>(qGuiApp->applicationState());
