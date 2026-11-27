@@ -2057,7 +2057,7 @@ public:
              nativeCameraFrame = glTextureFrame]() {
                 worker->pushRtcVideoFrame(
                     roomId, outputWidth, outputHeight, outputFrame,
-                    nativeCameraFrame
+                    nativeCameraFrame, true
                 );
                 pending->storeRelease(0);
             },
@@ -3304,11 +3304,15 @@ void StorageWorker::pushRtcVideoFrame(
     int width,
     int height,
     const QByteArray &i420,
-    bool nativeCameraFrame
+    bool nativeCameraFrame,
+    bool localCameraFrame
 )
 {
     if (!m_matrixClient || roomId.isEmpty())
         return;
+
+    if (localCameraFrame)
+        emit matrixRtcLocalVideoFrame(roomId, width, height, i420);
 
     const QByteArray roomIdBytes = roomId.toUtf8();
     char *error = nullptr;
