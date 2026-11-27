@@ -5,8 +5,6 @@
 #include "StorageWorker/StorageWorker.h"
 #include "notifications/NotificationManager.h"
 
-#include <QCamera>
-
 #include <QCoreApplication>
 #include <QStandardPaths>
 #include <QDir>
