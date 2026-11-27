@@ -35,6 +35,7 @@ public:
 
     Q_INVOKABLE QString status() const;
     Q_INVOKABLE QString rtcRingbackToneUrl() const;
+    Q_INVOKABLE QString rtcConnectionToneUrl() const;
     Q_INVOKABLE QString prepareDataDirectory() const;
     Q_INVOKABLE bool hasExistingStorage() const;
     Q_INVOKABLE QString secretServiceStatus() const;
