@@ -3739,10 +3739,10 @@ impl MatrixClientManager {
         let frame_pixel_count = u64::from(width) * u64::from(height);
         if width < 2 || height < 2
             || width > 1920 || height > 1920
-            || frame_pixel_count > 1920_u64 * 1080_u64
+            || frame_pixel_count > 1920_u64 * 1920_u64
             || width % 2 != 0 || height % 2 != 0
         {
-            return Err("Video frame dimensions must be even and no larger than 1920x1080 pixels".into());
+            return Err("Video frame dimensions must be even, no larger than 1920 pixels per side, and within a 1920x1920 pixel budget".into());
         }
 
         let y_size = (width as usize)

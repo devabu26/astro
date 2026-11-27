@@ -354,11 +354,19 @@ Item {
     }
 
     function selectCameraResolution(width, height) {
+        var changed = cameraResolutionWidth !== width ||
+                      cameraResolutionHeight !== height
         cameraResolutionWidth = width
         cameraResolutionHeight = height
         cameraResolutionMenuVisible = false
-        console.info("ASTRO_RTC_CAMERA: selected outgoing resolution", width, "x", height,
-                     videoStarted ? "(applies next time camera starts)" : "")
+        console.info("ASTRO_RTC_CAMERA: selected outgoing resolution", width, "x", height)
+
+        if (changed && videoStarted && backend && roomId &&
+                pendingOperation.length === 0) {
+            pendingOperation = "changeResolutionStop"
+            actionError = ""
+            backend.stopRtcVideo(roomId)
+        }
     }
 
     function toggleCameraResolutionMenu() {
@@ -920,6 +928,21 @@ Item {
 
             } else if (operation === "stopVideo") {
                 root.videoStarted = false
+
+            } else if (operation === "changeResolutionStop") {
+                // Stopping the track first lets LiveKit create a new source
+                // with the selected dimensions. The false transition also
+                // releases the native camera before the new capture starts.
+                root.videoStarted = false
+                root.pendingOperation = "changeResolutionStart"
+                root.backend.startRtcVideo(
+                    root.roomId,
+                    root.cameraResolutionWidth,
+                    root.cameraResolutionHeight
+                )
+
+            } else if (operation === "changeResolutionStart") {
+                root.videoStarted = true
 
             } else if (operation === "switchCamera") {
                 root.videoStarted = true
@@ -1955,7 +1978,7 @@ Item {
                 id: cameraResolutionFooter
                 width: parent.width
                 text: root.videoStarted
-                      ? "Applies the next time the camera starts."
+                      ? "Selecting a size restarts outgoing video."
                       : "Sizes are specific to this camera."
                 color: "#b8c8d4"
                 wrapMode: Text.WordWrap

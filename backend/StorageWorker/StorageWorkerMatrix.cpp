@@ -1683,7 +1683,7 @@ public:
             static_cast<qint64>(width) * static_cast<qint64>(height);
         if (width < 2 || height < 2 ||
             width > 1920 || height > 1920 ||
-            framePixelCount > 1920LL * 1080LL ||
+            framePixelCount > 1920LL * 1920LL ||
             (width & 1) || (height & 1)) {
             if (m_loggedInvalidDimensions.testAndSetOrdered(0, 1))
                 qWarning() << "RTC camera rejected frame dimensions:"

@@ -99,6 +99,13 @@ QStringList NativeAalCamera::supportedPreviewResolutions(int cameraId)
         const QSize displaySize = nativeSize.width() > nativeSize.height()
             ? QSize(nativeSize.height(), nativeSize.width())
             : nativeSize;
+        const qint64 displayPixels =
+            qint64(displaySize.width()) * displaySize.height();
+        // Keep the picker consistent with the maximum frame dimensions
+        // accepted by the native camera bridge and LiveKit source.
+        if (displaySize.width() > 1920 || displaySize.height() > 1920 ||
+            displayPixels > 1920LL * 1920LL)
+            continue;
         if (!portraitSizes.contains(displaySize))
             portraitSizes.append(displaySize);
     }
@@ -226,43 +233,73 @@ bool NativeAalCamera::start(int cameraId, int sensorOrientation,
     // target is also required by the Android camera stack to start its preview.
     m_enumeratePreviewSizes(m_control, &NativeAalCamera::previewSizeCallback, this);
     QSize selectedSize;
-    if (outputWidth > 0 && outputHeight > 0) {
-        // The advertised call resolutions are portrait-oriented; camera HAL
-        // preview sizes are commonly landscape-oriented.
-        const QSize requestedNative(outputHeight, outputWidth);
+    if (outputWidth > 0 && outputHeight > 0 && !m_supportedSizes.isEmpty()) {
+        const qint64 requestedPixels =
+            qint64(outputWidth) * outputHeight;
+        const double requestedAspect =
+            double(qMax(outputWidth, outputHeight)) /
+            qMax(1, qMin(outputWidth, outputHeight));
+
+        QList<QSize> aspectMatched;
         for (const QSize &size : m_supportedSizes) {
-            if (size == requestedNative || size == QSize(outputWidth, outputHeight)) {
+            if (size.width() < 2 || size.height() < 2 ||
+                (size.width() & 1) || (size.height() & 1))
+                continue;
+            const double aspect =
+                double(qMax(size.width(), size.height())) /
+                qMax(1, qMin(size.width(), size.height()));
+            if (qAbs(aspect - requestedAspect) / requestedAspect <= 0.15)
+                aspectMatched.append(size);
+        }
+        const QVector<QSize> candidates = aspectMatched.isEmpty()
+            ? m_supportedSizes : aspectMatched.toVector();
+
+        // Prefer the smallest sensor mode that can supply the requested
+        // pixel count. If none is large enough, use the largest compatible
+        // mode and let the I420 transform upscale it. This avoids the old
+        // unconditional VGA fallback that made high output modes look low-res.
+        bool foundLargeEnough = false;
+        qint64 selectedPixels = 0;
+        double selectedAspectError = 1.0e9;
+        for (const QSize &size : candidates) {
+            if (size.width() < 2 || size.height() < 2 ||
+                (size.width() & 1) || (size.height() & 1))
+                continue;
+            const qint64 pixels = qint64(size.width()) * size.height();
+            const double aspect =
+                double(qMax(size.width(), size.height())) /
+                qMax(1, qMin(size.width(), size.height()));
+            const double aspectError =
+                qAbs(aspect - requestedAspect) / requestedAspect;
+            const bool largeEnough = pixels >= requestedPixels;
+            if ((largeEnough && !foundLargeEnough) ||
+                (largeEnough == foundLargeEnough &&
+                 ((largeEnough && (selectedSize.isEmpty() || pixels < selectedPixels)) ||
+                  (!largeEnough && (selectedSize.isEmpty() || pixels > selectedPixels)) ||
+                  (pixels == selectedPixels && aspectError < selectedAspectError)))) {
                 selectedSize = size;
-                break;
+                selectedPixels = pixels;
+                selectedAspectError = aspectError;
+                foundLargeEnough = largeEnough;
             }
         }
     }
-    if (selectedSize.isEmpty()) {
-        for (const QSize &size : m_supportedSizes) {
-            if (size.width() <= 640 && size.height() <= 480 &&
-                (selectedSize.isEmpty() ||
-                 qint64(size.width()) * size.height() >
-                     qint64(selectedSize.width()) * selectedSize.height())) {
-                selectedSize = size;
-            }
-        }
-    }
-    if (selectedSize.isEmpty()) {
-        for (const QSize &size : m_supportedSizes) {
-            if (size.width() <= 1280 && size.height() <= 720 &&
-                (selectedSize.isEmpty() ||
-                 qint64(size.width()) * size.height() >
-                     qint64(selectedSize.width()) * selectedSize.height())) {
-                selectedSize = size;
-            }
-        }
-    }
-    if (!selectedSize.isEmpty())
+
+    if (!selectedSize.isEmpty()) {
         m_setPreviewSize(m_control, selectedSize.width(), selectedSize.height());
+        qInfo() << "ASTRO_RTC_AAL: selected native capture mode"
+                << "requestedTrack:" << outputWidth << "x" << outputHeight
+                << "requestedPixels:" << qint64(outputWidth) * outputHeight
+                << "captureMode:" << selectedSize;
+    }
 
     m_setPreviewFormat(m_control, AalPixelFormatYuv420Sp);
     // Validate the negotiated CPU buffer layout when the first callback arrives.
     m_getPreviewSize(m_control, &m_width, &m_height);
+    qInfo() << "ASTRO_RTC_AAL: negotiated native capture dimensions"
+            << m_width << "x" << m_height
+            << "requestedTrack:" << outputWidth << "x" << outputHeight
+            << "selectedMode:" << selectedSize;
     if (m_width < 2 || m_height < 2 ||
         (m_width & 1) || (m_height & 1)) {
         if (error)
