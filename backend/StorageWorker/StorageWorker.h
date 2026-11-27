@@ -56,12 +56,12 @@ public:
         QOffscreenSurface *surface
     );
     bool makeRtcCameraOpenGLContextCurrent(
-        QOpenGLContext **previousContext,
-        QSurface **previousSurface
+        QOpenGLContext **previousContext = nullptr,
+        QSurface **previousSurface = nullptr
     );
     void releaseRtcCameraOpenGLContext(
-        QOpenGLContext *previousContext,
-        QSurface *previousSurface
+        QOpenGLContext *previousContext = nullptr,
+        QSurface *previousSurface = nullptr
     );
     void recordRtcNativeGlFrame() { m_rtcNativeGlFrameCount.fetchAndAddRelaxed(1); }
 
