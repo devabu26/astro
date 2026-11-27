@@ -35,6 +35,7 @@ Item {
     property bool cameraResolutionMenuVisible: false
     property int cameraResolutionWidth: 480
     property int cameraResolutionHeight: 640
+    property var cameraResolutions: []
     property bool screenShareStarted: false
     property string screenShareRoomId: ""
     property bool screenShareChoiceVisible: false
@@ -358,6 +359,16 @@ Item {
         console.info("ASTRO_RTC_CAMERA: selected outgoing resolution", width, "x", height,
                      videoStarted ? "(applies next time camera starts)" : "")
     }
+
+    function toggleCameraResolutionMenu() {
+        cameraResolutionMenuVisible = !cameraResolutionMenuVisible
+        if (cameraResolutionMenuVisible && backend) {
+            cameraResolutions = backend.rtcCameraResolutions() || []
+            console.info("ASTRO_RTC_CAMERA: available resolutions for current camera:",
+                         cameraResolutions.join(", "))
+        }
+    }
+
 
     function toggleCamera() {
         if (!backend || !roomId ||
@@ -1674,8 +1685,7 @@ Item {
 
                             MouseArea {
                                 anchors.fill: parent
-                                onClicked: root.cameraResolutionMenuVisible =
-                                        !root.cameraResolutionMenuVisible
+                                onClicked: root.toggleCameraResolutionMenu()
                             }
                         }
                     }
@@ -1841,13 +1851,14 @@ Item {
             }
         }
     }
-    // Camera resolution picker, positioned above the camera control.
+    // Camera resolution picker, populated from the selected camera's
+    // native libhybris preview-size enumeration.
     Rectangle {
         id: cameraResolutionMenu
         z: 1000
         visible: root.cameraResolutionMenuVisible
-        width: units.gu(25)
-        height: units.gu(22)
+        width: units.gu(29)
+        height: Math.min(root.height * 0.7, units.gu(40))
         radius: units.gu(1)
         color: "#172633"
         border.color: "#60798c"
@@ -1862,36 +1873,54 @@ Item {
             spacing: units.gu(0.5)
 
             Text {
+                id: cameraResolutionHeading
                 width: parent.width
-                text: "Camera resolution"
+                text: "Available camera resolutions"
                 color: "white"
                 font.bold: true
                 font.pixelSize: units.gu(1.7)
             }
 
-            Repeater {
-                model: [
-                    { width: 240, height: 320, label: "240 × 320  ·  Low bandwidth" },
-                    { width: 360, height: 480, label: "360 × 480  ·  Balanced" },
-                    { width: 480, height: 640, label: "480 × 640  ·  High quality" }
-                ]
+            Text {
+                width: parent.width
+                visible: root.cameraResolutions.length === 0
+                text: "No preview sizes reported by this camera."
+                color: "#b8c8d4"
+                wrapMode: Text.WordWrap
+                font.pixelSize: units.gu(1.3)
+            }
+
+            ListView {
+                id: cameraResolutionList
+                width: parent.width
+                height: Math.max(0, parent.height -
+                                 cameraResolutionHeading.height -
+                                 cameraResolutionFooter.height -
+                                 units.gu(2))
+                clip: true
+                model: root.cameraResolutions
+                spacing: units.gu(0.4)
 
                 delegate: Rectangle {
-                    width: parent.width
+                    property var dimensions: modelData.split("x")
+                    property int resolutionWidth: parseInt(dimensions[0])
+                    property int resolutionHeight: parseInt(dimensions[1])
+
+                    width: cameraResolutionList.width
                     height: units.gu(4.5)
                     radius: units.gu(0.6)
-                    color: root.cameraResolutionWidth === modelData.width &&
-                           root.cameraResolutionHeight === modelData.height
+                    color: root.cameraResolutionWidth === resolutionWidth &&
+                           root.cameraResolutionHeight === resolutionHeight
                            ? "#315d48" : "#263b4a"
 
                     Text {
                         anchors.fill: parent
                         anchors.leftMargin: units.gu(1)
                         verticalAlignment: Text.AlignVCenter
-                        text: modelData.label +
-                              (root.cameraResolutionWidth === modelData.width &&
-                               root.cameraResolutionHeight === modelData.height
-                               ? "  ✓" : "")
+                        text: modelData + "  ·  " +
+                              (root.cameraResolutionWidth === resolutionWidth &&
+                               root.cameraResolutionHeight === resolutionHeight
+                               ? "Selected ✓" : "Select")
                         color: "white"
                         font.pixelSize: units.gu(1.35)
                     }
@@ -1899,27 +1928,23 @@ Item {
                     MouseArea {
                         anchors.fill: parent
                         onClicked: root.selectCameraResolution(
-                                       modelData.width, modelData.height)
+                                       resolutionWidth, resolutionHeight)
                     }
                 }
             }
 
             Text {
+                id: cameraResolutionFooter
                 width: parent.width
-                visible: root.videoStarted
-                text: "Applies the next time the camera starts."
+                text: root.videoStarted
+                      ? "Applies the next time the camera starts."
+                      : "Sizes are specific to this camera."
                 color: "#b8c8d4"
                 wrapMode: Text.WordWrap
                 font.pixelSize: units.gu(1.15)
             }
         }
-
-        MouseArea {
-            anchors.fill: parent
-            z: -1
-        }
     }
-
     // Ask before starting display capture so device playback is never shared implicitly.
     Item {
         anchors.fill: parent
