@@ -71,6 +71,49 @@ void NativeAalCamera::previewSizeCallback(void *context, int width, int height)
         self->m_supportedSizes.append(QSize(width, height));
 }
 
+QStringList NativeAalCamera::supportedPreviewResolutions(int cameraId)
+{
+    if (!isRunning()) {
+        QString error;
+        if (!resolveApi(&error))
+            return {};
+
+        m_supportedSizes.clear();
+        Listener listener{};
+        void *control = m_connectById(cameraId, &listener);
+        if (!control)
+            return {};
+
+        m_enumeratePreviewSizes(
+            control, &NativeAalCamera::previewSizeCallback, this
+        );
+        m_disconnect(control);
+        m_deleteControl(control);
+    }
+
+    QList<QSize> portraitSizes;
+    for (const QSize &nativeSize : m_supportedSizes) {
+        if (nativeSize.width() < 2 || nativeSize.height() < 2 ||
+            (nativeSize.width() & 1) || (nativeSize.height() & 1))
+            continue;
+        const QSize displaySize = nativeSize.width() > nativeSize.height()
+            ? QSize(nativeSize.height(), nativeSize.width())
+            : nativeSize;
+        if (!portraitSizes.contains(displaySize))
+            portraitSizes.append(displaySize);
+    }
+    std::sort(portraitSizes.begin(), portraitSizes.end(),
+              [](const QSize &a, const QSize &b) {
+                  return qint64(a.width()) * a.height() <
+                         qint64(b.width()) * b.height();
+              });
+
+    QStringList result;
+    for (const QSize &size : portraitSizes)
+        result.append(QStringLiteral("%1x%2").arg(size.width()).arg(size.height()));
+    return result;
+}
+
 bool NativeAalCamera::initialisePreviewTexture(QString *error)
 {
     // libhybris requires update_preview_texture() to run on the same thread
@@ -146,6 +189,7 @@ void NativeAalCamera::destroyPreviewTexture()
 }
 
 bool NativeAalCamera::start(int cameraId, int sensorOrientation, bool frontFacing,
+                            int outputWidth, int outputHeight,
                             const QString &roomId, QString *error)
 {
     stop();
@@ -183,12 +227,25 @@ bool NativeAalCamera::start(int cameraId, int sensorOrientation, bool frontFacin
     // target is also required by the Android camera stack to start its preview.
     m_enumeratePreviewSizes(m_control, &NativeAalCamera::previewSizeCallback, this);
     QSize selectedSize;
-    for (const QSize &size : m_supportedSizes) {
-        if (size.width() <= 640 && size.height() <= 480 &&
-            (selectedSize.isEmpty() ||
-             qint64(size.width()) * size.height() >
-                 qint64(selectedSize.width()) * selectedSize.height())) {
-            selectedSize = size;
+    if (outputWidth > 0 && outputHeight > 0) {
+        // The advertised call resolutions are portrait-oriented; camera HAL
+        // preview sizes are commonly landscape-oriented.
+        const QSize requestedNative(outputHeight, outputWidth);
+        for (const QSize &size : m_supportedSizes) {
+            if (size == requestedNative || size == QSize(outputWidth, outputHeight)) {
+                selectedSize = size;
+                break;
+            }
+        }
+    }
+    if (selectedSize.isEmpty()) {
+        for (const QSize &size : m_supportedSizes) {
+            if (size.width() <= 640 && size.height() <= 480 &&
+                (selectedSize.isEmpty() ||
+                 qint64(size.width()) * size.height() >
+                     qint64(selectedSize.width()) * selectedSize.height())) {
+                selectedSize = size;
+            }
         }
     }
     if (selectedSize.isEmpty()) {
@@ -369,10 +426,10 @@ QImage NativeAalCamera::convertYuv420Sp(
         for (int x = 0; x < m_width; ++x) {
             const int yy = qMax(0, int(yPlane[yRow + x]) - 16);
             const int chroma = chromaRow + (x & ~1);
-            const int first = int(vuPlane[chroma]) - 128;
-            const int second = int(vuPlane[chroma + 1]) - 128;
-            const int v = m_frontFacing ? second : first;
-            const int u = m_frontFacing ? first : second;
+            // YUV420SP preview callback data is NV21: V then U.
+            // The ordering is the same for front- and rear-facing cameras.
+            const int v = int(vuPlane[chroma]) - 128;
+            const int u = int(vuPlane[chroma + 1]) - 128;
             const int c = 298 * yy;
             line[x] = qRgb(
                 qBound(0, (c + 409 * v + 128) >> 8, 255),
