@@ -22,7 +22,9 @@ public:
     ~NativeAalCamera() override;
 
     bool start(int cameraId, int sensorOrientation, bool frontFacing,
+               int outputWidth, int outputHeight,
                const QString &roomId, QString *error);
+    QStringList supportedPreviewResolutions(int cameraId);
     void stop();
     bool isRunning() const { return m_running.load(); }
 
