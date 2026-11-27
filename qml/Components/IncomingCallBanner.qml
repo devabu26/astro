@@ -11,6 +11,7 @@ Item {
 
     signal acceptRequested(string roomId, string eventId)
     signal declineRequested(string roomId, string eventId)
+    signal alertRequested()
 
     visible: roomId !== ""
     height: visible ? banner.height : 0
@@ -21,6 +22,7 @@ Item {
         eventId = incomingEventId || ""
         callIntent = intent === "video" || intent === "audio" ? intent : "unknown"
         expiryTimer.restart()
+        alertRequested()
     }
 
     function clear() {
