@@ -133,6 +133,13 @@ function buildPushData(notification, isCall, call, privacyLevel) {
     };
 }
 
+
+async function saveDiagnostic(env, value) {
+    if (!env.ASTRO_PUSH_DEDUP) return false;
+    await env.ASTRO_PUSH_DEDUP.put("diagnostics:last", JSON.stringify(value), { expirationTtl: 86400 });
+    return true;
+}
+
 async function isDuplicate(env, key) {
     if (env.ASTRO_PUSH_DEDUP) {
         return (await env.ASTRO_PUSH_DEDUP.get(key)) !== null;
@@ -180,6 +187,16 @@ async function forwardToUbuntu(device, data, expiresAt) {
 export default {
     async fetch(request, env) {
         const url = new URL(request.url);
+
+        if (request.method === "GET" && url.pathname === "/__diagnostics") {
+            if (!env.ASTRO_PUSH_DEDUP) return jsonResponse({ status: "unavailable", reason: "ASTRO_PUSH_DEDUP KV binding is not configured" }, 503);
+            try {
+                const last = await env.ASTRO_PUSH_DEDUP.get("diagnostics:last");
+                return jsonResponse(last ? JSON.parse(last) : { status: "no_diagnostics_yet", message: "Send a fresh Matrix message to generate a diagnostic." });
+            } catch (_) {
+                return jsonResponse({ status: "unavailable", reason: "Could not read diagnostic from KV" }, 503);
+            }
+        }
 
         if (request.method === "GET" && url.pathname === "/") {
             return jsonResponse({
@@ -289,12 +306,17 @@ export default {
             await Promise.all(deliveries);
         } catch (error) {
             const reason = error instanceof Error ? error.message : "Unknown delivery error";
-            console.error("ASTRO PUSH: request failed", {
+            const diagnostic = {
+                status: "failed",
+                stage: reason.split(":")[0],
                 matchingDeviceCount: matchingDevices.length,
                 forwardedCount,
                 duplicateCount,
-                reason: reason.slice(0, 360)
-            });
+                reason: reason.slice(0, 360),
+                timestamp: new Date().toISOString()
+            };
+            console.error("ASTRO PUSH: request failed", diagnostic);
+            try { await saveDiagnostic(env, diagnostic); } catch (_) {}
             return jsonResponse({
                 errcode: "M_PUSH_GATEWAY_ERROR",
                 error: "Push delivery failed",
@@ -302,12 +324,16 @@ export default {
             }, 502);
         }
 
-        console.info("ASTRO PUSH: request completed", {
+        const diagnostic = {
+            status: "success",
             matchingDeviceCount: matchingDevices.length,
             forwardedCount,
             duplicateCount,
-            upstreamStatuses
-        });
+            upstreamStatuses,
+            timestamp: new Date().toISOString()
+        };
+        console.info("ASTRO PUSH: request completed", diagnostic);
+        try { await saveDiagnostic(env, diagnostic); } catch (_) {}
         return jsonResponse({ rejected });
     }
 };
