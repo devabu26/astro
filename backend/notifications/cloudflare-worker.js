@@ -1,5 +1,5 @@
 const MATRIX_PATH = "/_matrix/push/v1/notify";
-const UBUNTU_PUSH_URL = "https://push.ubuntu.com/notify";
+const UBUNTU_PUSH_URL = "https://push.ubports.com/notify";
 const ASTRO_APP_ID = "astro.madabu_astro";
 const DEFAULT_MESSAGE_TTL_SECONDS = 10 * 60;
 const CALL_DEDUP_TTL_SECONDS = 10 * 60;
@@ -25,9 +25,23 @@ function encodeQuery(values) {
 function getCallDetails(notification) {
     const type = notification.type || "";
     const content = notification.content || {};
-    const isRingType = type === "org.matrix.msc4075.rtc.notification"
+    const isMsc4075 = type === "org.matrix.msc4075.rtc.notification"
         || type === "m.rtc.notification";
-    if (!isRingType || content.notification_type !== "ring") {
+    const isLegacyCallNotify = type === "m.call.notify"
+        || type === "org.matrix.msc4075.call.notify";
+
+    // notification_type is deprecated and may be omitted by newer MSC4075
+    // senders. When present, only "ring" should create a persistent call card.
+    if (isMsc4075) {
+        if (content.notification_type !== undefined
+            && content.notification_type !== "ring") {
+            return null;
+        }
+    } else if (isLegacyCallNotify) {
+        if (content.application !== "m.call" || content.notify_type !== "ring") {
+            return null;
+        }
+    } else {
         return null;
     }
 
@@ -235,6 +249,8 @@ export default {
             deviceCount: notification.devices.length,
             matchingDeviceCount: matchingDevices.length,
             notificationKind: isCall ? "call" : "message",
+            eventType: safeString(notification.type, "unknown"),
+            hasNotificationType: Boolean(notification.content && notification.content.notification_type),
             hasEventId: Boolean(eventId),
             hasRoomId: Boolean(roomId)
         });
@@ -308,6 +324,8 @@ export default {
             const reason = error instanceof Error ? error.message : "Unknown delivery error";
             const diagnostic = {
                 status: "failed",
+                notificationKind: isCall ? "call" : "message",
+                eventType: safeString(notification.type, "unknown"),
                 stage: reason.split(":")[0],
                 matchingDeviceCount: matchingDevices.length,
                 forwardedCount,
@@ -326,6 +344,8 @@ export default {
 
         const diagnostic = {
             status: "success",
+            notificationKind: isCall ? "call" : "message",
+            eventType: safeString(notification.type, "unknown"),
             matchingDeviceCount: matchingDevices.length,
             forwardedCount,
             duplicateCount,
