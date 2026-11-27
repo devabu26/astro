@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QImage>
+#include <QList>
 #include <QLibrary>
 #include <QMutex>
 #include <QOffscreenSurface>
@@ -22,7 +23,7 @@ public:
     explicit NativeAalCamera(QObject *parent = nullptr);
     ~NativeAalCamera() override;
 
-    bool start(int cameraId, int sensorOrientation, bool frontFacing,
+    bool start(int cameraId, int sensorOrientation,
                int outputWidth, int outputHeight,
                const QString &roomId, QString *error);
     QStringList supportedPreviewResolutions(int cameraId);
@@ -98,7 +99,6 @@ private:
     std::atomic_bool m_running{false};
     std::atomic_bool m_previewUpdatePending{false};
     int m_sensorOrientation = 0;
-    bool m_frontFacing = false;
     QMutex m_callbackMutex;
     std::atomic_uint m_frameCount{0};
     std::atomic_int m_invalidBufferLogged{0};
