@@ -630,6 +630,14 @@ MainView {
         source: astroBackend.rtcRingbackToneUrl()
         loops: SoundEffect.Infinite
         volume: 1.0
+        property bool alertRequested: false
+
+        onStatusChanged: {
+            if (alertRequested && status === SoundEffect.Ready) {
+                play()
+                alertRequested = false
+            }
+        }
     }
 
     IncomingCallBanner {
@@ -641,13 +649,11 @@ MainView {
         z: 2100
 
         onAlertRequested: {
-            if (incomingCallAlert.status === SoundEffect.Ready)
+            incomingCallAlert.alertRequested = true
+            if (incomingCallAlert.status === SoundEffect.Ready) {
                 incomingCallAlert.play()
-            else
-                console.info(
-                    "ASTRO_INCOMING_CALL_TONE: waiting for alert WAV",
-                    "status:", incomingCallAlert.status
-                )
+                incomingCallAlert.alertRequested = false
+            }
         }
 
         onVisibleChanged: {
