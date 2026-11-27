@@ -1,6 +1,7 @@
 #include "NativeAalCamera.h"
 
 #include <QDebug>
+#include <QColor>
 #include <QMutexLocker>
 #include <QSize>
 #include <algorithm>
@@ -197,9 +198,32 @@ QImage NativeAalCamera::convertYuv420Sp(
     const uint8_t *data, uint32_t size
 ) const
 {
-    const qint64 ySize = qint64(m_width) * m_height;
+    if (!data || m_width < 2 || m_height < 2)
+        return {};
+
+    const qint64 tightYSize = qint64(m_width) * m_height;
+    const qint64 tightRequired = tightYSize + tightYSize / 2;
+    int rowStride = m_width;
+
+    // Android camera HALs may align YUV rows. If the callback size indicates
+    // a uniform padded stride, account for it instead of interpreting padding
+    // as pixels. The normal tightly packed NV21/YUV420SP case stays unchanged.
+    if (qint64(size) != tightRequired) {
+        const qint64 inferredStride =
+            (qint64(size) * 2) / (qint64(m_height) * 3);
+        if (inferredStride >= m_width &&
+            inferredStride <= m_width + 256 &&
+            (inferredStride & 1) == 0 &&
+            inferredStride * m_height * 3 / 2 <= size) {
+            rowStride = static_cast<int>(inferredStride);
+        } else {
+            return {};
+        }
+    }
+
+    const qint64 ySize = qint64(rowStride) * m_height;
     const qint64 required = ySize + ySize / 2;
-    if (!data || required <= 0 || required > size)
+    if (required > size)
         return {};
 
     QImage image(m_width, m_height, QImage::Format_RGB32);
@@ -210,8 +234,8 @@ QImage NativeAalCamera::convertYuv420Sp(
     const uint8_t *vuPlane = data + ySize;
     for (int y = 0; y < m_height; ++y) {
         QRgb *line = reinterpret_cast<QRgb *>(image.scanLine(y));
-        const int yRow = y * m_width;
-        const int chromaRow = (y / 2) * m_width;
+        const int yRow = y * rowStride;
+        const int chromaRow = (y / 2) * rowStride;
         for (int x = 0; x < m_width; ++x) {
             const int yy = qMax(0, int(yPlane[yRow + x]) - 16);
             const int chroma = chromaRow + (x & ~1);
