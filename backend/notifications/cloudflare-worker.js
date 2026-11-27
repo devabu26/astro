@@ -168,7 +168,11 @@ async function forwardToUbuntu(device, data, expiresAt) {
 
     const responseText = await response.text();
     if (!response.ok) {
-        throw new Error("Ubuntu Push returned HTTP " + response.status);
+        // Keep only a short upstream diagnostic. Never log or return the
+        // request payload, push token, or notification content.
+        const detail = responseText.replace(/[\\r\\n\\t]+/g, " ").slice(0, 240);
+        throw new Error("Ubuntu Push HTTP " + response.status
+            + (detail ? ": " + detail : ""));
     }
     return response.status;
 }
@@ -259,8 +263,10 @@ export default {
                     ? call.expiresAtMs
                     : Date.now() + DEFAULT_MESSAGE_TTL_SECONDS * 1000;
 
+                let stage = "ubuntu_push";
                 try {
                     const upstreamStatus = await forwardToUbuntu(device, data, expiresAt);
+                    stage = "dedup_kv";
                     await rememberDelivery(env, key);
                     forwardedCount += 1;
                     upstreamStatuses.push(upstreamStatus);
@@ -268,24 +274,31 @@ export default {
                         upstreamStatus
                     });
                 } catch (error) {
-                    console.error("ASTRO PUSH: delivery failed", error);
-                    // A transient upstream error must be retried by the
+                    const reason = error instanceof Error ? error.message : "Unknown error";
+                    console.error("ASTRO PUSH: delivery failed", {
+                        stage,
+                        reason: reason.slice(0, 320)
+                    });
+                    // A transient upstream/KV error must be retried by the
                     // homeserver; do not incorrectly reject a valid token.
-                    throw error;
+                    throw new Error(stage + ": " + reason.slice(0, 320));
                 }
             });
 
         try {
             await Promise.all(deliveries);
-        } catch (_) {
-            console.error("ASTRO PUSH: request failed while forwarding to Ubuntu Push", {
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : "Unknown delivery error";
+            console.error("ASTRO PUSH: request failed", {
                 matchingDeviceCount: matchingDevices.length,
                 forwardedCount,
-                duplicateCount
+                duplicateCount,
+                reason: reason.slice(0, 360)
             });
             return jsonResponse({
                 errcode: "M_PUSH_GATEWAY_ERROR",
-                error: "Could not forward one or more notifications to Ubuntu Push"
+                error: "Push delivery failed",
+                diagnostic: reason.slice(0, 360)
             }, 502);
         }
 
