@@ -28,18 +28,12 @@ Item {
         callIntent = intent === "video" || intent === "audio" ? intent : "unknown"
         expiresAtMs = expiry
 
-        // Follow the MatrixRTC notification lifetime rather than a fixed UI
-        // timeout. A missing expiry is left visible until dismissed or handled.
-        expiryTimer.stop()
-        if (expiresAtMs > 0) {
-            expiryTimer.interval = Math.max(1, expiresAtMs - Date.now())
-            expiryTimer.start()
-        }
+        // The expiry is used only to reject stale ring events. Once shown,
+        // keep the banner visible until the user acts or the call is dismissed.
         alertRequested()
     }
 
     function clear() {
-        expiryTimer.stop()
         caller = ""
         roomId = ""
         eventId = ""
@@ -47,11 +41,6 @@ Item {
         expiresAtMs = 0
     }
 
-    Timer {
-        id: expiryTimer
-        repeat: false
-        onTriggered: root.clear()
-    }
 
     Rectangle {
         id: banner
