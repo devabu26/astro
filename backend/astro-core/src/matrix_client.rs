@@ -5556,6 +5556,16 @@ impl MatrixClientManager {
         };
 
         self.runtime.block_on(async {
+            // Remove the previous Astro pusher ID used before the Ubuntu
+            // PushClient app ID was aligned with the package hook ID.
+            let legacy_ids = PusherIds::new(
+                push_token.to_owned(),
+                "astro.madabu".to_owned(),
+            );
+            if let Err(error) = client.pusher().delete(legacy_ids).await {
+                eprintln!("ASTRO PUSH: legacy pusher cleanup was not needed or failed: {}", error);
+            }
+
             client
                 .pusher()
                 .set(pusher.into(), false)
