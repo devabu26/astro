@@ -761,12 +761,12 @@ async fn publish_local_key(
 }
 
 fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMediaKey> {
-    // Log receipt before parsing so we can distinguish an absent peer key
-    // from a message that arrives but is rejected by our format/identity checks.
+    // Keep diagnostics privacy-safe: report field presence and rejection
+    // reasons, never the media-key material or the full event content.
     let value: Value = match serde_json::from_str(message.raw.json().get()) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("ASTRO RTC E2EE: received subscribed to-device message with invalid JSON: {error}");
+            eprintln!("ASTRO RTC E2EE: rejected incoming to-device event; reason=invalid_json, error={error}");
             return None;
         }
     };
@@ -781,63 +781,120 @@ fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMed
         info.is_some()
     );
 
-    // Olm metadata authenticates the to-device sender. The associated
-    // membership is checked later, including the MSC4153 owner-cross-signing
-    // requirement, once its sticky event is available.
-    let info = message.encryption_info?;
-
-    let event_type = value.get("type").and_then(Value::as_str)?;
+    let Some(info) = info else {
+        eprintln!("ASTRO RTC E2EE: rejected incoming key event; reason=missing_authenticated_olm_metadata");
+        return None;
+    };
     if event_type != RTC_KEY_EVENT && event_type != LEGACY_RTC_KEY_EVENT {
-        eprintln!("ASTRO RTC E2EE: ignoring subscribed to-device event type={event_type}");
+        eprintln!("ASTRO RTC E2EE: ignored subscribed to-device event; reason=unexpected_event_type, event_type={event_type}");
         return None;
     }
     if value.get("sender").and_then(Value::as_str) != Some(info.sender.as_str()) {
+        eprintln!("ASTRO RTC E2EE: rejected incoming key event; reason=event_sender_does_not_match_authenticated_sender");
+        return None;
+    }
+    let Some(sender_device) = info.sender_device.clone() else {
+        eprintln!("ASTRO RTC E2EE: rejected incoming key event; reason=missing_authenticated_sender_device");
+        return None;
+    };
+    let Some(content) = value.get("content") else {
+        eprintln!("ASTRO RTC E2EE: rejected incoming key event; reason=missing_content");
+        return None;
+    };
+    let Some(room_id) = content.get("room_id").and_then(Value::as_str) else {
+        eprintln!(
+            "ASTRO RTC E2EE: rejected incoming key event; reason=missing_or_invalid_room_id, content_fields={}",
+            content.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_else(|| "<non-object>".to_owned())
+        );
+        return None;
+    };
+    if room_id.is_empty() {
+        eprintln!("ASTRO RTC E2EE: rejected incoming key event; reason=empty_room_id");
         return None;
     }
 
-    let sender_device = info.sender_device.clone()?;
-    let content = value.get("content")?;
-    let room_id = content.get("room_id")?.as_str()?.to_owned();
-    if room_id.is_empty() { return None; }
-
     let (member_id, index, encoded_key) = if event_type == RTC_KEY_EVENT {
-        let member_id = content.get("member_id")?.as_str()?.to_owned();
-        let media_key = content.get("media_key")?;
-        (
-            member_id,
-            u8::try_from(media_key.get("index")?.as_u64()?).ok()?,
-            media_key.get("key")?.as_str()?,
-        )
+        let Some(member_id) = content.get("member_id").and_then(Value::as_str) else {
+            eprintln!("ASTRO RTC E2EE: rejected modern key event; reason=missing_member_id");
+            return None;
+        };
+        let Some(media_key) = content.get("media_key") else {
+            eprintln!("ASTRO RTC E2EE: rejected modern key event; reason=missing_media_key");
+            return None;
+        };
+        let Some(index) = media_key.get("index").and_then(Value::as_u64).and_then(|v| u8::try_from(v).ok()) else {
+            eprintln!("ASTRO RTC E2EE: rejected modern key event; reason=missing_or_invalid_key_index");
+            return None;
+        };
+        let Some(encoded_key) = media_key.get("key").and_then(Value::as_str) else {
+            eprintln!("ASTRO RTC E2EE: rejected modern key event; reason=missing_or_invalid_key_string");
+            return None;
+        };
+        (member_id.to_owned(), index, encoded_key)
     } else {
-        let member = content.get("member")?;
-        let claimed_device_id = member.get("claimed_device_id")?.as_str()?;
-        // Claimed device metadata is only a consistency check; Olm metadata
-        // and the legacy room-state membership establish the trusted identity.
-        if claimed_device_id != sender_device.as_str() { return None; }
+        let Some(member) = content.get("member") else {
+            eprintln!("ASTRO RTC E2EE: rejected legacy key event; reason=missing_member_object");
+            return None;
+        };
+        let Some(claimed_device_id) = member.get("claimed_device_id").and_then(Value::as_str) else {
+            eprintln!("ASTRO RTC E2EE: rejected legacy key event; reason=missing_claimed_device_id");
+            return None;
+        };
+        if claimed_device_id != sender_device.as_str() {
+            eprintln!(
+                "ASTRO RTC E2EE: rejected legacy key event; reason=claimed_device_mismatch, authenticated_device={}, claimed_device={}",
+                sender_device, claimed_device_id
+            );
+            return None;
+        }
         let member_id = content.get("member_id").and_then(Value::as_str)
             .or_else(|| member.get("id").and_then(Value::as_str))
             .map(str::to_owned)
             .unwrap_or_else(|| format!("{}:{claimed_device_id}", info.sender));
-        // Prefer the current field and accept the deprecated keys fallback.
-        let media_key = content.get("media_key").or_else(|| content.get("keys"))?;
-        (
-            member_id,
-            u8::try_from(media_key.get("index")?.as_u64()?).ok()?,
-            media_key.get("key")?.as_str()?,
-        )
+        let Some(media_key) = content.get("media_key").or_else(|| content.get("keys")) else {
+            eprintln!(
+                "ASTRO RTC E2EE: rejected legacy key event; reason=missing_media_key_and_keys, content_fields={}",
+                content.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_else(|| "<non-object>".to_owned())
+            );
+            return None;
+        };
+        let Some(index) = media_key.get("index").and_then(Value::as_u64).and_then(|v| u8::try_from(v).ok()) else {
+            eprintln!("ASTRO RTC E2EE: rejected legacy key event; reason=missing_or_invalid_key_index");
+            return None;
+        };
+        let Some(encoded_key) = media_key.get("key").and_then(Value::as_str) else {
+            eprintln!("ASTRO RTC E2EE: rejected legacy key event; reason=missing_or_invalid_key_string");
+            return None;
+        };
+        (member_id, index, encoded_key)
     };
 
-    if member_id.is_empty() { return None; }
-    let bytes = decode_base64_no_pad(encoded_key)?;
-    if bytes.len() != RTC_KEY_BYTES { return None; }
+    if member_id.is_empty() {
+        eprintln!("ASTRO RTC E2EE: rejected incoming key event; reason=empty_member_id");
+        return None;
+    }
+    let Some(bytes) = decode_base64_no_pad(encoded_key) else {
+        eprintln!(
+            "ASTRO RTC E2EE: rejected incoming key event; reason=invalid_unpadded_base64, encoded_key_length={}",
+            encoded_key.len()
+        );
+        return None;
+    };
+    if bytes.len() != RTC_KEY_BYTES {
+        eprintln!(
+            "ASTRO RTC E2EE: rejected incoming key event; reason=invalid_key_length, decoded_bytes={}",
+            bytes.len()
+        );
+        return None;
+    }
 
     eprintln!(
-        "ASTRO RTC E2EE: received encrypted media-key event; event_type={}, sender={}, device={}, member_id={}, index={}, key_bytes={}",
+        "ASTRO RTC E2EE: parsed encrypted media-key event; event_type={}, sender={}, device={}, member_id={}, index={}, key_bytes={}",
         event_type, info.sender, sender_device, member_id, index, bytes.len()
     );
 
     Some(PendingMediaKey {
-        room_id,
+        room_id: room_id.to_owned(),
         member_id,
         sender: info.sender.clone(),
         sender_device,
