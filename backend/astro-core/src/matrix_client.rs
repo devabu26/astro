@@ -4073,6 +4073,12 @@ impl MatrixClientManager {
                             "LiveKit room connected with existing remote publications"
                         );
                         for (participant, publications) in &participants_with_tracks {
+                            tracing::info!(
+                                room_id = %room_id,
+                                participant = %participant.identity(),
+                                participant_sid = %participant.sid(),
+                                "LiveKit remote participant was already present when Astro connected"
+                            );
                             for publication in publications {
                                 tracing::info!(
                                     room_id = %room_id,
@@ -4087,7 +4093,22 @@ impl MatrixClientManager {
                                 );
                             }
                         }
-                        None
+                        // ParticipantConnected is not guaranteed to be delivered
+                        // for peers that were already in the room when this client
+                        // finished connecting. Surface the existing participant to
+                        // QML as an answer event as well, otherwise outgoing
+                        // ringback can continue until the no-answer timer fires.
+                        participants_with_tracks.first().map(|(participant, _)| {
+                            serde_json::json!({
+                                "room_id": room_id,
+                                "type": "participant_connected",
+                                "identity": participant.identity().to_string(),
+                                "name": participant.name(),
+                                "metadata": participant.metadata(),
+                                "speaking": participant.is_speaking(),
+                                "audio_level": participant.audio_level()
+                            })
+                        })
                     }
                     RoomEvent::TrackPublished { participant, publication } => {
                         tracing::info!(
