@@ -1,7 +1,6 @@
 
 import QtQuick 2.7
 import QtQuick.Window 2.2
-import QtMultimedia 5.12
 import QtGraphicalEffects 1.0
 import Lomiri.Components 1.3
 import Astro.Backend 1.0
@@ -1534,70 +1533,17 @@ Item {
         }
     }
 
-    Camera {
-        id: localCamera
-        deviceId: QtMultimedia.defaultCamera.deviceId.length > 0
-                 ? QtMultimedia.defaultCamera.deviceId
-                 : (QtMultimedia.availableCameras.length > 0
-                    ? QtMultimedia.availableCameras[0].deviceId : "")
-        captureMode: Camera.CaptureVideo
-        viewfinder.maximumFrameRate: 30
+    Connections {
+        target: root.backend
+        ignoreUnknownSignals: true
 
-        onCameraStatusChanged: {
-            console.info(
-                "ASTRO_BACKGROUND_CAMERA: QML camera status:",
-                cameraStatus,
-                "cameraState:", cameraState,
-                "applicationState:", root.applicationState,
-                "active:", root.applicationActive,
-                "videoStarted:", root.videoStarted,
-                "error:", errorString
-            )
-            if (cameraStatus === Camera.ActiveStatus &&
-                    cameraState === Camera.ActiveState &&
-                    root.applicationActive &&
-                    root.videoStarted) {
-                foregroundCameraActivationTimer.stop()
-                root.foregroundCameraActivationAttempts = 0
-                root.waitingForForegroundCamera = false
-                console.info(
-                    "ASTRO_BACKGROUND_CAMERA: foreground QML camera is active again"
-                )
-            } else if (cameraStatus === Camera.UnloadedStatus &&
-                       !root.applicationActive) {
-                console.info(
-                    "ASTRO_BACKGROUND_CAMERA: QML camera confirmed unloaded"
-                )
-            }
-        }
-
-        onError: {
-            root.actionError = errorString
-            console.warn("ASTRO RTC camera error:", errorString)
-        }
-
-        onCameraStateChanged: {
-            console.info(
-                "ASTRO_BACKGROUND_CAMERA: QML camera state changed:",
-                cameraState,
-                "status:", cameraStatus,
-                "active:", root.applicationActive
-            )
-            if (cameraState === Camera.ActiveState &&
-                    cameraStatus === Camera.ActiveStatus &&
-                    root.applicationActive &&
-                    root.videoStarted) {
-                foregroundCameraActivationTimer.stop()
-                root.foregroundCameraActivationAttempts = 0
-                root.waitingForForegroundCamera = false
-                console.info(
-                    "ASTRO_BACKGROUND_CAMERA: foreground QML camera activation confirmed by state"
-                )
-            }
+        onMatrixRtcLocalVideoFrame: {
+            if (roomId === root.roomId && root.videoStarted)
+                localCameraPreview.setI420Frame(i420, width, height)
         }
     }
 
-    VideoOutput {
+    RtcVideoItem {
         id: localCameraPreview
         z: 50
         x: parent.width - width - units.gu(2)
@@ -1605,10 +1551,10 @@ Item {
         width: units.gu(20)
         height: width * 4 / 3
         visible: root.videoStarted
-        source: localCamera
-        fillMode: VideoOutput.PreserveAspectCrop
-        orientation: 270
-
+        backend: root.backend
+        roomId: root.roomId
+        identity: "__local_camera__"
+        source: "camera"
         // Drag and flick the local camera preview within the call page.
         MouseArea {
             id: localCameraPreviewDrag
