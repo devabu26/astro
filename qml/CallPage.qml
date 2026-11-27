@@ -655,7 +655,7 @@ Item {
 
     SoundEffect {
         id: remoteHangupTone
-        source: root.backend ? root.backend.rtcConnectionToneUrl() : ""
+        source: root.backend ? root.backend.rtcHangupToneUrl() : ""
         loops: 1
         volume: 0.25
     }
