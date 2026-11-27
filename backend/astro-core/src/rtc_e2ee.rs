@@ -600,8 +600,33 @@ async fn device_is_cross_signed(
     device_id: &OwnedDeviceId,
 ) -> bool {
     match client.encryption().get_device(user_id, device_id).await {
-        Ok(Some(device)) => device.is_cross_signed_by_owner(),
-        Ok(None) | Err(_) => false,
+        Ok(Some(device)) => {
+            let owner_cross_signed = device.is_cross_signed_by_owner();
+            eprintln!(
+                "ASTRO RTC E2EE trust diagnostic: user={}, device={}, owner_cross_signed={}, cross_signing_trusted={}, locally_trusted={}, sdk_verified={}",
+                user_id,
+                device_id,
+                owner_cross_signed,
+                device.is_cross_signing_trusted(),
+                device.is_locally_trusted(),
+                device.is_verified()
+            );
+            owner_cross_signed
+        }
+        Ok(None) => {
+            eprintln!(
+                "ASTRO RTC E2EE trust diagnostic: device absent from local crypto store; user={}, device={}",
+                user_id, device_id
+            );
+            false
+        }
+        Err(error) => {
+            eprintln!(
+                "ASTRO RTC E2EE trust diagnostic: local device lookup failed; user={}, device={}, error={}",
+                user_id, device_id, error
+            );
+            false
+        }
     }
 }
 
