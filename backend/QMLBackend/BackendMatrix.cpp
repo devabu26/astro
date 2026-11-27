@@ -719,7 +719,6 @@ void Backend::startRtcBackgroundCamera(
     if (!m_nativeRtcCamera->start(
             cameraId,
             selected.orientation(),
-            selected.position() == QCamera::FrontFace,
             m_rtcCameraOutputWidth,
             m_rtcCameraOutputHeight,
             roomId,
