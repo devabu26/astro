@@ -4032,7 +4032,7 @@ impl MatrixClientManager {
                         }))
                     }
                     RoomEvent::ParticipantDisconnected(participant) => {
-                        let prefix = format!("{room_id}\\u{1f}{}\\u{1f}", participant.identity());
+                        let prefix = format!("{room_id}\u{1f}{}\u{1f}", participant.identity());
                         cancelled_prefixes.insert(prefix);
                         tracing::info!(
                             room_id = %room_id,
@@ -4113,7 +4113,7 @@ impl MatrixClientManager {
                         if let RemoteTrack::Audio(audio_track) = &track {
                             let identity = participant.identity().to_string();
                             let track_sid = audio_track.sid().to_string();
-                            let key = format!("{room_id}\\u{1f}{identity}\\u{1f}{track_sid}");
+                            let key = format!("{room_id}\u{1f}{identity}\u{1f}{track_sid}");
                             tracing::info!(
                                 room_id = %room_id,
                                 participant = %identity,
@@ -4279,11 +4279,11 @@ impl MatrixClientManager {
                         let is_screenshare = track_source == Some("screenshare");
                         let key = match &track {
                             RemoteTrack::Audio(audio_track) => Some(format!(
-                                "{room_id}\\u{1f}{}\\u{1f}{}",
+                                "{room_id}\u{1f}{}\u{1f}{}",
                                 participant.identity(), audio_track.sid()
                             )),
                             RemoteTrack::Video(video_track) => Some(format!(
-                                "{room_id}\\u{1f}{}\\u{1f}{}",
+                                "{room_id}\u{1f}{}\u{1f}{}",
                                 participant.identity(), video_track.sid()
                             )),
                         };
