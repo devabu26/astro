@@ -37,6 +37,16 @@ StorageWorker::StorageWorker(QObject *parent)
         &StorageWorker::pollRtcRemoteVideoFrames
     );
 
+    // Drain decoded remote audio at the WebRTC 10 ms frame cadence.
+    m_rtcAudioPollTimer = new QTimer(this);
+    m_rtcAudioPollTimer->setInterval(10);
+    connect(
+        m_rtcAudioPollTimer,
+        &QTimer::timeout,
+        this,
+        &StorageWorker::pollRtcRemoteAudioFrames
+    );
+
     // Diagnose native background camera stalls without changing capture cadence.
     m_rtcBackgroundCameraWatchdogTimer = new QTimer(this);
     m_rtcBackgroundCameraWatchdogTimer->setInterval(5000);
@@ -97,6 +107,14 @@ StorageWorker::~StorageWorker()
     }
     if (m_rtcVideoPollTimer) {
         m_rtcVideoPollTimer->stop();
+    }
+    if (m_rtcAudioPollTimer) {
+        m_rtcAudioPollTimer->stop();
+    }
+    if (m_rtcRemoteAudioOutput) {
+        m_rtcRemoteAudioOutput->stop();
+        m_rtcRemoteAudioOutput = nullptr;
+        m_rtcRemoteAudioDevice = nullptr;
     }
 
     // Clear retained credentials before releasing the worker.
