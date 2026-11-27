@@ -845,6 +845,193 @@ void StorageWorker::pollRoomTimelineUpdates()
     }
 }
 
+void StorageWorker::pollRtcRemoteAudioFrames()
+{
+    if (!m_matrixClient)
+        return;
+
+    for (int frameIndex = 0; frameIndex < 32; ++frameIndex) {
+        char *frameError = nullptr;
+        AstroRtcAudioFrame *frame = astro_matrix_take_rtc_audio_frame(
+            m_matrixClient,
+            &frameError
+        );
+
+        if (!frame) {
+            if (frameError) {
+                qWarning() << "ASTRO: Remote audio frame polling failed:"
+                           << QString::fromUtf8(frameError);
+                astro_string_free(frameError);
+            }
+            break;
+        }
+
+        const QString roomId = frame->room_id
+            ? QString::fromUtf8(frame->room_id) : QString();
+        const QString identity = frame->identity
+            ? QString::fromUtf8(frame->identity) : QString();
+
+        const bool validFrame =
+            frame->data && frame->len > 0 &&
+            frame->len <= 192000 &&
+            frame->sample_rate == 48000 &&
+            (frame->channels == 1 || frame->channels == 2) &&
+            (frame->len % (frame->channels * sizeof(qint16))) == 0;
+
+        if (!validFrame) {
+            qWarning() << "ASTRO: Rejected malformed or unsupported remote audio frame"
+                       << "room:" << roomId
+                       << "identity:" << identity
+                       << "sampleRate:" << frame->sample_rate
+                       << "channels:" << frame->channels
+                       << "bytes:" << static_cast<qulonglong>(frame->len);
+            astro_matrix_rtc_audio_frame_free(frame);
+            continue;
+        }
+
+        if (!m_rtcRemoteAudioOutput) {
+            const QAudioDeviceInfo outputDevice =
+                QAudioDeviceInfo::defaultOutputDevice();
+            if (outputDevice.isNull()) {
+                qWarning() << "ASTRO RTC AUDIO: no default audio output device";
+                astro_matrix_rtc_audio_frame_free(frame);
+                continue;
+            }
+
+            QAudioFormat outputFormat;
+            outputFormat.setCodec(QStringLiteral("audio/pcm"));
+            outputFormat.setSampleRate(48000);
+            outputFormat.setSampleSize(16);
+            outputFormat.setByteOrder(QAudioFormat::LittleEndian);
+            outputFormat.setSampleType(QAudioFormat::SignedInt);
+            outputFormat.setChannelCount(2);
+
+            if (!outputDevice.isFormatSupported(outputFormat)) {
+                outputFormat.setChannelCount(1);
+            }
+            if (!outputDevice.isFormatSupported(outputFormat)) {
+                qWarning() << "ASTRO RTC AUDIO: output device does not support"
+                           << "48 kHz signed 16-bit PCM"
+                           << "preferred:" << outputDevice.preferredFormat().sampleRate()
+                           << outputDevice.preferredFormat().channelCount()
+                           << outputDevice.preferredFormat().sampleSize();
+                astro_matrix_rtc_audio_frame_free(frame);
+                continue;
+            }
+
+            m_rtcRemoteAudioOutput = new QAudioOutput(
+                outputDevice, outputFormat, this
+            );
+            m_rtcRemoteAudioOutput->setNotifyInterval(20);
+            m_rtcRemoteAudioDevice = m_rtcRemoteAudioOutput->start();
+            if (!m_rtcRemoteAudioDevice) {
+                qWarning() << "ASTRO RTC AUDIO: could not start output:"
+                           << m_rtcRemoteAudioOutput->error();
+                m_rtcRemoteAudioOutput->deleteLater();
+                m_rtcRemoteAudioOutput = nullptr;
+                astro_matrix_rtc_audio_frame_free(frame);
+                continue;
+            }
+            qInfo() << "ASTRO RTC AUDIO: remote playback started"
+                    << "device:" << outputDevice.deviceName()
+                    << "sampleRate:" << outputFormat.sampleRate()
+                    << "channels:" << outputFormat.channelCount();
+        }
+
+        const qint16 *input = reinterpret_cast<const qint16 *>(frame->data);
+        const int inputSamples = static_cast<int>(
+            frame->len / sizeof(qint16)
+        );
+        const int inputChannels = static_cast<int>(frame->channels);
+        const int outputChannels =
+            m_rtcRemoteAudioOutput->format().channelCount();
+
+        QByteArray pcm;
+        pcm.resize(
+            (inputSamples / inputChannels) *
+            outputChannels * static_cast<int>(sizeof(qint16))
+        );
+        qint16 *output = reinterpret_cast<qint16 *>(pcm.data());
+        const int samplesPerChannel = inputSamples / inputChannels;
+
+        for (int sample = 0; sample < samplesPerChannel; ++sample) {
+            qint16 left = input[sample * inputChannels];
+            qint16 right = inputChannels == 2
+                ? input[sample * inputChannels + 1] : left;
+
+            if (outputChannels == 1) {
+                output[sample] = static_cast<qint16>(
+                    (static_cast<int>(left) + static_cast<int>(right)) / 2
+                );
+            } else {
+                output[sample * 2] = left;
+                output[sample * 2 + 1] = right;
+            }
+        }
+
+        if (!m_loggedFirstRemoteRtcAudioFrame) {
+            qInfo() << "ASTRO RTC AUDIO: first decoded frame reached Qt output"
+                    << "room:" << roomId
+                    << "identity:" << identity
+                    << "inputChannels:" << inputChannels
+                    << "outputChannels:" << outputChannels
+                    << "bytes:" << pcm.size();
+            m_loggedFirstRemoteRtcAudioFrame = true;
+        }
+
+        // Keep at most one second of pending PCM. If the audio device stalls,
+        // discard the oldest samples instead of building unbounded latency.
+        constexpr int maxPendingBytes = 48000 * 2 * 2;
+        if (m_rtcRemoteAudioPending.size() + pcm.size() > maxPendingBytes) {
+            const int excess = m_rtcRemoteAudioPending.size() + pcm.size()
+                - maxPendingBytes;
+            const int frameBytes = outputChannels * static_cast<int>(sizeof(qint16));
+            const int discard = ((excess + frameBytes - 1) / frameBytes) * frameBytes;
+            m_rtcRemoteAudioPending.remove(
+                0, qMin(discard, m_rtcRemoteAudioPending.size())
+            );
+        }
+        m_rtcRemoteAudioPending.append(pcm);
+        astro_matrix_rtc_audio_frame_free(frame);
+    }
+
+    if (!m_rtcRemoteAudioOutput || !m_rtcRemoteAudioDevice ||
+        m_rtcRemoteAudioPending.isEmpty()) {
+        return;
+    }
+
+    if (m_rtcRemoteAudioOutput->state() == QAudio::StoppedState &&
+        m_rtcRemoteAudioOutput->error() != QAudio::NoError) {
+        qWarning() << "ASTRO RTC AUDIO: output stopped with error"
+                   << m_rtcRemoteAudioOutput->error();
+        m_rtcRemoteAudioOutput->stop();
+        m_rtcRemoteAudioDevice = m_rtcRemoteAudioOutput->start();
+        if (!m_rtcRemoteAudioDevice)
+            return;
+    }
+
+    const int frameBytes =
+        m_rtcRemoteAudioOutput->format().channelCount() *
+        static_cast<int>(sizeof(qint16));
+    const int available = qMax(0, m_rtcRemoteAudioOutput->bytesFree());
+    const int writable = qMin(
+        available,
+        m_rtcRemoteAudioPending.size()
+    ) / frameBytes * frameBytes;
+    if (writable <= 0)
+        return;
+
+    const qint64 written = m_rtcRemoteAudioDevice->write(
+        m_rtcRemoteAudioPending.constData(), writable
+    );
+    if (written > 0) {
+        m_rtcRemoteAudioPending.remove(0, static_cast<int>(written));
+    } else if (written < 0) {
+        qWarning() << "ASTRO RTC AUDIO: PCM write failed:"
+                   << m_rtcRemoteAudioDevice->errorString();
+    }
+}
+
 void StorageWorker::pollRtcRemoteVideoFrames()
 {
     if (!m_matrixClient) {
