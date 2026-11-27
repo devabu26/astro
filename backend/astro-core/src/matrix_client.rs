@@ -4079,6 +4079,10 @@ impl MatrixClientManager {
                                     participant = %participant.identity(),
                                     participant_sid = %participant.sid(),
                                     track_sid = %publication.sid(),
+                                    track_kind = ?publication.kind(),
+                                    track_source = ?publication.source(),
+                                    muted = publication.is_muted(),
+                                    subscribed = publication.is_subscribed(),
                                     "LiveKit existing remote track publication"
                                 );
                             }
