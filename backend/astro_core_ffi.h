@@ -312,6 +312,21 @@ char *astro_matrix_poll_rtc_audio_events_json(
     char **error_out
 );
 
+typedef struct AstroRtcAudioFrame {
+    char *room_id;
+    char *identity;
+    uint32_t sample_rate;
+    uint32_t channels;
+    uint8_t *data;
+    uintptr_t len;
+} AstroRtcAudioFrame;
+
+AstroRtcAudioFrame *astro_matrix_take_rtc_audio_frame(
+    AstroMatrixClient *handle,
+    char **error_out
+);
+void astro_matrix_rtc_audio_frame_free(AstroRtcAudioFrame *frame);
+
 typedef struct AstroRtcVideoFrame {
     char *room_id;
     char *identity;
