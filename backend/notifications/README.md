@@ -9,7 +9,7 @@ The currently deployed `astro-push-gateway` endpoint was previously only a scaff
 1. Open Cloudflare Dashboard → Workers & Pages → `astro-push-gateway` → Edit code.
 2. Replace the Worker source with the contents of `cloudflare-worker.js` and deploy.
 3. Create a Workers KV namespace for push deduplication.
-4. Bind it to this Worker using the variable name `ASTRO_PUSH_DEDUP`NaN`https://push.ubuntu.com/notify` using the Ubuntu Push API. It uses the app ID `astro.madabu_astro`, which must match `PushClient.appId` and the Matrix pusher app ID in Astro.
+4. Bind it to this Worker using the variable name `ASTRO_PUSH_DEDUP`NaN`https://push.ubports.com/notify` using the Ubuntu Push API. It uses the app ID `astro.madabu_astro`, which must match `PushClient.appId` and the Matrix pusher app ID in Astro.
 
 ## What it sends
 
