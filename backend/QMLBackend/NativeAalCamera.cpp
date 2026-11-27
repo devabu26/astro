@@ -175,8 +175,6 @@ void NativeAalCamera::stop()
     m_width = 0;
     m_height = 0;
     m_supportedSizes.clear();
-    if (m_library.isLoaded())
-        m_library.unload();
 }
 
 void NativeAalCamera::previewTextureCallback(void *context)
