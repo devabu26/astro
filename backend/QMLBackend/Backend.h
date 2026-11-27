@@ -29,12 +29,6 @@ class Backend : public QObject
         NOTIFY applicationStateChanged
     )
     Q_PROPERTY(QObject *rtcCamera READ rtcCamera NOTIFY rtcCameraChanged)
-    Q_PROPERTY(
-        QAbstractVideoSurface *videoSurface
-        READ rtcCameraVideoSurface
-        WRITE setRtcCameraVideoSurface
-        NOTIFY rtcCameraVideoSurfaceChanged
-    )
 
 public:
     explicit Backend(QObject *parent = nullptr);
@@ -57,8 +51,6 @@ public:
     bool storageReady() const;
     int applicationState() const;
     QObject *rtcCamera() const;
-    QAbstractVideoSurface *rtcCameraVideoSurface() const;
-    void setRtcCameraVideoSurface(QAbstractVideoSurface *surface);
 
     // ---------------------------------------------------------
     // Encrypted storage operations
@@ -210,7 +202,6 @@ signals:
 
     void storageReadyChanged();
     void rtcCameraChanged();
-    void rtcCameraVideoSurfaceChanged();
     void storageStatusChanged(const QString &status);
     void secretServiceTestFinished(const QString &result);
     void dataDeleted();
@@ -572,7 +563,7 @@ private:
     StorageWorker *m_storageWorker = nullptr;
     NotificationManager *m_notificationManager = nullptr;
 
-    // QCamera is owned and controlled on the GUI thread; VideoOutput is its sink.
+    // QCamera and its independent capture surface are owned on the GUI thread.
     QPointer<QCamera> m_rtcCamera;
     QPointer<QAbstractVideoSurface> m_rtcCameraVideoSurface;
     QString m_rtcCameraRoomId;
