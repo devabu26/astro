@@ -68,26 +68,64 @@ QString Backend::rtcRingbackToneUrl() const
 {
     const QString cachePath =
         QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    if (cachePath.isEmpty())
+    if (cachePath.isEmpty()) {
+        qWarning() << "ASTRO_CALL_RINGBACK: CacheLocation is empty"
+                   << "applicationName:" << QCoreApplication::applicationName()
+                   << "applicationDirPath:" << QCoreApplication::applicationDirPath();
         return QString();
+    }
 
     QDir directory;
-    if (!directory.mkpath(cachePath))
+    if (!directory.mkpath(cachePath)) {
+        qWarning() << "ASTRO_CALL_RINGBACK: could not create cache directory"
+                   << cachePath
+                   << "exists:" << QFileInfo::exists(cachePath)
+                   << "parentWritable:" << QFileInfo(QFileInfo(cachePath).absolutePath()).isWritable();
         return QString();
+    }
+
+    const QFileInfo directoryInfo(cachePath);
+    if (!directoryInfo.isDir() || !directoryInfo.isWritable()) {
+        qWarning() << "ASTRO_CALL_RINGBACK: cache directory is not writable"
+                   << cachePath
+                   << "isDir:" << directoryInfo.isDir()
+                   << "isWritable:" << directoryInfo.isWritable();
+        return QString();
+    }
 
     const QString filePath =
         directory.filePath(QStringLiteral("rtc-ringback.wav"));
     constexpr quint32 sampleRate = 48000;
     constexpr quint32 sampleCount = sampleRate * 3;
     constexpr quint32 pcmBytes = sampleCount * 2;
+    constexpr qint64 expectedFileSize = 44 + pcmBytes;
 
     QFile existing(filePath);
-    if (existing.open(QIODevice::ReadOnly) &&
-        existing.size() == static_cast<qint64>(44 + pcmBytes)) {
+    if (existing.open(QIODevice::ReadOnly)) {
+        const bool correctSize = existing.size() == expectedFileSize;
+        const QByteArray header = existing.read(12);
+        const bool validHeader =
+            header.size() == 12 &&
+            header.mid(0, 4) == QByteArrayLiteral("RIFF") &&
+            header.mid(8, 4) == QByteArrayLiteral("WAVE");
+        if (correctSize && validHeader) {
+            existing.close();
+            qDebug() << "ASTRO_CALL_RINGBACK: using cached WAV"
+                     << filePath << "bytes:" << expectedFileSize;
+            return QUrl::fromLocalFile(filePath).toString();
+        }
+
+        qWarning() << "ASTRO_CALL_RINGBACK: cached WAV is invalid; regenerating"
+                   << filePath
+                   << "bytes:" << existing.size()
+                   << "expectedBytes:" << expectedFileSize
+                   << "validHeader:" << validHeader;
         existing.close();
-        return QUrl::fromLocalFile(filePath).toString();
+    } else if (QFileInfo::exists(filePath)) {
+        qWarning() << "ASTRO_CALL_RINGBACK: existing WAV cannot be opened"
+                   << filePath << existing.errorString()
+                   << "error:" << existing.error();
     }
-    existing.close();
 
     QByteArray pcm;
     pcm.resize(static_cast<int>(pcmBytes));
@@ -127,30 +165,123 @@ QString Backend::rtcRingbackToneUrl() const
     }
 
     QFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning() << "ASTRO_CALL_RINGBACK: cannot open WAV for writing"
+                   << filePath << file.errorString()
+                   << "error:" << file.error();
         return QString();
+    }
 
-    file.write("RIFF", 4);
+    auto writeExact = [&file, &filePath](const char *data, qint64 length,
+                                         const char *section) -> bool {
+        const qint64 written = file.write(data, length);
+        if (written != length) {
+            qWarning() << "ASTRO_CALL_RINGBACK: WAV write failed"
+                       << "section:" << section
+                       << "path:" << filePath
+                       << "expectedBytes:" << length
+                       << "writtenBytes:" << written
+                       << "error:" << file.errorString()
+                       << "errorCode:" << file.error();
+            return false;
+        }
+        return true;
+    };
+
+    bool writeOk = writeExact("RIFF", 4, "RIFF header");
     QDataStream stream(&file);
     stream.setByteOrder(QDataStream::LittleEndian);
-    stream << static_cast<quint32>(36 + pcmBytes);
-    file.write("WAVEfmt ", 8);
-    stream << static_cast<quint32>(16)
-           << static_cast<quint16>(1)
-           << static_cast<quint16>(1)
-           << sampleRate
-           << static_cast<quint32>(sampleRate * 2)
-           << static_cast<quint16>(2)
-           << static_cast<quint16>(16);
-    file.write("data", 4);
-    stream << pcmBytes;
-    if (file.write(pcm) != pcm.size() || stream.status() != QDataStream::Ok) {
+
+    if (writeOk) {
+        stream << static_cast<quint32>(36 + pcmBytes);
+        writeOk = stream.status() == QDataStream::Ok;
+    }
+    if (writeOk)
+        writeOk = writeExact("WAVEfmt ", 8, "WAVE/fmt header");
+    if (writeOk) {
+        stream << static_cast<quint32>(16)
+               << static_cast<quint16>(1)
+               << static_cast<quint16>(1)
+               << sampleRate
+               << static_cast<quint32>(sampleRate * 2)
+               << static_cast<quint16>(2)
+               << static_cast<quint16>(16);
+        writeOk = stream.status() == QDataStream::Ok;
+    }
+    if (writeOk)
+        writeOk = writeExact("data", 4, "data header");
+    if (writeOk) {
+        stream << pcmBytes;
+        writeOk = stream.status() == QDataStream::Ok;
+    }
+    if (writeOk)
+        writeOk = writeExact(pcm.constData(), pcm.size(), "PCM payload");
+
+    if (!writeOk) {
+        if (stream.status() != QDataStream::Ok) {
+            qWarning() << "ASTRO_CALL_RINGBACK: WAV header stream failed"
+                       << filePath << "streamStatus:" << stream.status()
+                       << "fileError:" << file.errorString()
+                       << "fileErrorCode:" << file.error();
+        }
+        file.close();
+        if (!file.remove()) {
+            qWarning() << "ASTRO_CALL_RINGBACK: could not remove incomplete WAV"
+                       << filePath << file.errorString();
+        }
+        return QString();
+    }
+
+    if (!file.flush()) {
+        qWarning() << "ASTRO_CALL_RINGBACK: flushing WAV failed"
+                   << filePath << file.errorString()
+                   << "error:" << file.error();
         file.close();
         file.remove();
         return QString();
     }
 
+    const qint64 writtenSize = file.size();
     file.close();
+    if (writtenSize != expectedFileSize) {
+        qWarning() << "ASTRO_CALL_RINGBACK: generated WAV has unexpected size"
+                   << filePath
+                   << "bytes:" << writtenSize
+                   << "expectedBytes:" << expectedFileSize;
+        QFile::remove(filePath);
+        return QString();
+    }
+
+    QFile verification(filePath);
+    if (!verification.open(QIODevice::ReadOnly)) {
+        qWarning() << "ASTRO_CALL_RINGBACK: generated WAV cannot be reopened"
+                   << filePath << verification.errorString()
+                   << "error:" << verification.error();
+        QFile::remove(filePath);
+        return QString();
+    }
+    const QByteArray finalHeader = verification.read(44);
+    const bool validFinalHeader =
+        finalHeader.size() == 44 &&
+        finalHeader.mid(0, 4) == QByteArrayLiteral("RIFF") &&
+        finalHeader.mid(8, 4) == QByteArrayLiteral("WAVE") &&
+        finalHeader.mid(36, 4) == QByteArrayLiteral("data");
+    verification.close();
+
+    if (!validFinalHeader) {
+        qWarning() << "ASTRO_CALL_RINGBACK: generated WAV header failed verification"
+                   << filePath
+                   << "headerBytes:" << finalHeader.size();
+        QFile::remove(filePath);
+        return QString();
+    }
+
+    qDebug() << "ASTRO_CALL_RINGBACK: generated WAV successfully"
+             << filePath
+             << "bytes:" << writtenSize
+             << "sampleRate:" << sampleRate
+             << "durationMs:" << 3000;
+
     return QUrl::fromLocalFile(filePath).toString();
 }
 
