@@ -366,7 +366,14 @@ impl RtcE2eeSession {
         let task_room = room.clone();
 
         let handle = runtime.spawn(async move {
-            let event_types = vec![ToDeviceEventType::from(LEGACY_RTC_KEY_EVENT)];
+            // Listen to both protocol generations even when Astro must
+            // publish legacy membership. A peer may still have a visible
+            // modern sticky membership, which is independently validated
+            // before accepting its modern key.
+            let event_types = vec![
+                ToDeviceEventType::from(RTC_KEY_EVENT),
+                ToDeviceEventType::from(LEGACY_RTC_KEY_EVENT),
+            ];
             // Matrix SDK returns a stream that is not Unpin; pin it so
             // StreamExt::next can be used inside tokio::select!.
             let mut incoming = Box::pin(
@@ -401,12 +408,22 @@ impl RtcE2eeSession {
                     message = incoming.next() => {
                         let Some(message) = message else { break };
                         if let Some(candidate) = parse_incoming_key(message) {
-                            if try_store_received_key_legacy(
+                            let stored = if try_store_received_key(
                                 &task_client,
                                 &task_room,
                                 &task_received_keys,
                                 &candidate,
                             ).await {
+                                true
+                            } else {
+                                try_store_received_key_legacy(
+                                    &task_client,
+                                    &task_room,
+                                    &task_received_keys,
+                                    &candidate,
+                                ).await
+                            };
+                            if stored {
                                 continue;
                             }
                             if pending.len() == RTC_PENDING_KEY_LIMIT {
@@ -439,12 +456,22 @@ impl RtcE2eeSession {
 
                         let mut still_pending = VecDeque::new();
                         while let Some(candidate) = pending.pop_front() {
-                            if !try_store_received_key_legacy(
+                            let stored = if try_store_received_key(
                                 &task_client,
                                 &task_room,
                                 &task_received_keys,
                                 &candidate,
                             ).await {
+                                true
+                            } else {
+                                try_store_received_key_legacy(
+                                    &task_client,
+                                    &task_room,
+                                    &task_received_keys,
+                                    &candidate,
+                                ).await
+                            };
+                            if !stored {
                                 still_pending.push_back(candidate);
                             }
                         }
