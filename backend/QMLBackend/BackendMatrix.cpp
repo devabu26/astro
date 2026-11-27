@@ -34,199 +34,6 @@
 #include <QDBusArgument>
 #include <QDBusMetaType>
 
-#include <QAbstractVideoBuffer>
-#include <QVideoFrame>
-#include <QVideoSurfaceFormat>
-#include <QAtomicInt>
-#include <QImage>
-#include <QOpenGLContext>
-#include <QOffscreenSurface>
-#include <QSurfaceFormat>
-#include <QGuiApplication>
-#include <QScreen>
-
-
-
-
-namespace {
-
-// Capture is deliberately independent of Qt Quick's VideoOutput renderer.
-// Ubuntu Touch's AAL backend normally supplies RGB32 GL textures, so read
-// them back synchronously on the camera/surface thread before handing a
-// CPU-owned image to the existing worker-thread I420/LiveKit pipeline.
-class RtcCameraCaptureSurface final : public QAbstractVideoSurface
-{
-public:
-    RtcCameraCaptureSurface(
-        Backend *backend,
-        const QString &roomId,
-        QObject *parent = nullptr
-    )
-        : QAbstractVideoSurface(parent),
-          m_backend(backend),
-          m_roomId(roomId)
-    {
-        QOpenGLContext *share = QOpenGLContext::globalShareContext();
-        m_context = new QOpenGLContext(this);
-        if (share)
-            m_context->setShareContext(share);
-        m_context->setScreen(QGuiApplication::primaryScreen());
-        m_context->setFormat(
-            share ? share->format() : QSurfaceFormat::defaultFormat()
-        );
-
-        if (!m_context->create()) {
-            qWarning() << "ASTRO_RTC_CAPTURE: could not create camera-thread GL context";
-            return;
-        }
-
-        m_offscreen = new QOffscreenSurface(
-            QGuiApplication::primaryScreen(), this
-        );
-        m_offscreen->setFormat(m_context->format());
-        m_offscreen->create();
-
-        if (!m_offscreen->isValid()) {
-            qWarning() << "ASTRO_RTC_CAPTURE: offscreen GL surface is invalid";
-            return;
-        }
-
-        qInfo() << "ASTRO_RTC_CAPTURE: independent capture surface ready"
-                << "sharedContext:" << (share != nullptr)
-                << "contextThread:" << m_context->thread();
-    }
-
-    bool isReady() const
-    {
-        return m_context && m_context->isValid() &&
-               m_offscreen && m_offscreen->isValid();
-    }
-
-    void setRoomId(const QString &roomId)
-    {
-        m_roomId = roomId;
-    }
-
-    QList<QVideoFrame::PixelFormat> supportedPixelFormats(
-        QAbstractVideoBuffer::HandleType type =
-            QAbstractVideoBuffer::NoHandle
-    ) const override
-    {
-        if (type == QAbstractVideoBuffer::GLTextureHandle)
-            return { QVideoFrame::Format_RGB32 };
-
-        if (type != QAbstractVideoBuffer::NoHandle)
-            return {};
-
-        return {
-            QVideoFrame::Format_RGB32,
-            QVideoFrame::Format_ARGB32,
-            QVideoFrame::Format_ARGB32_Premultiplied,
-            QVideoFrame::Format_RGB24
-        };
-    }
-
-    bool start(const QVideoSurfaceFormat &format) override
-    {
-        if (format.handleType() == QAbstractVideoBuffer::GLTextureHandle &&
-            (!isReady() || m_context->thread() != QThread::currentThread())) {
-            qWarning() << "ASTRO_RTC_CAPTURE: refusing GL surface on wrong thread"
-                       << "contextThread:" << (m_context ? m_context->thread() : nullptr)
-                       << "currentThread:" << QThread::currentThread();
-            return false;
-        }
-
-        const bool started = QAbstractVideoSurface::start(format);
-        qInfo() << "ASTRO_RTC_CAPTURE: negotiated camera format"
-                << format.pixelFormat()
-                << format.frameSize()
-                << "handle:" << static_cast<int>(format.handleType())
-                << "started:" << started;
-        return started;
-    }
-
-    bool present(const QVideoFrame &input) override
-    {
-        if (!input.isValid() || !m_backend || m_roomId.isEmpty())
-            return false;
-
-        const bool glFrame =
-            input.handleType() == QAbstractVideoBuffer::GLTextureHandle;
-
-        if (QThread::currentThread() != thread()) {
-            if (m_loggedWrongThread.testAndSetOrdered(0, 1)) {
-                qWarning() << "ASTRO_RTC_CAPTURE: frame delivered outside capture thread"
-                           << "surfaceThread:" << thread()
-                           << "currentThread:" << QThread::currentThread();
-            }
-            return false;
-        }
-
-        if (glFrame && (!isReady() || !m_context->makeCurrent(m_offscreen))) {
-            if (m_loggedMapFailure.testAndSetOrdered(0, 1))
-                qWarning() << "ASTRO_RTC_CAPTURE: could not make capture GL context current";
-            return false;
-        }
-
-        QVideoFrame mapped(input);
-        if (!mapped.map(QAbstractVideoBuffer::ReadOnly)) {
-            if (glFrame)
-                m_context->doneCurrent();
-            if (m_loggedMapFailure.testAndSetOrdered(0, 1))
-                qWarning() << "ASTRO_RTC_CAPTURE: could not map camera frame"
-                           << "format:" << input.pixelFormat()
-                           << "handle:" << static_cast<int>(input.handleType());
-            return false;
-        }
-
-        const QImage::Format imageFormat =
-            QVideoFrame::imageFormatFromPixelFormat(mapped.pixelFormat());
-        QImage image;
-        if (imageFormat != QImage::Format_Invalid) {
-            image = QImage(
-                mapped.bits(),
-                mapped.width(),
-                mapped.height(),
-                mapped.bytesPerLine(),
-                imageFormat
-            ).copy();
-        }
-
-        mapped.unmap();
-        if (glFrame)
-            m_context->doneCurrent();
-
-        if (image.isNull()) {
-            if (m_loggedMapFailure.testAndSetOrdered(0, 1))
-                qWarning() << "ASTRO_RTC_CAPTURE: mapped frame has no supported QImage format"
-                           << "format:" << input.pixelFormat();
-            return false;
-        }
-
-        const int count = m_frameCount.fetchAndAddRelaxed(1) + 1;
-        if (count <= 3 || count % 60 == 0) {
-            qInfo() << "ASTRO_RTC_CAPTURE: independent frame captured"
-                    << "frames:" << count
-                    << "size:" << image.size()
-                    << "gl:" << glFrame
-                    << "thread:" << QThread::currentThreadId();
-        }
-
-        m_backend->processRtcCameraImage(m_roomId, image);
-        return true;
-    }
-
-private:
-    Backend *m_backend = nullptr;
-    QString m_roomId;
-    QOpenGLContext *m_context = nullptr;
-    QOffscreenSurface *m_offscreen = nullptr;
-    QAtomicInt m_frameCount{0};
-    QAtomicInt m_loggedMapFailure{0};
-    QAtomicInt m_loggedWrongThread{0};
-};
-
-} // namespace
 
 // =============================================================
 
@@ -787,6 +594,29 @@ QObject *Backend::rtcCamera() const
     return m_rtcCamera.data();
 }
 
+QAbstractVideoSurface *Backend::rtcCameraVideoSurface() const
+{
+    return m_rtcCameraVideoSurface.data();
+}
+
+void Backend::setRtcCameraVideoSurface(QAbstractVideoSurface *surface)
+{
+    if (m_rtcCameraVideoSurface == surface)
+        return;
+
+    m_rtcCameraVideoSurface = surface;
+    if (m_rtcCamera) {
+        m_rtcCamera->setViewfinder(surface);
+        qInfo() << "ASTRO_RTC_CAMERA: VideoOutput viewfinder surface"
+                << (surface ? "attached" : "detached")
+                << "cameraStatus:" << static_cast<int>(m_rtcCamera->status());
+    } else {
+        qInfo() << "ASTRO_RTC_CAMERA: VideoOutput surface registered"
+                << "waitingForCamera:" << (surface != nullptr);
+    }
+    emit rtcCameraVideoSurfaceChanged();
+}
+
 void Backend::switchRtcCamera(const QString &roomId)
 {
     if (!m_storageReady || roomId.isEmpty() ||
@@ -920,35 +750,13 @@ void Backend::startRtcBackgroundCamera(
     QCamera *camera = new QCamera(selected, this);
     m_rtcCamera = camera;
     m_rtcCameraRoomId = roomId;
-    // Use a dedicated capture surface. QML only displays the resulting
-    // I420 frames; camera capture no longer depends on Qt Quick rendering.
+    // Attach VideoOutput's QAbstractVideoSurface before loading AAL.
     if (m_rtcCameraVideoSurface) {
-        delete m_rtcCameraVideoSurface.data();
-        m_rtcCameraVideoSurface = nullptr;
+        camera->setViewfinder(m_rtcCameraVideoSurface.data());
+        qInfo() << "ASTRO_RTC_CAMERA: attached VideoOutput viewfinder before load";
+    } else {
+        qWarning() << "ASTRO_RTC_CAMERA: no VideoOutput viewfinder surface registered yet";
     }
-    auto *captureSurface =
-        new RtcCameraCaptureSurface(this, roomId, this);
-    m_rtcCameraVideoSurface = captureSurface;
-    if (!captureSurface->isReady()) {
-        const QString message = QStringLiteral(
-            "Could not initialise the independent camera capture surface"
-        );
-        qWarning() << "ASTRO_RTC_CAPTURE:" << message;
-        m_rtcCamera = nullptr;
-        m_rtcCameraRoomId.clear();
-        camera->deleteLater();
-        emit rtcCameraChanged();
-        emit matrixRtcBackgroundCameraActionFinished(
-            roomId, false, QString(), message
-        );
-        if (m_rtcCameraSwitchPending) {
-            m_rtcCameraSwitchPending = false;
-            emit matrixRtcVideoActionFinished(roomId, message);
-        }
-        return;
-    }
-    camera->setViewfinder(captureSurface);
-    qInfo() << "ASTRO_RTC_CAMERA: attached independent C++ capture surface";
     const quint64 generation = ++m_rtcCameraGeneration;
     const QPointer<QCamera> guard(camera);
 
