@@ -29,12 +29,6 @@ class Backend : public QObject
         NOTIFY applicationStateChanged
     )
     Q_PROPERTY(QObject *rtcCamera READ rtcCamera NOTIFY rtcCameraChanged)
-    Q_PROPERTY(
-        QAbstractVideoSurface *videoSurface
-        READ rtcCameraVideoSurface
-        WRITE setRtcCameraVideoSurface
-        NOTIFY rtcCameraVideoSurfaceChanged
-    )
 
 public:
     explicit Backend(QObject *parent = nullptr);
@@ -57,8 +51,6 @@ public:
     bool storageReady() const;
     int applicationState() const;
     QObject *rtcCamera() const;
-    QAbstractVideoSurface *rtcCameraVideoSurface() const;
-    void setRtcCameraVideoSurface(QAbstractVideoSurface *surface);
 
     // ---------------------------------------------------------
     // Encrypted storage operations
@@ -161,8 +153,6 @@ public:
     );
     Q_INVOKABLE void stopRtcBackgroundCamera(const QString &roomId);
 
-    // Called directly by the Qt Quick video-filter render thread.
-    void processRtcCameraFrame(const QString &roomId, const QVideoFrame &frame);
     Q_INVOKABLE void processRtcCameraImage(const QString &roomId, const QImage &image);
 
     Q_INVOKABLE void sendRoomAttachment(
@@ -210,7 +200,6 @@ signals:
 
     void storageReadyChanged();
     void rtcCameraChanged();
-    void rtcCameraVideoSurfaceChanged();
     void storageStatusChanged(const QString &status);
     void secretServiceTestFinished(const QString &result);
     void dataDeleted();
@@ -572,21 +561,15 @@ private:
     StorageWorker *m_storageWorker = nullptr;
     NotificationManager *m_notificationManager = nullptr;
 
-    // QCamera is owned and controlled on the GUI thread; VideoOutput is its sink.
-    QPointer<QCamera> m_rtcCamera;
-    QPointer<QAbstractVideoSurface> m_rtcCameraVideoSurface;
+    // Direct libhybris preview callbacks remain independent of Qt Quick.
+    NativeAalCamera *m_nativeRtcCamera = nullptr;
     QString m_rtcCameraRoomId;
-    quint64 m_rtcCameraGeneration = 0;
-    bool m_rtcCameraUnloading = false;
-    bool m_rtcCameraRestartAfterUnload = false;
+    QString m_nativeRtcCameraDeviceId;
     bool m_rtcCameraSwitchPending = false;
-    QString m_rtcCameraPendingRoomId;
-    QString m_rtcCameraPendingDeviceId;
 
     // ---------------------------------------------------------
     // Internal helpers
     // ---------------------------------------------------------
 
     void setStorageReady(bool ready);
-    void releaseRtcCamera(bool restartAfterUnload);
 };
