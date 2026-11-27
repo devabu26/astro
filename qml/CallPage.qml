@@ -289,7 +289,6 @@ Item {
         root.stopRingback()
         connectionToneRequested = false
         connectionDing.stop()
-        waitingForForegroundCamera = false
 
         if (screenShareRoomId === roomId)
             backend.stopRtcScreenShare(roomId)
@@ -420,10 +419,7 @@ Item {
         connectionDing.stop()
         screenShareChoiceVisible = false
 
-        // Stop local capture immediately, but do not make leaving depend on
-        // separately unpublishing camera or screen-share tracks. Closing the
-        // LiveKit room below tears down every published track in one operation.
-        localCamera.stop()
+        // Closing the LiveKit room tears down the C++ camera and published track.
         stopAudioOrLeave()
     }
 
@@ -939,9 +935,6 @@ Item {
             root.pendingOperation = ""
             if (operation === "stopScreenShare" ||
                     operation === "stopScreenShareForHangup") {
-                screenShareStopDrainTimer.stop()
-                root.screenShareStopRoomId = ""
-                root.screenShareStopDispatched = false
             }
 
             if (error && error.length > 0) {
@@ -985,7 +978,6 @@ Item {
                 root.screenShareAudioRequested = false
                 root.screenShareRoomId = ""
                 if (root.videoStarted) {
-                    localCamera.stop()
                     root.pendingOperation = "stopVideoForHangup"
                     root.backend.stopRtcVideo(root.roomId)
                 } else {
