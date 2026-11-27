@@ -5583,14 +5583,14 @@ impl MatrixClientManager {
             let notification_settings = client.notification_settings().await;
 
             for (rule_id, event_type, legacy_format, room_mention) in [
-                ("astro_rtc_ring_msc4075_v2", "org.matrix.msc4075.rtc.notification", false, false),
-                ("astro_rtc_ring_stable_v2", "m.rtc.notification", false, false),
-                ("astro_rtc_ring_legacy_v2", "m.call.notify", true, false),
-                ("astro_rtc_ring_legacy_unstable_v2", "org.matrix.msc4075.call.notify", true, false),
-                ("astro_rtc_ring_msc4075_room_v2", "org.matrix.msc4075.rtc.notification", false, true),
-                ("astro_rtc_ring_stable_room_v2", "m.rtc.notification", false, true),
-                ("astro_rtc_ring_legacy_room_v2", "m.call.notify", true, true),
-                ("astro_rtc_ring_legacy_unstable_room_v2", "org.matrix.msc4075.call.notify", true, true),
+                ("astro_rtc_ring_msc4075_v3", "org.matrix.msc4075.rtc.notification", false, false),
+                ("astro_rtc_ring_stable_v3", "m.rtc.notification", false, false),
+                ("astro_rtc_ring_legacy_v3", "m.call.notify", true, false),
+                ("astro_rtc_ring_legacy_unstable_v3", "org.matrix.msc4075.call.notify", true, false),
+                ("astro_rtc_ring_msc4075_room_v3", "org.matrix.msc4075.rtc.notification", false, true),
+                ("astro_rtc_ring_stable_room_v3", "m.rtc.notification", false, true),
+                ("astro_rtc_ring_legacy_room_v3", "m.call.notify", true, true),
+                ("astro_rtc_ring_legacy_unstable_room_v3", "org.matrix.msc4075.call.notify", true, true),
             ] {
                 let mut conditions = vec![
                     PushCondition::EventMatch(EventMatchConditionData::new(
@@ -5627,13 +5627,6 @@ impl MatrixClientManager {
                     conditions.push(PushCondition::EventPropertyIs(
                         EventPropertyIsConditionData::new(
                             "content.notify_type".to_owned(),
-                            "ring".into(),
-                        ),
-                    ));
-                } else if !room_mention {
-                    conditions.push(PushCondition::EventPropertyIs(
-                        EventPropertyIsConditionData::new(
-                            "content.notification_type".to_owned(),
                             "ring".into(),
                         ),
                     ));
