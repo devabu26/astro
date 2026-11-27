@@ -77,6 +77,7 @@ bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
     m_roomId = roomId;
     m_listener = {};
     m_listener.context = this;
+    m_listener.onPreviewTexture = &NativeAalCamera::previewTextureCallback;
     m_listener.onPreviewFrame = &NativeAalCamera::previewFrameCallback;
 
     m_control = m_connectById(cameraId, &m_listener);
@@ -175,6 +176,12 @@ void NativeAalCamera::stop()
     m_supportedSizes.clear();
     if (m_library.isLoaded())
         m_library.unload();
+}
+
+void NativeAalCamera::previewTextureCallback(void *context)
+{
+    Q_UNUSED(context);
+    // The native CPU callback path does not consume the AAL GL texture.
 }
 
 void NativeAalCamera::previewFrameCallback(
