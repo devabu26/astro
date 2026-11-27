@@ -188,7 +188,7 @@ void NativeAalCamera::destroyPreviewTexture()
     m_previewSurface = nullptr;
 }
 
-bool NativeAalCamera::start(int cameraId, int sensorOrientation, bool frontFacing,
+bool NativeAalCamera::start(int cameraId, int sensorOrientation,
                             int outputWidth, int outputHeight,
                             const QString &roomId, QString *error)
 {
@@ -204,7 +204,6 @@ bool NativeAalCamera::start(int cameraId, int sensorOrientation, bool frontFacin
 
     m_roomId = roomId;
     m_sensorOrientation = ((sensorOrientation % 360) + 360) % 360;
-    m_frontFacing = frontFacing;
     m_previewUpdatePending.store(false);
     m_listener = {};
     m_listener.context = this;
@@ -451,9 +450,6 @@ QImage NativeAalCamera::convertYuv420Sp(
         );
     }
 
-    // Some front-camera HALs expose the semiplanar chroma bytes as UV (NV12)
-    // even when YUV420SP was requested; the rear camera commonly supplies VU
-    // (NV21). Swap U/V during conversion for front-facing devices.
     return image;
 }
 
