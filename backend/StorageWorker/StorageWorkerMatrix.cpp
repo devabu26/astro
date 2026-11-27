@@ -1967,8 +1967,19 @@ public:
 
         if (mapped.isMapped())
             mapped.unmap();
-        if (glContextCurrent)
-            m_worker->releaseRtcCameraOpenGLContext();
+        if (glContextCurrent) {
+            m_worker->releaseRtcCameraOpenGLContext(
+                previousGlContext, previousGlSurface
+            );
+            const int restoreCount =
+                m_glContextRestoreCount.fetchAndAddRelaxed(1) + 1;
+            if (restoreCount <= 3) {
+                qInfo() << "ASTRO_RTC_CAMERA: restored caller GL context after readback"
+                        << "previousContext:" << previousGlContext
+                        << "restoredContext:" << QOpenGLContext::currentContext()
+                        << "thread:" << QThread::currentThreadId();
+            }
+        }
 
         if (!converted) {
             if (m_loggedUnsupportedFormat.testAndSetOrdered(0, 1)) {
@@ -2078,6 +2089,7 @@ private:
     QAtomicInt m_loggedFrameCount{0};
     QElapsedTimer m_frameDiagnosticTimer;
     QAtomicInt m_glFrameCount{0};
+    QAtomicInt m_glContextRestoreCount{0};
     QElapsedTimer m_glFrameDiagnosticTimer;
     QAtomicInt m_nativeI420ConversionCount{0};
     QElapsedTimer m_nativeI420ConversionTimer;
