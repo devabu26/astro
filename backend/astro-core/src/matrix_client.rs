@@ -4958,6 +4958,84 @@ impl MatrixClientManager {
                 }
             }   //Congrats you found Devabu's secret comment :); 24.11.26
 
+            // MSC4354 modern MatrixRTC memberships are message-like sticky
+            // events, not m.room state events. The SDK maintains their live
+            // map from the all-room Sliding Sync subscription above, including
+            // replaying still-live memberships when the connection starts.
+            let mut modern_memberships = Vec::new();
+            let mut modern_senders = HashSet::new();
+
+            for sticky_event in room.sticky_events().live() {
+                if sticky_event.key.event_type.to_string() != "m.rtc.member" {
+                    continue;
+                }
+
+                let Ok(raw_event) =
+                    serde_json::from_str::<serde_json::Value>(sticky_event.raw().get())
+                else {
+                    continue;
+                };
+
+                let sender = sticky_event.key.sender.to_string();
+                let content = &raw_event["content"];
+                let member = &content["member"];
+                let application = content["application"]["type"].as_str().unwrap_or("");
+                let membership = member["membership"].as_str().unwrap_or("");
+                let slot_id = content["slot_id"].as_str().unwrap_or("");
+                let member_id = member["id"].as_str().unwrap_or("");
+
+                if application != "m.call"
+                    || membership != "join"
+                    || slot_id != "m.call#room"
+                    || member_id.is_empty()
+                {
+                    continue;
+                }
+
+                let cache_key = (room_id.clone(), sender.clone());
+
+                if !self.rtc_participant_profiles.contains_key(&cache_key) {
+                    if let Ok(user_id) = matrix_sdk::ruma::UserId::parse(&sender) {
+                        match self.runtime.block_on(room.get_member(&user_id)) {
+                            Ok(Some(profile)) => {
+                                self.rtc_participant_profiles.insert(
+                                    cache_key.clone(),
+                                    RtcParticipantProfile {
+                                        display_name: profile.display_name().map(str::to_owned),
+                                        avatar_url: profile.avatar_url().map(ToString::to_string),
+                                    },
+                                );
+                            }
+                            Ok(None) => {}
+                            Err(error) => eprintln!(
+                                "ASTRO RTC PROFILE: room={} user={} modern_lookup_failed={}",
+                                room_id, sender, error
+                            ),
+                        }
+                    }
+                }
+
+                let profile = self.rtc_participant_profiles.get(&cache_key);
+                modern_senders.insert(sender.clone());
+                modern_memberships.push(serde_json::json!({
+                    "sender": sender,
+                    "member_id": member_id,
+                    "slot_id": slot_id,
+                    "display_name": profile.and_then(|p| p.display_name.clone()),
+                    "avatar_url": profile.and_then(|p| p.avatar_url.clone())
+                }));
+            }
+
+            // Astro can publish both formats for compatibility. Prefer the
+            // modern entry for a sender when present, otherwise retain their
+            // legacy memberships. This avoids showing every Astro participant
+            // twice while still supporting rooms with mixed client versions.
+            memberships.retain(|item| {
+                !item["sender"].as_str()
+                    .is_some_and(|sender| modern_senders.contains(sender))
+            });
+            memberships.extend(modern_memberships);
+
             memberships.sort_by(|a, b| {
                 a["sender"].as_str().cmp(&b["sender"].as_str())
                     .then_with(|| {
@@ -4968,12 +5046,17 @@ impl MatrixClientManager {
             let slot_available = true;
 
             let local_member_id = self.rtc_local_memberships.get(&room_id);
+            let modern_member_id = self.rtc_modern_memberships
+                .get(&room_id)
+                .map(|(member_id, _)| member_id);
 
-            let joined_by_me = local_member_id.is_some_and(|local_id| {
-                memberships.iter().any(|item| {
-                    item["sender"].as_str() == own_user_id.as_deref()
-                        && item["member_id"].as_str() == Some(local_id.as_str())
-                })
+            let joined_by_me = memberships.iter().any(|item| {
+                item["sender"].as_str() == own_user_id.as_deref()
+                    && (local_member_id.is_some_and(|local_id| {
+                        item["member_id"].as_str() == Some(local_id.as_str())
+                    }) || modern_member_id.is_some_and(|member_id| {
+                        item["member_id"].as_str() == Some(member_id.as_str())
+                    }))
             });
 
             let snapshot = serde_json::json!({
