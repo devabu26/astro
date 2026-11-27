@@ -1,5 +1,6 @@
 
 import QtQuick 2.7
+import QtMultimedia 5.12
 import Qt.labs.settings 1.0
 import Lomiri.Components 1.3
 import Astro.Backend 1.0
@@ -624,6 +625,13 @@ MainView {
     // Matrix device verification dialog
     // =========================================================
 
+    SoundEffect {
+        id: incomingCallAlert
+        source: astroBackend.rtcRingbackToneUrl()
+        loops: SoundEffect.Infinite
+        volume: 1.0
+    }
+
     IncomingCallBanner {
         id: incomingCallBanner
         anchors.top: parent.top
@@ -632,7 +640,23 @@ MainView {
         width: parent.width - units.gu(4)
         z: 2100
 
+        onAlertRequested: {
+            if (incomingCallAlert.status === SoundEffect.Ready)
+                incomingCallAlert.play()
+            else
+                console.info(
+                    "ASTRO_INCOMING_CALL_TONE: waiting for alert WAV",
+                    "status:", incomingCallAlert.status
+                )
+        }
+
+        onVisibleChanged: {
+            if (!visible)
+                incomingCallAlert.stop()
+        }
+
         onAcceptRequested: {
+            incomingCallAlert.stop()
             root.showingSettings = false
             root.incomingCall = true
             root.openCallPage(
@@ -643,6 +667,7 @@ MainView {
         }
 
         onDeclineRequested: {
+            incomingCallAlert.stop()
             astroBackend.declineRtcCall(roomId, eventId)
         }
     }
