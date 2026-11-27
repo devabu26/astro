@@ -33,12 +33,15 @@ function getCallDetails(notification) {
 
     const lifetime = Number(content.lifetime);
     const senderTs = Number(content.sender_ts);
+    const now = Date.now();
     const lifetimeMs = Number.isFinite(lifetime) && lifetime > 0
         ? Math.min(lifetime, 120000)
         : 30000;
-    const expiresAtMs = (Number.isFinite(senderTs) && senderTs > 0
-        ? senderTs
-        : Date.now()) + lifetimeMs;
+    // sender_ts is only authoritative when it is close to the homeserver's
+    // receive time. The Push Gateway payload does not include origin_server_ts.
+    const baseTs = Number.isFinite(senderTs) && senderTs > 0
+        && Math.abs(senderTs - now) <= 20000 ? senderTs : now;
+    const expiresAtMs = baseTs + lifetimeMs;
 
     return {
         callIntent: content["m.call.intent"] || content.call_intent || "unknown",
@@ -49,10 +52,11 @@ function getCallDetails(notification) {
 function buildPushData(notification, isCall, call, privacyLevel) {
     const eventId = safeString(notification.event_id);
     const roomId = safeString(notification.room_id);
-    const sender = safeString(
+    const actualSender = safeString(
         notification.sender_display_name,
         safeString(notification.sender, "Someone")
     );
+    const sender = privacyLevel === "private" ? "Someone" : actualSender;
     const roomName = safeString(notification.room_name);
     const content = notification.content || {};
     const tag = (isCall ? "astro-call-" : "astro-message-") + eventId;
