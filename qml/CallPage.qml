@@ -14,6 +14,7 @@ Item {
     property string roomName: ""
     property bool directCall: false
     property bool incomingCall: false
+    property bool roomEncrypted: false
     property var audioState: ({})
     // Authoritative MatrixRTC membership state shared with the room view.
     property var membershipState: ({})
@@ -1267,12 +1268,25 @@ Item {
                     }
                 }
 
-                Rectangle {
+                Row {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: units.gu(2)
-                    height: units.gu(2)
-                    radius: width / 2
-                    color: root.callActive ? "#52c78a" : "#71808c"
+                    spacing: units.gu(0.8)
+
+                    Text {
+                        visible: root.roomEncrypted
+                        text: "🔒"
+                        color: "#b9d8f2"
+                        font.pixelSize: units.gu(2)
+                        verticalAlignment: Text.AlignVCenter
+                    }
+
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: units.gu(2)
+                        height: units.gu(2)
+                        radius: width / 2
+                        color: root.callActive ? "#52c78a" : "#71808c"
+                    }
                 }
             }
         }
@@ -1774,7 +1788,7 @@ Item {
 
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: "▶"
+                                text: "📞"
                                 color: "white"
                                 font.pixelSize: units.gu(2.5)
                             }
@@ -1800,7 +1814,9 @@ Item {
                         width: (parent.width - units.gu(5)) / 6
                         height: units.gu(7)
                         radius: units.gu(1)
-                        color: "#853f43"
+                        color: (root.callActive || root.membershipJoined)
+                               ? "#853f43" : "#58636d"
+                        opacity: (root.callActive || root.membershipJoined) ? 1 : 0.5
 
                         Column {
                             anchors.centerIn: parent
