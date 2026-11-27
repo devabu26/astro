@@ -4971,7 +4971,7 @@ impl MatrixClientManager {
                 }
 
                 let Ok(raw_event) =
-                    serde_json::from_str::<serde_json::Value>(sticky_event.raw().get())
+                    serde_json::from_str::<serde_json::Value>(sticky_event.raw().json().get())
                 else {
                     continue;
                 };
