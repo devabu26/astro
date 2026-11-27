@@ -6,6 +6,7 @@
 #include <QMutex>
 #include <QString>
 #include <QVector>
+#include <QSize>
 #include <atomic>
 #include <cstdint>
 
@@ -18,12 +19,12 @@ public:
     explicit NativeAalCamera(QObject *parent = nullptr);
     ~NativeAalCamera() override;
 
-    bool start(int cameraId, QString *error);
+    bool start(int cameraId, const QString &roomId, QString *error);
     void stop();
     bool isRunning() const { return m_running.load(); }
 
 signals:
-    void frameReceived(const QImage &image);
+    void frameReceived(const QString &roomId, const QImage &image);
 
 private:
     using MessageCallback = void (*)(void *);
@@ -64,6 +65,7 @@ private:
     QLibrary m_library;
     Listener m_listener;
     void *m_control = nullptr;
+    QString m_roomId;
     ConnectById m_connectById = nullptr;
     Disconnect m_disconnect = nullptr;
     DeleteControl m_deleteControl = nullptr;
