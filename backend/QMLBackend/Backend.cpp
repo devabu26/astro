@@ -1,6 +1,7 @@
 
 
 #include "Backend.h"
+#include "NativeAalCamera.h"
 #include "StorageWorker/StorageWorker.h"
 #include "notifications/NotificationManager.h"
 
@@ -42,12 +43,9 @@
 
 Backend::~Backend()
 {
-    // QCamera lives on this (GUI) thread, independently of StorageWorker.
-    // Release it before the Matrix worker is shut down.
-    if (m_rtcCamera) {
-        m_rtcCamera->stop();
-        m_rtcCamera->unload();
-    }
+    // Stop native libhybris capture before the Matrix worker is shut down.
+    if (m_nativeRtcCamera)
+        m_nativeRtcCamera->stop();
 
     if (m_storageThread && m_storageThread->isRunning()) {
 
