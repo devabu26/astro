@@ -526,10 +526,13 @@ async fn fetch_modern_rtc_livekit_token(
     for path in endpoint_paths {
         let endpoint = homeserver.join(path)
             .map_err(|error| format!("Could not construct MSC4195 token endpoint: {error}"))?;
+        let request_body = serde_json::to_vec(&body)
+            .map_err(|error| format!("Could not encode MSC4195 LiveKit token request: {error}"))?;
         let response = client.http_client()
             .post(endpoint)
             .bearer_auth(&access_token)
-            .json(&body)
+            .header("content-type", "application/json")
+            .body(request_body)
             .send().await
             .map_err(|error| format!("MSC4195 LiveKit token request failed: {error}"))?;
         let status = response.status();
