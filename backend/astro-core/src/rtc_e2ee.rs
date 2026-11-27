@@ -77,8 +77,13 @@ impl RtcE2eeSession {
             activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
         }));
         let received_keys = Arc::new(Mutex::new(BTreeMap::new()));
-        let local_livekit_identity = legacy_livekit_identity(&client)?;
-        let task_legacy_member_id = local_livekit_identity.clone();
+        let own_user_id = client.user_id()
+            .ok_or_else(|| "Matrix user ID is unavailable for MSC4195 LiveKit identity".to_string())?;
+        let local_livekit_identity =
+            modern_livekit_identity(own_user_id.as_str(), &local_member_id)?;
+        // The compatibility state membership and /sfu/get token still use
+        // the legacy user_id:device_id identity.
+        let task_legacy_member_id = legacy_livekit_identity(&client)?;
 
         let task_local_key = Arc::clone(&local_key);
         let task_received_keys = Arc::clone(&received_keys);
@@ -514,6 +519,18 @@ impl Drop for RtcE2eeSession {
     }
 }
 
+/// Derive the pseudonymous LiveKit participant identity from the Matrix
+/// sender and the exact member.id published in m.rtc.member (MSC4195).
+///
+/// Both values are strings, so serde_json's compact serialization is also
+/// the canonical JSON representation required for this array.
+fn modern_livekit_identity(sender: &str, member_id: &str) -> Result<String, String> {
+    let canonical_json = serde_json::to_vec(&[sender, member_id])
+        .map_err(|error| format!("Could not serialize MSC4195 participant identity: {error}"))?;
+    let digest = sha2::Sha256::digest(&canonical_json);
+    Ok(encode_base64_no_pad(&digest))
+}
+
 fn legacy_livekit_identity(client: &Client) -> Result<String, String> {
     let user_id = client.user_id()
         .ok_or_else(|| "Matrix user ID is unavailable for LiveKit E2EE identity".to_string())?;
@@ -784,7 +801,15 @@ async fn try_store_received_key(
             keys.insert(
                 (candidate.member_id.clone(), candidate.index),
                 ReceivedMediaKey {
-                    livekit_identity: format!("{}:{}", candidate.sender, candidate.sender_device),
+                    livekit_identity: match modern_livekit_identity(
+                        candidate.sender.as_str(), &candidate.member_id
+                    ) {
+                        Ok(identity) => identity,
+                        Err(error) => {
+                            eprintln!("ASTRO RTC E2EE: could not derive MSC4195 participant identity: {error}");
+                            return true;
+                        }
+                    },
                     bytes: candidate.bytes.clone(),
                     activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
                 },
