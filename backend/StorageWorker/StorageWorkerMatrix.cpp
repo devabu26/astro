@@ -1687,49 +1687,45 @@ public:
             return true;
 
         QVideoFrame mapped(frame);
-        bool glContextCurrent = false;
-        QOpenGLContext *previousGlContext = nullptr;
-        QSurface *previousGlSurface = nullptr;
-
         if (glTextureFrame) {
-            // QtUbuntu's camera buffer owns the GL/EGL details. Let its
-            // QAbstractVideoBuffer::map() implementation perform the
-            // platform-specific GL texture readback instead of assuming
-            // frame.handle() contains a usable GLuint.
-            glContextCurrent =
-                m_worker && m_worker->makeRtcCameraOpenGLContextCurrent(
-                    &previousGlContext, &previousGlSurface
-                );
-            const bool mapOk = glContextCurrent &&
+            // The filter invokes present() synchronously on Qt Quick's
+            // render thread. The camera frame's GL texture must be mapped
+            // while that thread's current context is active. The separate
+            // StorageWorker context belongs to the worker thread and must
+            // never be made current from this render-thread callback.
+            QOpenGLContext *frameContext = QOpenGLContext::currentContext();
+            const bool renderContextCurrent =
+                frameContext &&
+                frameContext->thread() == QThread::currentThread();
+            const bool mapOk = renderContextCurrent &&
                 mapped.map(QAbstractVideoBuffer::ReadOnly);
 
             if (!mapOk) {
-                if (glContextCurrent)
-                    m_worker->releaseRtcCameraOpenGLContext(
-                        previousGlContext, previousGlSurface
-                    );
                 if (m_loggedMapFailure.testAndSetOrdered(0, 1)) {
                     qWarning() << "RTC camera could not map GL-backed frame:"
                                << width << "x" << height
                                << "format:" << format
                                << "handle:" << frame.handle()
                                << "planes:" << frame.planeCount()
-                               << "worker GL context current:" << glContextCurrent;
+                               << "render GL context current:" << renderContextCurrent
+                               << "context:" << frameContext
+                               << "contextThread:" << (frameContext ? frameContext->thread() : nullptr)
+                               << "currentThread:" << QThread::currentThread();
                 }
                 // Keep the surface active so a later camera frame can recover.
                 return true;
             }
 
-            // Keep the shared context current until mapped.unmap() below.
-            // QtUbuntu's GL-backed buffer may need that context to release
-            // the mapped EGL/GL resources; releasing it immediately after
-            // map() leaves the unmap operation running without its context.
+            // Keep Qt Quick's render context current through unmap(). The
+            // QVideoBuffer implementation owns the platform-specific texture
+            // readback; do not switch to a context owned by StorageWorker.
             if (m_loggedMapFailure.testAndSetOrdered(0, 1)) {
                 qInfo() << "RTC camera mapped GL-backed frame:"
                         << "planes:" << mapped.planeCount()
                         << "bytes:" << mapped.mappedBytes()
                         << "stride:" << mapped.bytesPerLine(0)
-                        << "keeping GL context current through unmap";
+                        << "renderContext:" << frameContext
+                        << "thread:" << QThread::currentThreadId();
             }
         } else if (!mapped.map(QAbstractVideoBuffer::ReadOnly)) {
             if (m_loggedMapFailure.testAndSetOrdered(0, 1))
@@ -1744,10 +1740,6 @@ public:
         if (!m_pending->testAndSetOrdered(0, 1)) {
             if (mapped.isMapped())
                 mapped.unmap();
-            if (glContextCurrent)
-                m_worker->releaseRtcCameraOpenGLContext(
-                previousGlContext, previousGlSurface
-            );
             return true;
         }
 
@@ -1967,19 +1959,6 @@ public:
 
         if (mapped.isMapped())
             mapped.unmap();
-        if (glContextCurrent) {
-            m_worker->releaseRtcCameraOpenGLContext(
-                previousGlContext, previousGlSurface
-            );
-            const int restoreCount =
-                m_glContextRestoreCount.fetchAndAddRelaxed(1) + 1;
-            if (restoreCount <= 3) {
-                qInfo() << "ASTRO_RTC_CAMERA: restored caller GL context after readback"
-                        << "previousContext:" << previousGlContext
-                        << "restoredContext:" << QOpenGLContext::currentContext()
-                        << "thread:" << QThread::currentThreadId();
-            }
-        }
 
         if (!converted) {
             if (m_loggedUnsupportedFormat.testAndSetOrdered(0, 1)) {
