@@ -37,6 +37,7 @@
 #include <QAbstractVideoBuffer>
 #include <QVideoFrame>
 #include <QVideoSurfaceFormat>
+#include <QAtomicInt>
 #include <QImage>
 #include <QOpenGLContext>
 #include <QOffscreenSurface>
