@@ -538,6 +538,8 @@ void Backend::startRtcVideo(
         return;
     }
 
+    m_rtcCameraOutputWidth = width;
+    m_rtcCameraOutputHeight = height;
     emit requestStartRtcVideo(roomId, width, height);
 }
 
@@ -718,6 +720,8 @@ void Backend::startRtcBackgroundCamera(
             cameraId,
             selected.orientation(),
             selected.position() == QCamera::FrontFace,
+            m_rtcCameraOutputWidth,
+            m_rtcCameraOutputHeight,
             roomId,
             &error)) {
         qWarning() << "ASTRO_RTC_AAL: native camera start failed:" << error;
@@ -755,6 +759,35 @@ void Backend::stopRtcBackgroundCamera(const QString &roomId)
     m_nativeRtcCameraDeviceId.clear();
     m_rtcCameraSwitchPending = false;
     emit rtcCameraChanged();
+}
+
+QStringList Backend::rtcCameraResolutions()
+{
+    if (!m_nativeRtcCamera)
+        return {};
+
+    int cameraId = -1;
+    if (m_nativeRtcCamera->isRunning()) {
+        // The running camera's cached list belongs to the actual selected
+        // device, including after the user flips between front and rear.
+        return m_nativeRtcCamera->supportedPreviewResolutions(-1);
+    }
+
+    QCameraInfo selected = QCameraInfo::defaultCamera();
+    if (selected.deviceName().isEmpty()) {
+        const QList<QCameraInfo> cameras = QCameraInfo::availableCameras();
+        if (!cameras.isEmpty())
+            selected = cameras.first();
+    }
+    if (selected.deviceName().isEmpty())
+        return {};
+
+    bool ok = false;
+    cameraId = selected.deviceName().toInt(&ok);
+    if (!ok)
+        return {};
+
+    return m_nativeRtcCamera->supportedPreviewResolutions(cameraId);
 }
 
 void Backend::stopRtcVideo(const QString &roomId)
