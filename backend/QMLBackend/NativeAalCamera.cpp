@@ -4,6 +4,7 @@
 #include <QColor>
 #include <QMutexLocker>
 #include <QSize>
+#include <QTimer>
 #include <algorithm>
 #include <cstring>
 
@@ -150,6 +151,16 @@ bool NativeAalCamera::start(int cameraId, const QString &roomId, QString *error)
             << "size:" << m_width << "x" << m_height
             << "format: YUV420SP"
             << "callback: enabled";
+
+    QTimer::singleShot(3000, this, [this, roomId, cameraId]() {
+        if (m_running.load() && m_roomId == roomId &&
+            m_frameCount.load() == 0) {
+            qWarning() << "ASTRO_RTC_AAL: no CPU preview callbacks received"
+                       << "after 3 seconds"
+                       << "cameraId:" << cameraId
+                       << "size:" << m_width << "x" << m_height;
+        }
+    });
     return true;
 }
 
