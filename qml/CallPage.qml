@@ -1273,7 +1273,9 @@ Item {
                     spacing: units.gu(0.8)
 
                     Text {
-                        visible: root.roomEncrypted
+                        // Encrypted rooms fail closed: an active call can only
+                        // start after its local LiveKit E2EE key provider is installed.
+                        visible: root.callActive && root.roomEncrypted
                         text: "🔒"
                         color: "#b9d8f2"
                         font.pixelSize: units.gu(2)

@@ -760,6 +760,17 @@ async fn publish_local_key(
     }
 }
 
+// Element's legacy MatrixRTC key transport historically used 16-byte keys.
+// Newer MatrixRTC implementations use 32 bytes; both lengths are valid HKDF
+// input for the legacy to-device event. The stable MSC4143 event is 32-byte only.
+fn valid_incoming_media_key_length(event_type: &str, length: usize) -> bool {
+    if event_type == LEGACY_RTC_KEY_EVENT {
+        matches!(length, 16 | RTC_KEY_BYTES)
+    } else {
+        length == RTC_KEY_BYTES
+    }
+}
+
 fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMediaKey> {
     // Keep diagnostics privacy-safe: report field presence and rejection
     // reasons, never the media-key material or the full event content.
@@ -901,10 +912,14 @@ fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMed
             );
             continue;
         };
-        if bytes.len() != RTC_KEY_BYTES {
+        if !valid_incoming_media_key_length(event_type, bytes.len()) {
             eprintln!(
-                "ASTRO RTC E2EE: media-key candidate rejected; event_type={}, field={}, reason=invalid_key_length, encoded_length={}, decoded_bytes={}",
-                event_type, field, encoded_key.len(), bytes.len()
+                "ASTRO RTC E2EE: media-key candidate rejected; event_type={}, field={}, reason=invalid_key_length, encoded_length={}, decoded_bytes={}, allowed_lengths={}",
+                event_type,
+                field,
+                encoded_key.len(),
+                bytes.len(),
+                if event_type == LEGACY_RTC_KEY_EVENT { "16_or_32" } else { "32" }
             );
             continue;
         }
@@ -918,7 +933,7 @@ fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMed
 
     let Some((index, bytes)) = parsed_key else {
         eprintln!(
-            "ASTRO RTC E2EE: rejected incoming key event; reason=no_valid_32_byte_media_key, event_type={}",
+            "ASTRO RTC E2EE: rejected incoming key event; reason=no_valid_media_key_for_event_format, event_type={}",
             event_type
         );
         return None;
@@ -1383,7 +1398,20 @@ fn decode_matrix_base64(input: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_matrix_base64, encode_base64_no_pad, modern_livekit_identity};
+    use super::{decode_matrix_base64, encode_base64_no_pad, modern_livekit_identity, valid_incoming_media_key_length, LEGACY_RTC_KEY_EVENT, RTC_KEY_EVENT};
+
+    #[test]
+    fn legacy_matrixrtc_accepts_old_and_current_key_lengths() {
+        assert!(valid_incoming_media_key_length(LEGACY_RTC_KEY_EVENT, 16));
+        assert!(valid_incoming_media_key_length(LEGACY_RTC_KEY_EVENT, 32));
+        assert!(!valid_incoming_media_key_length(LEGACY_RTC_KEY_EVENT, 24));
+    }
+
+    #[test]
+    fn stable_matrixrtc_requires_32_byte_key_material() {
+        assert!(valid_incoming_media_key_length(RTC_KEY_EVENT, 32));
+        assert!(!valid_incoming_media_key_length(RTC_KEY_EVENT, 16));
+    }
 
     #[test]
     fn matrix_base64_accepts_unpadded_standard_encoding() {
