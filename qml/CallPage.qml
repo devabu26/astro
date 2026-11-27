@@ -1047,26 +1047,41 @@ Item {
         }
     }
 
-    // This is both the visible local preview and the AAL-compatible
-    // Qt Quick camera renderer. The filter forwards each captured frame
-    // into the existing C++ I420/LiveKit pipeline.
-    VideoOutput {
+    // Keep the draggable preview container visible as soon as video is
+    // enabled. The background/border remains visible even while the camera
+    // QObject is being created or if Qt has not delivered its first frame.
+    Item {
         id: localCameraPreview
         z: 50
         x: parent.width - width - units.gu(2)
         y: units.gu(10)
         width: units.gu(20)
         height: width * 4 / 3
-        visible: root.videoStarted && root.backend !== null &&
-                 root.backend.rtcCamera !== null
-        source: root.backend ? root.backend.rtcCamera : null
-        fillMode: VideoOutput.PreserveAspectFit
-        filters: [
-            RtcCameraVideoFilter {
-                backend: root.backend
-                roomId: root.roomId
-            }
-        ]
+        visible: root.videoStarted
+
+        Rectangle {
+            anchors.fill: parent
+            color: "#182630"
+            border.width: units.gu(0.25)
+            border.color: "#8da5b5"
+            radius: units.gu(0.8)
+        }
+
+        VideoOutput {
+            id: localCameraCaptureOutput
+            anchors.fill: parent
+            visible: root.backend !== null &&
+                     root.backend.rtcCamera !== null
+            source: root.backend ? root.backend.rtcCamera : null
+            fillMode: VideoOutput.PreserveAspectFit
+            filters: [
+                RtcCameraVideoFilter {
+                    backend: root.backend
+                    roomId: root.roomId
+                }
+            ]
+        }
+
         // Drag and flick the local camera preview within the call page.
         MouseArea {
             id: localCameraPreviewDrag
