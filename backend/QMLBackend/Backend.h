@@ -567,6 +567,7 @@ private:
     quint64 m_rtcCameraGeneration = 0;
     bool m_rtcCameraUnloading = false;
     bool m_rtcCameraRestartAfterUnload = false;
+    bool m_rtcCameraSwitchPending = false;
     QString m_rtcCameraPendingRoomId;
     QString m_rtcCameraPendingDeviceId;
 
