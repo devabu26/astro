@@ -700,6 +700,7 @@ Item {
         } else {
             nativeCameraRunning = false
             nativeCameraDeviceId = ""
+            localCameraPreview.clearFrame()
             if (backend && (nativeCameraRoomId || roomId))
                 backend.stopRtcBackgroundCamera(nativeCameraRoomId || roomId)
             nativeCameraRoomId = ""
@@ -1619,7 +1620,10 @@ Item {
 
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: root.videoStarted ? "Camera on" : "Camera"
+                                text: !root.videoStarted
+                                      ? "Camera"
+                                      : (root.nativeCameraRunning
+                                         ? "Camera on" : "Starting…")
                                 color: "white"
                                 font.pixelSize: units.gu(1.2)
                             }
@@ -1674,7 +1678,7 @@ Item {
                         height: units.gu(7)
                         radius: units.gu(1)
                         color: "#263b4a"
-                        opacity: root.videoStarted ? 1 : 0.35
+                        opacity: root.nativeCameraRunning ? 1 : 0.35
 
                         Column {
                             anchors.centerIn: parent
@@ -1697,7 +1701,7 @@ Item {
 
                         MouseArea {
                             anchors.fill: parent
-                            enabled: root.videoStarted &&
+                            enabled: root.nativeCameraRunning &&
                                      root.pendingOperation.length === 0
                             onClicked: root.switchCamera()
                         }
