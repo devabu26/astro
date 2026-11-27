@@ -2,7 +2,7 @@
     "name": "astro.madabu",
     "description": "Matrix Client For Ubuntu Touch",
     "architecture": "$ENV{ARCH}",
-    "title": "astro",
+    "title": "🅐stro",
     "hooks": {
         "astro": {
             "apparmor": "astro.apparmor",
