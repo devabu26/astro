@@ -2033,7 +2033,7 @@ public:
         const bool queued = QMetaObject::invokeMethod(
             worker,
             [worker, pending, roomId, outputFrame, outputWidth, outputHeight,
-             nativeCameraFrame = glTextureFrame]() {
+             nativeCameraFrame = true]() {
                 worker->pushRtcVideoFrame(
                     roomId, outputWidth, outputHeight, outputFrame,
                     nativeCameraFrame, true
