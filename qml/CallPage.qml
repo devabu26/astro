@@ -1067,12 +1067,22 @@ Item {
             radius: units.gu(0.8)
         }
 
+        // Qt 5.12 VideoOutput does not consume a bare C++ QCamera
+        // QObject as its source. It expects a QObject exposing a
+        // mediaObject property that returns the underlying QMediaObject.
+        // This wrapper provides that bridge while Backend retains ownership
+        // of the QCamera and its lifecycle.
+        QtObject {
+            id: localCameraMediaSource
+            property var mediaObject: root.backend
+                                      ? root.backend.rtcCamera : null
+        }
+
         VideoOutput {
             id: localCameraCaptureOutput
             anchors.fill: parent
-            visible: root.backend !== null &&
-                     root.backend.rtcCamera !== null
-            source: root.backend ? root.backend.rtcCamera : null
+            visible: localCameraMediaSource.mediaObject !== null
+            source: localCameraMediaSource
             fillMode: VideoOutput.PreserveAspectFit
             filters: [
                 RtcCameraVideoFilter {
