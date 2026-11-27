@@ -2115,6 +2115,7 @@ void StorageWorker::startRtcBackgroundCamera(
 {
     QString errorMessage;
     QString selectedDeviceId;
+    bool recoverExistingCamera = false;
 
     qInfo() << "ASTRO_BACKGROUND_CAMERA: native start requested"
             << "room:" << roomId
@@ -2149,12 +2150,28 @@ void StorageWorker::startRtcBackgroundCamera(
             qInfo() << "RTC background camera restart deferred until unload completes";
             return;
         } else if (m_rtcCamera) {
-            // Never destroy a QCamera while its backend may still be using
-            // its viewfinder. All camera replacement must pass through the
-            // asynchronous unload path.
-            errorMessage = QStringLiteral(
-                "The previous camera has not finished releasing the device"
-            );
+            if (m_rtcCamera->status() == QCamera::ActiveStatus &&
+                m_rtcVideoRoomId == roomId &&
+                m_rtcVideoSurface &&
+                m_rtcVideoSurface->isActive()) {
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: start request found"
+                        << "an already active camera; keeping current capture"
+                        << "room:" << roomId
+                        << "generation:" << m_rtcCameraGeneration;
+                return;
+            }
+
+            // Retain the newest foreground request and retry release of a
+            // camera object left behind by a stalled asynchronous unload.
+            m_rtcBackgroundCameraRestartAfterStop = true;
+            m_rtcBackgroundCameraRestartRoomId = roomId;
+            m_rtcBackgroundCameraRestartDeviceId = deviceId;
+            recoverExistingCamera = true;
+            qWarning() << "ASTRO_BACKGROUND_CAMERA: existing camera requires"
+                       << "release before restart"
+                       << "status:" << static_cast<int>(m_rtcCamera->status())
+                       << "state:" << static_cast<int>(m_rtcCamera->state())
+                       << "unloadPending:" << m_rtcBackgroundCameraStopPending;
         } else {
 
             QCameraInfo selected;
@@ -2607,6 +2624,11 @@ void StorageWorker::startRtcBackgroundCamera(
         }
     }
 
+    if (recoverExistingCamera) {
+        stopRtcBackgroundCamera(roomId);
+        return;
+    }
+
     if (!errorMessage.isEmpty()) {
         qWarning() << "ASTRO_BACKGROUND_CAMERA: native start rejected"
                    << "room:" << roomId
@@ -2635,11 +2657,12 @@ void StorageWorker::stopRtcBackgroundCamera(const QString &roomId)
     {
         QMutexLocker locker(&m_rtcCameraFrameMutex);
 
-        // A foreground transition always cancels a deferred background
-        // restart. A later background transition can enqueue a fresh one.
-        m_rtcBackgroundCameraRestartAfterStop = false;
-        m_rtcBackgroundCameraRestartRoomId.clear();
-        m_rtcBackgroundCameraRestartDeviceId.clear();
+        // Reject stale requests before touching a queued foreground restart.
+        if (m_rtcCamera && !roomId.isEmpty() && roomId != m_rtcVideoRoomId) {
+            qInfo() << "ASTRO_BACKGROUND_CAMERA: ignoring stale stop request"
+                    << "room:" << roomId << "activeRoom:" << m_rtcVideoRoomId;
+            return;
+        }
 
         if (m_rtcBackgroundCameraStartPending &&
             (roomId.isEmpty() ||
@@ -2649,16 +2672,26 @@ void StorageWorker::stopRtcBackgroundCamera(const QString &roomId)
             m_rtcBackgroundCameraPendingDeviceId.clear();
         }
 
-        // Ignore stale stop requests from a previous call page.
-        if (m_rtcCamera &&
-            !roomId.isEmpty() &&
-            roomId != m_rtcVideoRoomId) {
+        if (m_rtcBackgroundCameraStopPending) {
+            // Teardown takes precedence, but duplicate lifecycle stops must
+            // not erase a foreground restart queued during this unload.
+            if (m_rtcStopVideoAfterBackgroundUnload ||
+                m_rtcStopAudioAfterBackgroundUnload) {
+                m_rtcBackgroundCameraRestartAfterStop = false;
+                m_rtcBackgroundCameraRestartRoomId.clear();
+                m_rtcBackgroundCameraRestartDeviceId.clear();
+            }
+            qInfo() << "ASTRO_BACKGROUND_CAMERA: unload already pending;"
+                    << "preserving restart intent:"
+                    << m_rtcBackgroundCameraRestartAfterStop;
             return;
         }
 
-        if (m_rtcBackgroundCameraStopPending) {
-            // The existing unload completion will report the final state.
-            return;
+        if (m_rtcStopVideoAfterBackgroundUnload ||
+            m_rtcStopAudioAfterBackgroundUnload) {
+            m_rtcBackgroundCameraRestartAfterStop = false;
+            m_rtcBackgroundCameraRestartRoomId.clear();
+            m_rtcBackgroundCameraRestartDeviceId.clear();
         }
 
         if (!m_rtcCamera) {
@@ -2667,6 +2700,7 @@ void StorageWorker::stopRtcBackgroundCamera(const QString &roomId)
             m_rtcBackgroundCameraStopPending = true;
             m_rtcBackgroundCameraStopRoomId =
                 roomId.isEmpty() ? m_rtcVideoRoomId : roomId;
+            m_rtcBackgroundCameraUnloadAttempts = 0;
             cameraToUnload = m_rtcCamera;
         }
     }
@@ -2716,8 +2750,66 @@ void StorageWorker::stopRtcBackgroundCamera(const QString &roomId)
     // statusChanged notification after the call returns.
     if (cameraGuard && cameraGuard.data() == m_rtcCamera &&
         cameraGeneration == m_rtcCameraGeneration &&
-        cameraGuard->status() == QCamera::UnloadedStatus)
+        cameraGuard->status() == QCamera::UnloadedStatus) {
         finishRtcBackgroundCameraStop();
+    } else {
+        QTimer::singleShot(4000, this, [this, cameraGuard, cameraGeneration]() {
+            checkRtcBackgroundCameraUnload(cameraGuard, cameraGeneration);
+        });
+    }
+}
+
+void StorageWorker::checkRtcBackgroundCameraUnload(
+    const QPointer<QCamera> &cameraGuard,
+    quint64 cameraGeneration
+)
+{
+    if (!cameraGuard || cameraGuard.data() != m_rtcCamera ||
+        cameraGeneration != m_rtcCameraGeneration ||
+        !m_rtcBackgroundCameraStopPending)
+        return;
+
+    if (cameraGuard->status() == QCamera::UnloadedStatus) {
+        finishRtcBackgroundCameraStop();
+        return;
+    }
+
+    if (m_rtcBackgroundCameraUnloadAttempts >= 3) {
+        const QString failedRoom = m_rtcBackgroundCameraStopRoomId;
+        const QString message = QStringLiteral(
+            "The camera service did not release the camera after 3 unload retries"
+        );
+        qWarning() << "ASTRO_BACKGROUND_CAMERA: unload retries exhausted;"
+                   << "retaining camera object for a later recovery attempt"
+                   << "room:" << failedRoom
+                   << "status:" << static_cast<int>(cameraGuard->status())
+                   << "state:" << static_cast<int>(cameraGuard->state())
+                   << "error:" << static_cast<int>(cameraGuard->error())
+                   << "errorString:" << cameraGuard->errorString();
+        m_rtcBackgroundCameraStopPending = false;
+        m_rtcBackgroundCameraStopRoomId.clear();
+        m_rtcBackgroundCameraUnloadAttempts = 0;
+        emit matrixRtcBackgroundCameraActionFinished(
+            failedRoom, false, QString(), message
+        );
+        return;
+    }
+
+    ++m_rtcBackgroundCameraUnloadAttempts;
+    qWarning() << "ASTRO_BACKGROUND_CAMERA: retrying camera unload"
+               << "attempt:" << m_rtcBackgroundCameraUnloadAttempts
+               << "status:" << static_cast<int>(cameraGuard->status())
+               << "state:" << static_cast<int>(cameraGuard->state());
+    cameraGuard->stop();
+    cameraGuard->unload();
+
+    if (cameraGuard->status() == QCamera::UnloadedStatus) {
+        finishRtcBackgroundCameraStop();
+        return;
+    }
+    QTimer::singleShot(4000, this, [this, cameraGuard, cameraGeneration]() {
+        checkRtcBackgroundCameraUnload(cameraGuard, cameraGeneration);
+    });
 }
 
 void StorageWorker::finishRtcBackgroundCameraStop()
@@ -2751,6 +2843,7 @@ void StorageWorker::finishRtcBackgroundCameraStop()
 
         m_rtcBackgroundCameraStopPending = false;
         m_rtcBackgroundCameraStopRoomId.clear();
+        m_rtcBackgroundCameraUnloadAttempts = 0;
 
         stopVideoAfterUnload = m_rtcStopVideoAfterBackgroundUnload;
         stopVideoRoomId = m_rtcStopVideoAfterBackgroundUnloadRoomId;
