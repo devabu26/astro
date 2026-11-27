@@ -84,4 +84,5 @@ private:
     std::atomic_bool m_running{false};
     QMutex m_callbackMutex;
     std::atomic_uint m_frameCount{0};
+    std::atomic_int m_invalidBufferLogged{0};
 };
