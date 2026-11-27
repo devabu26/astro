@@ -714,7 +714,7 @@ void Backend::startRtcBackgroundCamera(
     }
 
     QString error;
-    if (!m_nativeRtcCamera->start(cameraId, &error)) {
+    if (!m_nativeRtcCamera->start(cameraId, roomId, &error)) {
         qWarning() << "ASTRO_RTC_AAL: native camera start failed:" << error;
         emit matrixRtcBackgroundCameraActionFinished(
             roomId, false, QString(), error
