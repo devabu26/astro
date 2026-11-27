@@ -3866,15 +3866,24 @@ impl MatrixClientManager {
         let room_prefix = format!("{room_id}\u{1f}");
         let task_keys: Vec<String> = self.rtc_remote_video_tasks
             .keys()
+            .chain(self.rtc_remote_audio_tasks.keys())
             .filter(|key| key.starts_with(&room_prefix))
             .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
             .collect();
         for key in task_keys {
             if let Some(task) = self.rtc_remote_video_tasks.remove(&key) {
                 task.abort();
             }
+            if let Some(task) = self.rtc_remote_audio_tasks.remove(&key) {
+                task.abort();
+            }
         }
         if let Ok(mut frames) = self.rtc_remote_video_frames.lock() {
+            frames.retain(|frame| !frame.key.starts_with(&room_prefix));
+        }
+        if let Ok(mut frames) = self.rtc_remote_audio_frames.lock() {
             frames.retain(|frame| !frame.key.starts_with(&room_prefix));
         }
 
@@ -4338,11 +4347,14 @@ impl MatrixClientManager {
 
         if !cancelled_keys.is_empty() || !cancelled_prefixes.is_empty() {
             let task_keys: Vec<String> = self.rtc_remote_video_tasks.keys()
+                .chain(self.rtc_remote_audio_tasks.keys())
                 .filter(|key| {
                     cancelled_keys.contains(*key)
                         || cancelled_prefixes.iter().any(|prefix| key.starts_with(prefix))
                 })
                 .cloned()
+                .collect::<HashSet<_>>()
+                .into_iter()
                 .collect();
 
             for key in &task_keys {
