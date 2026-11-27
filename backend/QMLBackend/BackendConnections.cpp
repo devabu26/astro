@@ -359,6 +359,13 @@ Backend::Backend(QObject *parent)
         &Backend::matrixRtcRemoteVideoFrame
     );
 
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixRtcLocalVideoFrame,
+        this,
+        &Backend::matrixRtcLocalVideoFrame
+    );
+
    connect(
        m_storageWorker,
        &StorageWorker::matrixLiveTimelineUpdated,
