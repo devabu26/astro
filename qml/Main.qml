@@ -679,6 +679,7 @@ MainView {
             backend: astroBackend
             roomId: root.callRoomId
             roomName: root.callRoomName
+            roomEncrypted: chatPage.roomIsEncrypted(root.callRoomId)
             directCall: chatPage.selectedRoomKind === "dm"
             incomingCall: root.incomingCall
             audioState: chatPage.rtcAudioStatesByRoom[root.callRoomId] || ({})
