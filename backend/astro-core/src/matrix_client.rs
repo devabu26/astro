@@ -5582,24 +5582,38 @@ impl MatrixClientManager {
                 .to_string();
             let notification_settings = client.notification_settings().await;
 
-            for (rule_id, event_type) in [
-                ("astro_rtc_ring_msc4075", "org.matrix.msc4075.rtc.notification"),
-                ("astro_rtc_ring_stable", "m.rtc.notification"),
+            for (rule_id, event_type, legacy_format) in [
+                ("astro_rtc_ring_msc4075_v2", "org.matrix.msc4075.rtc.notification", false),
+                ("astro_rtc_ring_stable_v2", "m.rtc.notification", false),
+                ("astro_rtc_ring_legacy_v2", "m.call.notify", true),
+                ("astro_rtc_ring_legacy_unstable_v2", "org.matrix.msc4075.call.notify", true),
             ] {
-                let conditions = vec![
+                let mut conditions = vec![
                     PushCondition::EventMatch(EventMatchConditionData::new(
                         "type".to_owned(),
                         event_type.to_owned(),
                     )),
-                    PushCondition::EventPropertyIs(EventPropertyIsConditionData::new(
-                        "content.notification_type".to_owned(),
-                        "ring".into(),
-                    )),
                     PushCondition::EventPropertyContains(EventPropertyContainsConditionData::new(
-                        r"content.m\.mentions.user_ids".to_owned(),
+                        r"content.m\\.mentions.user_ids".to_owned(),
                         own_user_id.clone().into(),
                     )),
                 ];
+
+                if legacy_format {
+                    conditions.push(PushCondition::EventPropertyIs(
+                        EventPropertyIsConditionData::new(
+                            "content.application".to_owned(),
+                            "m.call".into(),
+                        ),
+                    ));
+                    conditions.push(PushCondition::EventPropertyIs(
+                        EventPropertyIsConditionData::new(
+                            "content.notify_type".to_owned(),
+                            "ring".into(),
+                        ),
+                    ));
+                }
+
                 let actions = vec![
                     PushAction::Notify,
                     PushAction::SetTweak(Tweak::Sound("ring".to_owned().into())),
@@ -5650,7 +5664,6 @@ impl MatrixClientManager {
                     eprintln!("ASTRO PUSH: installed {} push rule", rule_id);
                 }
             }
-
             Ok(())
         })
     }
