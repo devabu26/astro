@@ -4010,6 +4010,13 @@ impl MatrixClientManager {
 
                 let update = match event {
                     RoomEvent::ParticipantConnected(participant) => {
+                        tracing::info!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            participant_sid = %participant.sid(),
+                            name = %participant.name(),
+                            "LiveKit remote participant connected"
+                        );
                         Some(serde_json::json!({
                             "room_id": room_id,
                             "type": "participant_connected",
@@ -4021,6 +4028,12 @@ impl MatrixClientManager {
                         }))
                     }
                     RoomEvent::ParticipantActive(participant) => {
+                        tracing::info!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            participant_sid = %participant.sid(),
+                            "LiveKit remote participant became active"
+                        );
                         Some(serde_json::json!({
                             "room_id": room_id,
                             "type": "participant_active",
@@ -4078,6 +4091,10 @@ impl MatrixClientManager {
                             participant = %participant.identity(),
                             participant_sid = %participant.sid(),
                             track_sid = %publication.sid(),
+                            track_kind = ?publication.kind(),
+                            track_source = ?publication.source(),
+                            muted = publication.is_muted(),
+                            subscribed = publication.is_subscribed(),
                             "LiveKit remote track published"
                         );
                         None
