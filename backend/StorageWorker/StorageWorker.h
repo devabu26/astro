@@ -22,6 +22,7 @@
 
 class RtcCameraVideoSurface;
 class QVideoFrame;
+class QVideoProbe;
 class QImage;
 class QOpenGLContext;
 class QOffscreenSurface;
@@ -527,6 +528,9 @@ private:
     QOffscreenSurface *m_rtcCameraOffscreenSurface = nullptr;
     QMutex m_rtcCameraFrameMutex;
     QCamera *m_rtcCamera = nullptr;
+    QVideoProbe *m_rtcCameraVideoProbe = nullptr;
+    QAtomicInt m_rtcCameraProbeFrameCount{0};
+    QElapsedTimer m_rtcCameraProbeElapsedTimer;
     // Invalidates queued callbacks from prior native camera instances.
     quint64 m_rtcCameraGeneration = 0;
     QTimer *m_rtcBackgroundCameraWatchdogTimer = nullptr;
