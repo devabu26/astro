@@ -2203,7 +2203,8 @@ void StorageWorker::startRtcBackgroundCamera(
                     &QCamera::stateChanged,
                     this,
                     [this, roomId, cameraGuard, cameraGeneration](QCamera::State state) {
-                        if (m_rtcCamera) {
+                        if (cameraGuard && m_rtcCamera == cameraGuard.data() &&
+                            m_rtcCameraGeneration == cameraGeneration) {
                             qInfo() << "ASTRO_BACKGROUND_CAMERA: native state changed"
                                     << "room:" << roomId
                                     << "state:" << static_cast<int>(state)
@@ -2218,7 +2219,7 @@ void StorageWorker::startRtcBackgroundCamera(
                     m_rtcCamera,
                     &QCamera::statusChanged,
                     this,
-                    [this, roomId](QCamera::Status status) {
+                    [this, roomId, cameraGuard, cameraGeneration](QCamera::Status status) {
                         if (!cameraGuard || m_rtcCamera != cameraGuard.data() ||
                             m_rtcCameraGeneration != cameraGeneration)
                             return;
@@ -2238,7 +2239,7 @@ void StorageWorker::startRtcBackgroundCamera(
                     m_rtcCamera,
                     QOverload<QCamera::Error>::of(&QCamera::error),
                     this,
-                    [this, roomId](QCamera::Error error) {
+                    [this, roomId, cameraGuard, cameraGeneration](QCamera::Error error) {
                         if (!cameraGuard || m_rtcCamera != cameraGuard.data() ||
                             m_rtcCameraGeneration != cameraGeneration)
                             return;
@@ -2507,7 +2508,7 @@ void StorageWorker::startRtcBackgroundCamera(
                     m_rtcCamera,
                     QOverload<QCamera::Error>::of(&QCamera::error),
                     this,
-                    [this, roomId](QCamera::Error cameraError) {
+                    [this, roomId, cameraGuard, cameraGeneration](QCamera::Error cameraError) {
                         if (!cameraGuard || m_rtcCamera != cameraGuard.data() ||
                             m_rtcCameraGeneration != cameraGeneration ||
                             cameraError == QCamera::NoError)
@@ -2570,7 +2571,7 @@ void StorageWorker::startRtcBackgroundCamera(
                 // Device availability only means that a service exists. It
                 // does not mean that capture has started. Wait for ActiveStatus
                 // and fail explicitly if the backend never activates.
-                QTimer::singleShot(8000, this, [this, roomId]() {
+                QTimer::singleShot(8000, this, [this, roomId, cameraGuard, cameraGeneration]() {
                     if (!cameraGuard || m_rtcCamera != cameraGuard.data() ||
                         m_rtcCameraGeneration != cameraGeneration ||
                         !m_rtcBackgroundCameraStartPending ||
