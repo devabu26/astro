@@ -8,6 +8,7 @@ Item {
     property string roomId: ""
     property string eventId: ""
     property string callIntent: "unknown"
+    property double expiresAtMs: 0
 
     signal acceptRequested(string roomId, string eventId)
     signal declineRequested(string roomId, string eventId)
@@ -16,12 +17,24 @@ Item {
     visible: roomId !== ""
     height: visible ? banner.height : 0
 
-    function showIncomingCall(sender, incomingRoomId, incomingEventId, intent) {
+    function showIncomingCall(sender, incomingRoomId, incomingEventId, intent, incomingExpiryMs) {
+        var expiry = Number(incomingExpiryMs) || 0
+        if (expiry > 0 && expiry <= Date.now())
+            return
+
         caller = sender || "Someone"
         roomId = incomingRoomId || ""
         eventId = incomingEventId || ""
         callIntent = intent === "video" || intent === "audio" ? intent : "unknown"
-        expiryTimer.restart()
+        expiresAtMs = expiry
+
+        // Follow the MatrixRTC notification lifetime rather than a fixed UI
+        // timeout. A missing expiry is left visible until dismissed or handled.
+        expiryTimer.stop()
+        if (expiresAtMs > 0) {
+            expiryTimer.interval = Math.max(1, expiresAtMs - Date.now())
+            expiryTimer.start()
+        }
         alertRequested()
     }
 
@@ -31,11 +44,11 @@ Item {
         roomId = ""
         eventId = ""
         callIntent = "unknown"
+        expiresAtMs = 0
     }
 
     Timer {
         id: expiryTimer
-        interval: 30000
         repeat: false
         onTriggered: root.clear()
     }
@@ -97,6 +110,11 @@ Item {
                         root.declineRequested(root.roomId, root.eventId)
                         root.clear()
                     }
+                }
+
+                Button {
+                    text: "Dismiss"
+                    onClicked: root.clear()
                 }
             }
         }
