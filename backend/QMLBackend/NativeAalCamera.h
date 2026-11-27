@@ -49,7 +49,6 @@ private:
     using DeleteControl = void (*)(void *);
     using SetCallbackMode = int (*)(void *, int);
     using SetPreviewFormat = void (*)(void *, int);
-    using GetPreviewFormat = void (*)(void *, int *);
     using SetPreviewSize = void (*)(void *, int, int);
     using GetPreviewSize = void (*)(void *, int *, int *);
     using EnumeratePreviewSizes = void (*)(void *, void (*)(void *, int, int), void *);
@@ -72,7 +71,6 @@ private:
     DeleteControl m_deleteControl = nullptr;
     SetCallbackMode m_setCallbackMode = nullptr;
     SetPreviewFormat m_setPreviewFormat = nullptr;
-    GetPreviewFormat m_getPreviewFormat = nullptr;
     SetPreviewSize m_setPreviewSize = nullptr;
     GetPreviewSize m_getPreviewSize = nullptr;
     EnumeratePreviewSizes m_enumeratePreviewSizes = nullptr;
