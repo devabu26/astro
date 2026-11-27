@@ -11,6 +11,7 @@
 #include <QElapsedTimer>
 #include <QMutex>
 #include <QCamera>
+#include <QPointer>
 #include <QAudioInput>
 #include <QAudioOutput>
 #include <QAudioDeviceInfo>
@@ -506,6 +507,8 @@ private:
     QOffscreenSurface *m_rtcCameraOffscreenSurface = nullptr;
     QMutex m_rtcCameraFrameMutex;
     QCamera *m_rtcCamera = nullptr;
+    // Invalidates queued callbacks from prior native camera instances.
+    quint64 m_rtcCameraGeneration = 0;
     QTimer *m_rtcBackgroundCameraWatchdogTimer = nullptr;
     QAtomicInt m_rtcNativeGlFrameCount{0};
     int m_rtcNativeGlWatchdogPreviousCount = 0;
