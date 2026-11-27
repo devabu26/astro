@@ -25,6 +25,7 @@ class QVideoFrame;
 class QImage;
 class QOpenGLContext;
 class QOffscreenSurface;
+class QSurface;
 
 #include "../astro_core_ffi.h"
 
@@ -54,8 +55,14 @@ public:
         QOpenGLContext *context,
         QOffscreenSurface *surface
     );
-    bool makeRtcCameraOpenGLContextCurrent();
-    void releaseRtcCameraOpenGLContext();
+    bool makeRtcCameraOpenGLContextCurrent(
+        QOpenGLContext **previousContext,
+        QSurface **previousSurface
+    );
+    void releaseRtcCameraOpenGLContext(
+        QOpenGLContext *previousContext,
+        QSurface *previousSurface
+    );
     void recordRtcNativeGlFrame() { m_rtcNativeGlFrameCount.fetchAndAddRelaxed(1); }
 
 public slots:
