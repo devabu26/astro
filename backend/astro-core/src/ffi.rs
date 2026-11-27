@@ -1906,6 +1906,91 @@ pub unsafe extern "C" fn astro_matrix_poll_rtc_audio_events_json(
 }
 
 #[repr(C)]
+pub struct AstroRtcAudioFrame {
+    pub room_id: *mut c_char,
+    pub identity: *mut c_char,
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub data: *mut u8,
+    pub len: usize,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_take_rtc_audio_frame(
+    handle: *mut MatrixClientManager,
+    error_out: *mut *mut c_char,
+) -> *mut AstroRtcAudioFrame {
+    if !error_out.is_null() {
+        *error_out = ptr::null_mut();
+    }
+    if handle.is_null() {
+        set_error(error_out, "Matrix client handle must not be null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manager = unsafe { &mut *handle };
+        manager.take_rtc_audio_frame()
+    }));
+
+    match result {
+        Ok(Some((room_id, identity, sample_rate, channels, data))) => {
+            let room_id = match CString::new(room_id) {
+                Ok(value) => value.into_raw(),
+                Err(_) => {
+                    set_error(error_out, "Audio frame room ID contained a null byte");
+                    return ptr::null_mut();
+                }
+            };
+            let identity = match CString::new(identity) {
+                Ok(value) => value.into_raw(),
+                Err(_) => {
+                    unsafe { drop(CString::from_raw(room_id)); }
+                    set_error(error_out, "Audio frame identity contained a null byte");
+                    return ptr::null_mut();
+                }
+            };
+            let mut data = data.into_boxed_slice();
+            let len = data.len();
+            let data_ptr = Box::into_raw(data) as *mut u8;
+            Box::into_raw(Box::new(AstroRtcAudioFrame {
+                room_id,
+                identity,
+                sample_rate,
+                channels,
+                data: data_ptr,
+                len,
+            }))
+        }
+        Ok(None) => ptr::null_mut(),
+        Err(_) => {
+            set_error(error_out, "Unexpected Rust panic while retrieving a LiveKit audio frame");
+            ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn astro_matrix_rtc_audio_frame_free(
+    frame: *mut AstroRtcAudioFrame,
+) {
+    if frame.is_null() {
+        return;
+    }
+    let frame = unsafe { Box::from_raw(frame) };
+    if !frame.room_id.is_null() {
+        unsafe { drop(CString::from_raw(frame.room_id)); }
+    }
+    if !frame.identity.is_null() {
+        unsafe { drop(CString::from_raw(frame.identity)); }
+    }
+    if !frame.data.is_null() {
+        let slice = ptr::slice_from_raw_parts_mut(frame.data, frame.len);
+        unsafe { drop(Box::from_raw(slice)); }
+    }
+}
+
+#[repr(C)]
 pub struct AstroRtcVideoFrame {
     pub room_id: *mut c_char,
     pub identity: *mut c_char,
