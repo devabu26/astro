@@ -35,6 +35,10 @@ MainView {
     property string pendingNotificationEventId: ""
     property string lastNotificationUrl: ""
     property double lastNotificationUrlAt: 0
+    property bool pendingIncomingCallPush: false
+    property string pendingIncomingCallSender: ""
+    property string pendingIncomingCallIntent: "unknown"
+    property double pendingIncomingCallExpiry: 0
 
     function openCallPage(roomId, roomName, startImmediately) {
         if (!roomId)
@@ -105,6 +109,36 @@ MainView {
             var notification = envelope.notification || {}
             var card = notification.card || {}
 
+            if (data.kind === "incoming_call") {
+                var callRoomId = data.room_id || envelope.room_id || ""
+                var callEventId = data.event_id || envelope.event_id || ""
+                var callExpiry = Number(data.expires_at_ms) || 0
+
+                if (!callRoomId || !callEventId)
+                    return
+
+                if (callExpiry > 0 && callExpiry <= Date.now()) {
+                    notificationPushClient.clearPersistent([
+                        data.tag || ("astro-call-" + callEventId)
+                    ])
+                    return
+                }
+
+                if (Qt.application.state === Qt.ApplicationActive) {
+                    incomingCallBanner.showIncomingCall(
+                        data.sender || "Someone",
+                        callRoomId,
+                        callEventId,
+                        data.call_intent || "unknown",
+                        callExpiry
+                    )
+                    notificationPushClient.clearPersistent([
+                        data.tag || ("astro-call-" + callEventId)
+                    ])
+                }
+                return
+            }
+
             notificationBanner.showNotification(
                 card.summary || data.sender || "New message",
                 card.body || data.body || "You have a new message",
@@ -170,6 +204,13 @@ MainView {
         pendingNotificationRoomId = values.room_id
         pendingNotificationEventId = values.event_id || ""
 
+        if (values.kind === "call") {
+            pendingIncomingCallPush = true
+            pendingIncomingCallSender = values.sender || "Someone"
+            pendingIncomingCallIntent = values.call_intent || "unknown"
+            pendingIncomingCallExpiry = Number(values.expires_at_ms) || 0
+        }
+
         root.openPendingNotificationIfReady()
     }
 
@@ -188,16 +229,42 @@ MainView {
 
         var roomId = pendingNotificationRoomId
         var eventId = pendingNotificationEventId
+        var isIncomingCall = pendingIncomingCallPush
+        var callSender = pendingIncomingCallSender
+        var callIntent = pendingIncomingCallIntent
+        var callExpiry = pendingIncomingCallExpiry
 
         pendingNotificationRoomId = ""
         pendingNotificationEventId = ""
+        pendingIncomingCallPush = false
+        pendingIncomingCallSender = ""
+        pendingIncomingCallIntent = "unknown"
+        pendingIncomingCallExpiry = 0
 
         console.warn("ASTRO PUSH TAP: opening room:", roomId)
         console.warn("ASTRO PUSH TAP: event:", eventId)
 
-        // A notification must always land in the chat UI, even if
-        // Astro was previously left on Settings or an active call page.
         root.showingSettings = false
+        if (isIncomingCall) {
+            if (callExpiry > 0 && callExpiry <= Date.now()) {
+                notificationPushClient.clearPersistent([
+                    "astro-call-" + eventId
+                ])
+                return
+            }
+            incomingCallBanner.showIncomingCall(
+                callSender,
+                roomId,
+                eventId,
+                callIntent,
+                callExpiry
+            )
+            notificationPushClient.clearPersistent([
+                "astro-call-" + eventId
+            ])
+            return
+        }
+
         // Do not tear down or hide an active call just because a
         // message notification was tapped.
         chatPage.openNotification(roomId, eventId)
@@ -232,6 +299,8 @@ MainView {
 
     // Register Astro with the Ubuntu Touch push service.
     NotificationPushClient {
+        id: notificationPushClient
+
         onPushTokenAvailable: {
             astroBackend.setPushToken(token)
         }
@@ -427,6 +496,9 @@ MainView {
                         incomingCall.call_intent,
                         incomingCall.expires_at_ms
                     )
+                    notificationPushClient.clearPersistent([
+                        "astro-call-" + incomingCall.event_id
+                    ])
                 }
             }
 
@@ -664,8 +736,13 @@ MainView {
             }
         }
 
+        onDismissRequested: {
+            notificationPushClient.clearPersistent(["astro-call-" + eventId])
+        }
+
         onAcceptRequested: {
             incomingCallAlert.stop()
+            notificationPushClient.clearPersistent(["astro-call-" + eventId])
             root.showingSettings = false
             root.incomingCall = true
             root.openCallPage(
@@ -677,6 +754,7 @@ MainView {
 
         onDeclineRequested: {
             incomingCallAlert.stop()
+            notificationPushClient.clearPersistent(["astro-call-" + eventId])
             astroBackend.declineRtcCall(roomId, eventId)
         }
     }
