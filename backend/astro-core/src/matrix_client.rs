@@ -19,7 +19,10 @@ use matrix_sdk::ruma::events::{
     key::verification::request::ToDeviceKeyVerificationRequestEvent,
     room::message::{MessageType, OriginalSyncRoomMessageEvent},
 };
-use matrix_sdk::ruma::push::HttpPusherData;
+use matrix_sdk::ruma::push::{
+    Action as PushAction, EventMatchConditionData, EventPropertyContainsConditionData,
+    EventPropertyIsConditionData, HttpPusherData, PushCondition, RuleKind, Tweak,
+};
 use matrix_sdk::{
     config::SyncSettings, ruma::room::RoomType, store::RoomLoadSettings, Client, LoopCtrl,
     Room, RoomMemberships, SqliteStoreConfig, TransmissionProgress,
@@ -5533,7 +5536,7 @@ impl MatrixClientManager {
             .ok_or_else(|| "No active Matrix session".to_string())?;
 
         let pusher = PusherInit {
-            ids: PusherIds::new(push_token.to_owned(), "astro.madabu".to_owned()),
+            ids: PusherIds::new(push_token.to_owned(), "astro.madabu_astro".to_owned()),
             app_display_name: "Astro".to_owned(),
             kind: {
                 let mut http_data = HttpPusherData::new(
@@ -5557,7 +5560,60 @@ impl MatrixClientManager {
                 .pusher()
                 .set(pusher.into(), false)
                 .await
-                .map_err(|error| format!("Could not register Matrix push pusher: {error}"))
+                .map_err(|error| format!("Could not register Matrix push pusher: {error}"))?;
+
+            // Matrix does not currently provide a default push rule for
+            // MSC4075 call notifications on every homeserver. Install
+            // recipient-specific rules so the homeserver forwards ring
+            // events to the registered Ubuntu Push gateway.
+            let own_user_id = client
+                .user_id()
+                .ok_or_else(|| "No authenticated Matrix user for call push rules".to_owned())?
+                .to_string();
+            let notification_settings = client.notification_settings().await;
+
+            for (rule_id, event_type) in [
+                ("astro_rtc_ring_msc4075", "org.matrix.msc4075.rtc.notification"),
+                ("astro_rtc_ring_stable", "m.rtc.notification"),
+            ] {
+                let conditions = vec![
+                    PushCondition::EventMatch(EventMatchConditionData::new(
+                        "type".to_owned(),
+                        event_type.to_owned(),
+                    )),
+                    PushCondition::EventPropertyIs(EventPropertyIsConditionData::new(
+                        "content.notification_type".to_owned(),
+                        "ring".into(),
+                    )),
+                    PushCondition::EventPropertyContains(EventPropertyContainsConditionData::new(
+                        r"content.m\.mentions.user_ids".to_owned(),
+                        own_user_id.clone().into(),
+                    )),
+                ];
+                let actions = vec![
+                    PushAction::Notify,
+                    PushAction::SetTweak(Tweak::Sound("ring".to_owned())),
+                ];
+
+                if let Err(error) = notification_settings
+                    .create_custom_conditional_push_rule(
+                        rule_id.to_owned(),
+                        RuleKind::Override,
+                        actions,
+                        conditions,
+                    )
+                    .await
+                {
+                    eprintln!(
+                        "ASTRO PUSH: could not install {} push rule: {}",
+                        rule_id, error
+                    );
+                } else {
+                    eprintln!("ASTRO PUSH: installed {} push rule", rule_id);
+                }
+            }
+
+            Ok(())
         })
     }
 
@@ -5573,7 +5629,7 @@ impl MatrixClientManager {
 
         let pusher_ids = PusherIds::new(
             push_token.to_owned(),
-            "astro.madabu".to_owned(),
+            "astro.madabu_astro".to_owned(),
         );
 
         self.runtime.block_on(async {
