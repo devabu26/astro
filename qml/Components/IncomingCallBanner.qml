@@ -23,6 +23,11 @@ Item {
         if (expiry > 0 && expiry <= Date.now())
             return
 
+        // Push delivery and Matrix sync can report the same ring. Do not
+        // restart the ringtone or replace the visible banner for duplicates.
+        if (roomId === incomingRoomId && eventId === incomingEventId)
+            return
+
         caller = sender || "Someone"
         roomId = incomingRoomId || ""
         eventId = incomingEventId || ""
