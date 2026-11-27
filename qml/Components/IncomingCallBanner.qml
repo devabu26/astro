@@ -13,6 +13,7 @@ Item {
     signal acceptRequested(string roomId, string eventId)
     signal declineRequested(string roomId, string eventId)
     signal dismissRequested(string roomId, string eventId)
+    signal callExpired(string roomId, string eventId)
     signal alertRequested()
 
     visible: roomId !== ""
@@ -34,12 +35,18 @@ Item {
         callIntent = intent === "video" || intent === "audio" ? intent : "unknown"
         expiresAtMs = expiry
 
-        // The expiry is used only to reject stale ring events. Once shown,
-        // keep the banner visible until the user acts or the call is dismissed.
+        // Keep the banner for the complete advertised ring lifetime, not a
+        // fixed UI timeout. The event expiry also bounds stale push alerts.
+        expiryTimer.stop()
+        if (expiresAtMs > 0) {
+            expiryTimer.interval = Math.max(1, expiresAtMs - Date.now())
+            expiryTimer.start()
+        }
         alertRequested()
     }
 
     function clear() {
+        expiryTimer.stop()
         caller = ""
         roomId = ""
         eventId = ""
@@ -47,6 +54,15 @@ Item {
         expiresAtMs = 0
     }
 
+
+    Timer {
+        id: expiryTimer
+        repeat: false
+        onTriggered: {
+            root.callExpired(root.roomId, root.eventId)
+            root.clear()
+        }
+    }
 
     Rectangle {
         id: banner
