@@ -2045,6 +2045,29 @@ void StorageWorker::startRtcVideo(
     int height
 )
 {
+    // Do not destroy a camera while the platform backend is still loading,
+    // capturing, or asynchronously unloading it. Defer track setup until the
+    // shared camera-release completion path confirms UnloadedStatus.
+    if (m_rtcCamera || m_rtcBackgroundCameraStopPending) {
+        m_rtcStartVideoAfterBackgroundUnload = true;
+        m_rtcStartVideoAfterBackgroundUnloadRoomId = roomId;
+        m_rtcStartVideoAfterBackgroundUnloadWidth = width;
+        m_rtcStartVideoAfterBackgroundUnloadHeight = height;
+        m_rtcSwitchCameraAfterBackgroundUnload = false;
+        m_rtcSwitchCameraAfterBackgroundUnloadRoomId.clear();
+        m_rtcSwitchCameraAfterBackgroundUnloadDeviceId.clear();
+        m_rtcBackgroundCameraRestartAfterStop = false;
+        m_rtcBackgroundCameraRestartRoomId.clear();
+        m_rtcBackgroundCameraRestartDeviceId.clear();
+        qInfo() << "ASTRO_BACKGROUND_CAMERA: deferring video-track start until camera unload"
+                << "room:" << roomId
+                << "cameraStatus:" << (m_rtcCamera
+                    ? static_cast<int>(m_rtcCamera->status()) : -1)
+                << "unloadPending:" << m_rtcBackgroundCameraStopPending;
+        stopRtcBackgroundCamera(roomId);
+        return;
+    }
+
     stopRtcCamera();
     if (!m_matrixClient || roomId.isEmpty()) {
         emit matrixRtcVideoActionFinished(
@@ -2821,6 +2844,13 @@ void StorageWorker::finishRtcBackgroundCameraStop()
     QString stopAudioRoomId;
     bool stopVideoAfterUnload = false;
     bool stopAudioAfterUnload = false;
+    bool startVideoAfterUnload = false;
+    QString startVideoRoomId;
+    int startVideoWidth = 0;
+    int startVideoHeight = 0;
+    bool switchCameraAfterUnload = false;
+    QString switchCameraRoomId;
+    QString switchCameraDeviceId;
     bool restart = false;
 
     {
@@ -2855,9 +2885,33 @@ void StorageWorker::finishRtcBackgroundCameraStop()
         m_rtcStopAudioAfterBackgroundUnload = false;
         m_rtcStopAudioAfterBackgroundUnloadRoomId.clear();
 
+        startVideoAfterUnload = m_rtcStartVideoAfterBackgroundUnload;
+        startVideoRoomId = m_rtcStartVideoAfterBackgroundUnloadRoomId;
+        startVideoWidth = m_rtcStartVideoAfterBackgroundUnloadWidth;
+        startVideoHeight = m_rtcStartVideoAfterBackgroundUnloadHeight;
+        m_rtcStartVideoAfterBackgroundUnload = false;
+        m_rtcStartVideoAfterBackgroundUnloadRoomId.clear();
+        m_rtcStartVideoAfterBackgroundUnloadWidth = 0;
+        m_rtcStartVideoAfterBackgroundUnloadHeight = 0;
+
+        switchCameraAfterUnload = m_rtcSwitchCameraAfterBackgroundUnload;
+        switchCameraRoomId = m_rtcSwitchCameraAfterBackgroundUnloadRoomId;
+        switchCameraDeviceId = m_rtcSwitchCameraAfterBackgroundUnloadDeviceId;
+        m_rtcSwitchCameraAfterBackgroundUnload = false;
+        m_rtcSwitchCameraAfterBackgroundUnloadRoomId.clear();
+        m_rtcSwitchCameraAfterBackgroundUnloadDeviceId.clear();
+
+        // Explicit call teardown always wins over a deferred camera action.
+        if (stopVideoAfterUnload || stopAudioAfterUnload) {
+            startVideoAfterUnload = false;
+            switchCameraAfterUnload = false;
+        }
+
         restart = m_rtcBackgroundCameraRestartAfterStop &&
                   !stopVideoAfterUnload &&
-                  !stopAudioAfterUnload;
+                  !stopAudioAfterUnload &&
+                  !startVideoAfterUnload &&
+                  !switchCameraAfterUnload;
         restartRoomId = m_rtcBackgroundCameraRestartRoomId;
         restartDeviceId = m_rtcBackgroundCameraRestartDeviceId;
         m_rtcBackgroundCameraRestartAfterStop = false;
@@ -2888,6 +2942,30 @@ void StorageWorker::finishRtcBackgroundCameraStop()
         return;
     }
 
+    if (startVideoAfterUnload && !startVideoRoomId.isEmpty()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, startVideoRoomId, startVideoWidth, startVideoHeight]() {
+                startRtcVideo(startVideoRoomId, startVideoWidth, startVideoHeight);
+            },
+            Qt::QueuedConnection
+        );
+        return;
+    }
+
+    if (switchCameraAfterUnload &&
+        !switchCameraRoomId.isEmpty() &&
+        !switchCameraDeviceId.isEmpty()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, switchCameraRoomId, switchCameraDeviceId]() {
+                finishRtcCameraSwitch(switchCameraRoomId, switchCameraDeviceId);
+            },
+            Qt::QueuedConnection
+        );
+        return;
+    }
+
     if (restart && !restartRoomId.isEmpty()) {
         QMetaObject::invokeMethod(
             this,
@@ -2901,6 +2979,15 @@ void StorageWorker::finishRtcBackgroundCameraStop()
 
 void StorageWorker::stopRtcVideo(const QString &roomId)
 {
+    // An explicit stop supersedes any queued start or device switch.
+    m_rtcStartVideoAfterBackgroundUnload = false;
+    m_rtcStartVideoAfterBackgroundUnloadRoomId.clear();
+    m_rtcStartVideoAfterBackgroundUnloadWidth = 0;
+    m_rtcStartVideoAfterBackgroundUnloadHeight = 0;
+    m_rtcSwitchCameraAfterBackgroundUnload = false;
+    m_rtcSwitchCameraAfterBackgroundUnloadRoomId.clear();
+    m_rtcSwitchCameraAfterBackgroundUnloadDeviceId.clear();
+
     // Native QCamera unload is asynchronous. Do not let stopRtcCamera()
     // delete the QCamera while its backend still owns the capture device.
     if (m_rtcCamera &&
@@ -2985,14 +3072,15 @@ void StorageWorker::processRtcCameraImage(
 void StorageWorker::switchRtcCamera(const QString &roomId)
 {
     if (!m_matrixClient || roomId.isEmpty() ||
-        !m_rtcCamera || !m_rtcVideoSurface) {
+        !m_rtcCamera || !m_rtcVideoSurface ||
+        m_rtcVideoRoomId != roomId) {
         emit matrixRtcVideoActionFinished(
             roomId,
             !m_matrixClient
                 ? QStringLiteral("No active Matrix session")
                 : !m_rtcCamera
                     ? QStringLiteral("Camera is not running")
-                    : QStringLiteral("Room ID is empty")
+                    : QStringLiteral("Room ID is empty or camera belongs to another room")
         );
         return;
     }
@@ -3011,7 +3099,6 @@ void StorageWorker::switchRtcCamera(const QString &roomId)
         QCameraInfo(*m_rtcCamera).position();
 
     QCameraInfo selected;
-    // Prefer the opposite physical facing (front <-> back).
     for (const QCameraInfo &camera : cameras) {
         if (camera.deviceName() != currentDevice &&
             camera.position() != QCamera::UnspecifiedPosition &&
@@ -3022,7 +3109,6 @@ void StorageWorker::switchRtcCamera(const QString &roomId)
         }
     }
 
-    // Fall back to the next enumerated device when facing metadata is absent.
     if (selected.deviceName().isEmpty()) {
         for (int i = 0; i < cameras.size(); ++i) {
             if (cameras.at(i).deviceName() == currentDevice) {
@@ -3041,7 +3127,57 @@ void StorageWorker::switchRtcCamera(const QString &roomId)
         return;
     }
 
-    stopRtcCamera();
+    // Retain the video surface and selected device, but release the old
+    // physical camera asynchronously before constructing its replacement.
+    m_rtcSwitchCameraAfterBackgroundUnload = true;
+    m_rtcSwitchCameraAfterBackgroundUnloadRoomId = roomId;
+    m_rtcSwitchCameraAfterBackgroundUnloadDeviceId = selected.deviceName();
+    m_rtcStartVideoAfterBackgroundUnload = false;
+    m_rtcStartVideoAfterBackgroundUnloadRoomId.clear();
+    m_rtcStartVideoAfterBackgroundUnloadWidth = 0;
+    m_rtcStartVideoAfterBackgroundUnloadHeight = 0;
+    m_rtcBackgroundCameraRestartAfterStop = false;
+    m_rtcBackgroundCameraRestartRoomId.clear();
+    m_rtcBackgroundCameraRestartDeviceId.clear();
+
+    qInfo() << "ASTRO_BACKGROUND_CAMERA: deferring camera switch until unload"
+            << "room:" << roomId
+            << "from:" << currentDevice
+            << "to:" << selected.deviceName()
+            << "status:" << static_cast<int>(m_rtcCamera->status());
+    stopRtcBackgroundCamera(roomId);
+}
+
+void StorageWorker::finishRtcCameraSwitch(
+    const QString &roomId,
+    const QString &deviceId
+)
+{
+    if (!m_matrixClient || roomId.isEmpty() ||
+        !m_rtcVideoSurface || m_rtcVideoRoomId != roomId ||
+        m_rtcCamera || m_rtcBackgroundCameraStopPending) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            QStringLiteral("Camera could not be switched after releasing the previous device")
+        );
+        return;
+    }
+
+    QCameraInfo selected;
+    for (const QCameraInfo &camera : QCameraInfo::availableCameras()) {
+        if (camera.deviceName() == deviceId) {
+            selected = camera;
+            break;
+        }
+    }
+    if (selected.deviceName().isEmpty()) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            QStringLiteral("The selected camera is no longer available")
+        );
+        return;
+    }
+
     if (m_rtcCameraOpenGLContext &&
         !makeRtcCameraOpenGLContextCurrent()) {
         emit matrixRtcVideoActionFinished(
@@ -3052,41 +3188,49 @@ void StorageWorker::switchRtcCamera(const QString &roomId)
     }
 
     m_rtcCamera = new QCamera(selected, this);
+    const quint64 cameraGeneration = ++m_rtcCameraGeneration;
+    const QPointer<QCamera> cameraGuard(m_rtcCamera);
     connect(
         m_rtcCamera, &QCamera::statusChanged, this,
-        [](QCamera::Status status) {
-            qInfo() << "RTC camera status:" << static_cast<int>(status);
+        [this, cameraGuard, cameraGeneration](QCamera::Status status) {
+            if (!cameraGuard || m_rtcCamera != cameraGuard.data() ||
+                m_rtcCameraGeneration != cameraGeneration)
+                return;
+            qInfo() << "ASTRO_BACKGROUND_CAMERA: switched camera status"
+                    << static_cast<int>(status);
         }
     );
     connect(
         m_rtcCamera,
         QOverload<QCamera::Error>::of(&QCamera::error),
         this,
-        [this](QCamera::Error cameraError) {
-            qWarning() << "RTC camera error:"
+        [this, cameraGuard, cameraGeneration](QCamera::Error cameraError) {
+            if (!cameraGuard || m_rtcCamera != cameraGuard.data() ||
+                m_rtcCameraGeneration != cameraGeneration ||
+                cameraError == QCamera::NoError)
+                return;
+            qWarning() << "ASTRO_BACKGROUND_CAMERA: switched camera error"
                        << static_cast<int>(cameraError)
-                       << m_rtcCamera->errorString();
+                       << cameraGuard->errorString();
+            stopRtcBackgroundCamera(m_rtcVideoRoomId);
         }
     );
 
     m_rtcCamera->setCaptureMode(QCamera::CaptureVideo);
-    m_rtcVideoSurface = new RtcCameraVideoSurface(
-        this, roomId, m_rtcVideoWidth, m_rtcVideoHeight, this
-    );
-    m_rtcVideoRoomId = roomId;
     m_rtcCamera->setViewfinder(m_rtcVideoSurface);
     m_rtcCamera->start();
 
     const QString switchError = m_rtcCamera->isAvailable()
         ? QString()
         : QStringLiteral("The selected camera is unavailable");
-    if (!switchError.isEmpty())
-        stopRtcCamera();
-
-    qInfo() << "RTC switched camera to:"
-            << selected.description()
-            << selected.deviceName()
-            << "position:" << selected.position();
+    if (!switchError.isEmpty()) {
+        stopRtcBackgroundCamera(roomId);
+    } else {
+        qInfo() << "RTC switched camera to:"
+                << selected.description()
+                << selected.deviceName()
+                << "position:" << selected.position();
+    }
     emit matrixRtcVideoActionFinished(roomId, switchError);
 }
 
@@ -4053,6 +4197,15 @@ void StorageWorker::stopRtcScreenShareCapture(const QString &releaseRoomId)
 
 void StorageWorker::stopRtcAudio(const QString &roomId)
 {
+    // Ending the call supersedes any queued camera start or device switch.
+    m_rtcStartVideoAfterBackgroundUnload = false;
+    m_rtcStartVideoAfterBackgroundUnloadRoomId.clear();
+    m_rtcStartVideoAfterBackgroundUnloadWidth = 0;
+    m_rtcStartVideoAfterBackgroundUnloadHeight = 0;
+    m_rtcSwitchCameraAfterBackgroundUnload = false;
+    m_rtcSwitchCameraAfterBackgroundUnloadRoomId.clear();
+    m_rtcSwitchCameraAfterBackgroundUnloadDeviceId.clear();
+
     // A call can be ended while the background QCamera is still unloading
     // after the app returns to the foreground. Defer the audio teardown until
     // QCamera reports UnloadedStatus, just as we do for video teardown.
