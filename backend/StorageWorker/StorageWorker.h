@@ -12,6 +12,7 @@
 #include <QMutex>
 #include <QCamera>
 #include <QPointer>
+#include <QPointer>
 #include <QAudioInput>
 #include <QAudioOutput>
 #include <QAudioDeviceInfo>
@@ -465,6 +466,10 @@ signals:
 private:
     void stopRtcCamera();
     void finishRtcBackgroundCameraStop();
+    void checkRtcBackgroundCameraUnload(
+        const QPointer<QCamera> &cameraGuard,
+        quint64 cameraGeneration
+    );
     void stopRtcScreenShareCapture(const QString &releaseRoomId = QString());
     void releaseRtcScreenShareMirConnection(const QString &roomId);
     void beginRtcScreenShareUnpublish(const QString &roomId, const QString &completionError);
@@ -518,6 +523,7 @@ private:
     QString m_rtcBackgroundCameraPendingDeviceId;
     bool m_rtcBackgroundCameraStopPending = false;
     QString m_rtcBackgroundCameraStopRoomId;
+    int m_rtcBackgroundCameraUnloadAttempts = 0;
     bool m_rtcBackgroundCameraRestartAfterStop = false;
     QString m_rtcBackgroundCameraRestartRoomId;
     QString m_rtcBackgroundCameraRestartDeviceId;
