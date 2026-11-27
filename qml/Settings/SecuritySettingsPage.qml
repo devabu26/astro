@@ -394,6 +394,22 @@ Item {
 
                             Text {
                                 width: parent.width
+                                text: "CHAT ENCRYPTION TRUST"
+                                color: root.primaryText
+                                font.pixelSize: units.gu(1.8)
+                                font.bold: true
+                            }
+
+                            Text {
+                                width: parent.width
+                                text: "Astro shares encrypted-room keys only with devices signed by their owner's cross-signing identity. Incoming encrypted messages are accepted only from cross-signed devices. Messages from unsigned devices, and older sessions without cross-signing trust data, may remain undecrypted. Your own Astro device must also be cross-signed before it can send encrypted-room messages."
+                                color: root.secondaryText
+                                font.pixelSize: units.gu(1.4)
+                                wrapMode: Text.WordWrap
+                            }
+
+                            Text {
+                                width: parent.width
                                 text: "REGISTERED DEVICES"
                                 color: root.primaryText
                                 font.pixelSize: units.gu(1.8)
