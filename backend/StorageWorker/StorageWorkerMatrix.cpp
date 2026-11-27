@@ -1405,8 +1405,19 @@ void StorageWorker::setRtcCameraOpenGLContext(
     m_rtcCameraOffscreenSurface = surface;
 }
 
-bool StorageWorker::makeRtcCameraOpenGLContextCurrent()
+bool StorageWorker::makeRtcCameraOpenGLContextCurrent(
+    QOpenGLContext **previousContext,
+    QSurface **previousSurface
+)
 {
+    if (previousContext)
+        *previousContext = QOpenGLContext::currentContext();
+    if (previousSurface) {
+        QOpenGLContext *previous =
+            previousContext ? *previousContext : QOpenGLContext::currentContext();
+        *previousSurface = previous ? previous->surface() : nullptr;
+    }
+
     if (!m_rtcCameraOpenGLContext ||
         !m_rtcCameraOffscreenSurface ||
         !m_rtcCameraOpenGLContext->isValid() ||
@@ -1417,19 +1428,44 @@ bool StorageWorker::makeRtcCameraOpenGLContextCurrent()
     if (QOpenGLContext::currentContext() == m_rtcCameraOpenGLContext)
         return true;
 
-    if (QOpenGLContext *current = QOpenGLContext::currentContext())
-        current->doneCurrent();
+    QOpenGLContext *previous =
+        previousContext ? *previousContext : QOpenGLContext::currentContext();
+    if (previous)
+        previous->doneCurrent();
 
-    return m_rtcCameraOpenGLContext->makeCurrent(
-        m_rtcCameraOffscreenSurface
-    );
+    if (m_rtcCameraOpenGLContext->makeCurrent(m_rtcCameraOffscreenSurface))
+        return true;
+
+    // If the shared context cannot be activated, leave the caller's context
+    // in the same state it had before the attempted switch.
+    if (previous && previousSurface && *previousSurface &&
+        previous->isValid()) {
+        previous->makeCurrent(*previousSurface);
+    }
+    return false;
 }
 
-void StorageWorker::releaseRtcCameraOpenGLContext()
+void StorageWorker::releaseRtcCameraOpenGLContext(
+    QOpenGLContext *previousContext,
+    QSurface *previousSurface
+)
 {
+    // If the shared context was already current on entry, it belongs to the
+    // caller and must remain current when this operation finishes.
+    if (previousContext == m_rtcCameraOpenGLContext)
+        return;
+
     if (m_rtcCameraOpenGLContext &&
         QOpenGLContext::currentContext() == m_rtcCameraOpenGLContext) {
         m_rtcCameraOpenGLContext->doneCurrent();
+    }
+
+    // Restore the context/surface pair that was current when readback began.
+    // A null previous context intentionally leaves no context current.
+    if (previousContext && previousSurface &&
+        previousContext->isValid() &&
+        previousContext->thread() == QThread::currentThread()) {
+        previousContext->makeCurrent(previousSurface);
     }
 }
 
@@ -1522,10 +1558,17 @@ public:
             // Do not accept a GL surface unless the worker's shared context
             // can actually be made current. present() uses this context for
             // synchronous texture-to-CPU readback.
+            QOpenGLContext *previousContext = nullptr;
+            QSurface *previousSurface = nullptr;
             const bool contextReady =
-                m_worker && m_worker->makeRtcCameraOpenGLContextCurrent();
-            if (contextReady)
-                m_worker->releaseRtcCameraOpenGLContext();
+                m_worker && m_worker->makeRtcCameraOpenGLContextCurrent(
+                    &previousContext, &previousSurface
+                );
+            if (contextReady) {
+                m_worker->releaseRtcCameraOpenGLContext(
+                    previousContext, previousSurface
+                );
+            }
 
             if (!contextReady ||
                 format.pixelFormat() != QVideoFrame::Format_RGB32) {
@@ -1645,6 +1688,8 @@ public:
 
         QVideoFrame mapped(frame);
         bool glContextCurrent = false;
+        QOpenGLContext *previousGlContext = nullptr;
+        QSurface *previousGlSurface = nullptr;
 
         if (glTextureFrame) {
             // QtUbuntu's camera buffer owns the GL/EGL details. Let its
@@ -1652,13 +1697,17 @@ public:
             // platform-specific GL texture readback instead of assuming
             // frame.handle() contains a usable GLuint.
             glContextCurrent =
-                m_worker && m_worker->makeRtcCameraOpenGLContextCurrent();
+                m_worker && m_worker->makeRtcCameraOpenGLContextCurrent(
+                    &previousGlContext, &previousGlSurface
+                );
             const bool mapOk = glContextCurrent &&
                 mapped.map(QAbstractVideoBuffer::ReadOnly);
 
             if (!mapOk) {
                 if (glContextCurrent)
-                    m_worker->releaseRtcCameraOpenGLContext();
+                    m_worker->releaseRtcCameraOpenGLContext(
+                        previousGlContext, previousGlSurface
+                    );
                 if (m_loggedMapFailure.testAndSetOrdered(0, 1)) {
                     qWarning() << "RTC camera could not map GL-backed frame:"
                                << width << "x" << height
@@ -1696,7 +1745,9 @@ public:
             if (mapped.isMapped())
                 mapped.unmap();
             if (glContextCurrent)
-                m_worker->releaseRtcCameraOpenGLContext();
+                m_worker->releaseRtcCameraOpenGLContext(
+                previousGlContext, previousGlSurface
+            );
             return true;
         }
 
