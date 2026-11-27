@@ -9,6 +9,7 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d", features = ["unstable-msc4354", "experimental-send-custom-to-device"] }
+matrix-sdk-base = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d", default-features = false, features = ["e2e-encryption"] }
 sha2 = "=0.10.9"
 mime = "=0.3.18"
 eyeball = "=0.8.8"
