@@ -38,7 +38,8 @@ function getCallDetails(notification) {
             return null;
         }
     } else if (isLegacyCallNotify) {
-        if (content.application !== "m.call" || content.notify_type !== "ring") {
+        if ((type === "m.call.notify" && content.application !== "m.call")
+            || content.notify_type !== "ring") {
             return null;
         }
     } else {
