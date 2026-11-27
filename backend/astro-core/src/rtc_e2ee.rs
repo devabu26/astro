@@ -1352,8 +1352,8 @@ fn decode_matrix_base64(input: &str) -> Option<Vec<u8>> {
 
     // Matrix permits both standard and URL-safe Base64, but reject strings
     // which mix the two alphabets.
-    let has_standard_special = bytes[..data_len].iter().any(|byte| matches!(byte, b'+' | b'/'));
-    let has_url_safe_special = bytes[..data_len].iter().any(|byte| matches!(byte, b'-' | b'_'));
+    let has_standard_special = bytes[..data_len].iter().any(|byte| matches!(*byte, b'+' | b'/'));
+    let has_url_safe_special = bytes[..data_len].iter().any(|byte| matches!(*byte, b'-' | b'_'));
     if has_standard_special && has_url_safe_special {
         return None;
     }
