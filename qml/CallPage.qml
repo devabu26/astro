@@ -37,6 +37,7 @@ Item {
     property bool screenShareAudioRequested: false
     property bool nativeCameraRunning: false
     property string nativeCameraDeviceId: ""
+    property string nativeCameraRoomId: ""
     property bool remoteAnswered: false
     property bool connectionTonePlayed: false
     property bool connectionToneRequested: false
@@ -693,21 +694,23 @@ Item {
             // transitions do not stop or recreate it.
             if (backend && roomId) {
                 nativeCameraRunning = false
-                backend.startRtcBackgroundCamera(roomId, "")
+                nativeCameraRoomId = roomId
+                backend.startRtcBackgroundCamera(nativeCameraRoomId, "")
             }
         } else {
             nativeCameraRunning = false
             nativeCameraDeviceId = ""
-            if (backend && roomId)
-                backend.stopRtcBackgroundCamera(roomId)
+            if (backend && (nativeCameraRoomId || roomId))
+                backend.stopRtcBackgroundCamera(nativeCameraRoomId || roomId)
+            nativeCameraRoomId = ""
         }
     }
 
     Component.onDestruction: {
         noAnswerTimer.stop()
         root.stopRingback()
-        if (backend && roomId)
-            backend.stopRtcBackgroundCamera(roomId)
+        if (backend && (nativeCameraRoomId || roomId))
+            backend.stopRtcBackgroundCamera(nativeCameraRoomId || roomId)
         if (backend && screenShareRoomId.length > 0)
             backend.stopRtcScreenShare(screenShareRoomId)
     }
