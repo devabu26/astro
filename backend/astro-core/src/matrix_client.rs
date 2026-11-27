@@ -3173,6 +3173,10 @@ impl MatrixClientManager {
             keys.sort_by_key(|(identity, _, _)| identity == &local_identity);
 
             for (identity, index, key) in keys {
+                eprintln!(
+                    "ASTRO RTC E2EE: installing key for LiveKit participant {}; index={}",
+                    identity, index
+                );
                 let participant_identity = ParticipantIdentity::from(identity.clone());
                 if !provider.set_key(&participant_identity, i32::from(index), key.clone()) {
                     return Err(format!(
@@ -4115,6 +4119,15 @@ impl MatrixClientManager {
                                 "audio_level": participant.audio_level()
                             })
                         })
+                    }
+                    RoomEvent::E2eeStateChanged { participant, state } => {
+                        tracing::warn!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            state = ?state,
+                            "LiveKit frame-cryptor E2EE state changed"
+                        );
+                        None
                     }
                     RoomEvent::TrackPublished { participant, publication } => {
                         tracing::info!(
