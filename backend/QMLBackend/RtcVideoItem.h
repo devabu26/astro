@@ -48,6 +48,12 @@ signals:
     void backendChanged();
 
 private slots:
+    void receiveLocalFrame(
+        const QString &roomId,
+        int width,
+        int height,
+        const QByteArray &i420
+    );
     void receiveRemoteFrame(
         const QString &roomId,
         const QString &identity,
@@ -63,6 +69,7 @@ private:
     QString m_identity;
     QString m_source = QStringLiteral("camera");
     QMetaObject::Connection m_frameConnection;
+    QMetaObject::Connection m_localFrameConnection;
     mutable QMutex m_imageMutex;
     QImage m_image;
     bool m_loggedFirstRemoteFrame = false;
