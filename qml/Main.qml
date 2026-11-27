@@ -96,9 +96,6 @@ MainView {
     }
 
     function handlePushNotification(payload) {
-        if (!notificationPreferences.bannerNotificationsEnabled)
-            return
-
         try {
             var envelope = JSON.parse(payload)
             var data = envelope.message || envelope
@@ -138,6 +135,9 @@ MainView {
                 }
                 return
             }
+
+            if (!notificationPreferences.bannerNotificationsEnabled)
+                return
 
             notificationBanner.showNotification(
                 card.summary || data.sender || "New message",
