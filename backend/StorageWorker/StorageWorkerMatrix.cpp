@@ -3974,6 +3974,12 @@ void StorageWorker::stopRtcAudio(const QString &roomId)
         errorMessage = QStringLiteral("Could not stop LiveKit audio");
 
     if (result >= 0 && errorMessage.isEmpty()) {
+        // Drop buffered samples from the call that just ended so they cannot
+        // leak into the next call's playback.
+        m_rtcRemoteAudioPending.clear();
+        if (m_rtcRemoteAudioOutput)
+            m_rtcRemoteAudioOutput->reset();
+
         const QJsonObject disconnectedEvent{
             { QStringLiteral("room_id"), roomId },
             { QStringLiteral("type"), QStringLiteral("disconnected") }
