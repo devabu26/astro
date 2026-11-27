@@ -686,15 +686,16 @@ MainView {
             membershipState: chatPage.rtcCallStatesByRoom[root.callRoomId] || ({})
             memberships: chatPage.rtcMembershipsByRoom[root.callRoomId] || []
 
-            // Keep CallPage instantiated and rendered while it is behind
-            // ChatPage. Its VideoOutput is also the source for the outgoing
-            // camera-frame grabToImage() pipeline; making the whole page
-            // invisible stops that pipeline even though MatrixRTC remains
-            // connected. ChatPage is stacked above it when the call UI is
-            // dismissed, so the camera keeps publishing without showing the
-            // call interface.
+            // Keep CallPage instantiated so its call state and signal
+            // connections survive while ChatPage is shown. Camera frames now
+            // arrive through the native C++ callback and are submitted
+            // directly to RtcCameraVideoSurface; no QML VideoOutput or
+            // grabToImage() rendering is required to keep publishing.
+            // Hide the page when it is not the active interface to avoid
+            // drawing its call controls and video tiles underneath ChatPage.
             visible: astroBackend.storageReady &&
-                     root.matrixAuthenticated
+                     root.matrixAuthenticated &&
+                     root.showingCallPage
             enabled: root.showingCallPage
             z: root.showingCallPage ? 1 : 0
 

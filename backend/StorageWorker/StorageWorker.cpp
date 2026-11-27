@@ -246,13 +246,6 @@ void StorageWorker::openStorage(const QString &passphrase)
     m_matrixClient = client;
     m_matrixSessionActive = (result == 1);
 
-    if (m_rtcVideoPollTimer) {
-        m_rtcVideoPollTimer->start();
-    }
-    if (m_rtcAudioPollTimer) {
-        m_rtcAudioPollTimer->start();
-    }
-
     registerPushTokenIfReady();
 
     if (m_timelinePollTimer) {

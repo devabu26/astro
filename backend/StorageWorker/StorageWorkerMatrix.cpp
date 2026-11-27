@@ -1393,6 +1393,15 @@ void StorageWorker::startRtcAudio(const QString &roomId)
     if (result < 0 && errorMessage.isEmpty())
         errorMessage = QStringLiteral("Could not start LiveKit audio");
 
+    if (result >= 0 && errorMessage.isEmpty()) {
+        // Remote audio and video queues belong to the LiveKit audio session.
+        // Keep their polling asleep until that session is actually connected.
+        if (m_rtcAudioPollTimer)
+            m_rtcAudioPollTimer->start();
+        if (m_rtcVideoPollTimer)
+            m_rtcVideoPollTimer->start();
+    }
+
     emit matrixRtcAudioActionFinished(roomId, errorMessage);
 }
 
@@ -4297,6 +4306,15 @@ void StorageWorker::stopRtcAudio(const QString &roomId)
         errorMessage = QStringLiteral("Could not stop LiveKit audio");
 
     if (result >= 0 && errorMessage.isEmpty()) {
+        // No remote media queues remain active after the LiveKit audio
+        // session ends. Stop both pollers rather than waking the worker while
+        // Astro is idle. Deferred camera teardown reaches this point only
+        // after the camera has finished unloading.
+        if (m_rtcAudioPollTimer)
+            m_rtcAudioPollTimer->stop();
+        if (m_rtcVideoPollTimer)
+            m_rtcVideoPollTimer->stop();
+
         // Drop buffered samples from the call that just ended so they cannot
         // leak into the next call's playback.
         m_rtcRemoteAudioPending.clear();
