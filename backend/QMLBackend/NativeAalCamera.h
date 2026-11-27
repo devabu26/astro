@@ -7,6 +7,7 @@
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QSize>
 #include <atomic>
