@@ -440,8 +440,21 @@ fn rtc_membership_state_key(room: &Room, user_id: &str, device_id: &str) -> Stri
 }
 
 
-/// Discover the LiveKit authorization service advertised by the homeserver.
-async fn discover_livekit_service_url(client: &Client) -> Result<String, String> {
+#[derive(Clone, Debug)]
+struct RtcLiveKitTransport {
+    // MSC4195 m.livekit transport: WebSocket URL; the homeserver issues the JWT.
+    sfu_url: Option<String>,
+    // Compatibility transport: standalone JWT service URL used with /sfu/get.
+    legacy_service_url: Option<String>,
+}
+
+/// Discover both current MSC4195 and legacy LiveKit transport shapes.
+///
+/// The pinned Matrix SDK predates the m.livekit transport variant. Ruma
+/// therefore deserializes it as a custom transport, whose data map preserves
+/// the url field. Do not use only the typed legacy LiveKit variant here:
+/// that would silently discard the modern SFU URL.
+async fn discover_livekit_transport(client: &Client) -> Result<RtcLiveKitTransport, String> {
     let transports = client
         .discover_rtc_transports()
         .await
@@ -451,17 +464,99 @@ async fn discover_livekit_service_url(client: &Client) -> Result<String, String>
         return Err("The homeserver did not advertise any MatrixRTC transports".into());
     };
 
-    transports
-        .into_iter()
-        .find_map(|transport| match transport {
-            RtcTransport::LiveKit(info) => Some(info.service_url),
-            _ => None,
-        })
-        .ok_or_else(|| "The homeserver did not advertise a LiveKit transport".into())
+    let mut legacy = None;
+    for transport in transports {
+        let transport_type = transport.transport_type();
+        let data = transport.data();
+        match transport_type {
+            "m.livekit" => {
+                if let Some(url) = data.get("url").and_then(serde_json::Value::as_str)
+                    .filter(|url| !url.is_empty())
+                {
+                    return Ok(RtcLiveKitTransport {
+                        sfu_url: Some(url.to_owned()),
+                        legacy_service_url: None,
+                    });
+                }
+            }
+            "livekit" => {
+                let service_url = data.get("livekit_service_url")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|url| !url.is_empty())
+                    .map(str::to_owned);
+                let sfu_url = data.get("url")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|url| !url.is_empty())
+                    .map(str::to_owned);
+                if service_url.is_some() {
+                    legacy = Some(RtcLiveKitTransport {
+                        sfu_url,
+                        legacy_service_url: service_url,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    legacy.ok_or_else(|| "The homeserver did not advertise a supported LiveKit transport".into())
 }
 
+async fn fetch_modern_rtc_livekit_token(
+    client: &Client,
+    room: &Room,
+    sfu_url: &str,
+    member_id: &str,
+) -> Result<String, String> {
+    let access_token = client.access_token()
+        .ok_or_else(|| "Matrix access token is unavailable for MSC4195 LiveKit authorization".to_string())?;
+    let endpoint = client.homeserver()
+        .join("_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token")
+        .map_err(|error| format!("Could not construct MSC4195 token endpoint: {error}"))?;
+    let body = serde_json::json!({
+        "url": sfu_url,
+        "room_id": room.room_id().as_str(),
+        "slot_id": "m.call#room",
+        "member_id": member_id
+    });
+    let response = client.http_client()
+        .post(endpoint)
+        .bearer_auth(access_token)
+        .json(&body)
+        .send().await
+        .map_err(|error| format!("MSC4195 LiveKit token request failed: {error}"))?;
+    let status = response.status();
+    let bytes = response.bytes().await
+        .map_err(|error| format!("Could not read MSC4195 LiveKit token response: {error}"))?;
+    if !status.is_success() {
+        let detail = serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+            .and_then(|value| value.get("error").and_then(serde_json::Value::as_str).map(str::to_owned));
+        return Err(match detail {
+            Some(detail) => format!("Homeserver MSC4195 token endpoint returned HTTP {status}: {detail}"),
+            None => format!("Homeserver MSC4195 token endpoint returned HTTP {status}"),
+        });
+    }
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Invalid MSC4195 LiveKit token response: {error}"))?;
+    value.get("jwt").and_then(serde_json::Value::as_str)
+        .filter(|jwt| !jwt.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "MSC4195 LiveKit token response has no JWT".to_string())
+}
 
-async fn fetch_rtc_livekit_credentials(client: &Client, room: &Room, service_url: &str) -> Result<(String, String), String> {
+async fn fetch_rtc_livekit_credentials(
+    client: &Client,
+    room: &Room,
+    transport: &RtcLiveKitTransport,
+    member_id: Option<&str>,
+) -> Result<(String, String), String> {
+    if let (Some(sfu_url), Some(member_id)) = (transport.sfu_url.as_deref(), member_id) {
+        let jwt = fetch_modern_rtc_livekit_token(client, room, sfu_url, member_id).await?;
+        return Ok((sfu_url.to_owned(), jwt));
+    }
+
+    let service_url = transport.legacy_service_url.as_deref()
+        .ok_or_else(|| "The selected LiveKit transport requires an MSC4195 member ID and SFU URL".to_string())?;
     let device_id = client.device_id().ok_or_else(|| "Matrix device ID is unavailable".to_string())?.to_string();
     let openid_token = client.account().request_openid_token().await
         .map_err(|error| format!("Could not obtain Matrix OpenID token: {error}"))?;
@@ -511,7 +606,7 @@ pub struct MatrixClientManager {
     rtc_outgoing_call_notifications: HashMap<String, (String, Vec<String>)>,
     rtc_modern_memberships: HashMap<String, (String, serde_json::Value)>,
     rtc_e2ee_sessions: HashMap<String, RtcE2eeSession>,
-    rtc_livekit_services: HashMap<String, String>,
+    rtc_livekit_services: HashMap<String, RtcLiveKitTransport>,
     rtc_modern_renewals: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     rtc_renewals: Arc<Mutex<HashMap<String, String>>>,
     runtime: std::sync::Arc<Runtime>,
@@ -2603,7 +2698,7 @@ impl MatrixClientManager {
             let encrypted = room.latest_encryption_state().await
                 .map_err(|error| format!("Could not determine room encryption state: {error}"))?.is_encrypted();
 
-            let livekit_service_url = discover_livekit_service_url(&client).await?;
+            let livekit_transport = discover_livekit_transport(&client).await?;
 
             // MSC4354 is optional. Homeservers without sticky events (or native
             // Sliding Sync) still get the established MSC3401 compatibility
@@ -2645,8 +2740,10 @@ impl MatrixClientManager {
                     eprintln!("ASTRO RTC: created m.call#room slot");
                 }
 
-                let (livekit_url, _jwt) = fetch_rtc_livekit_credentials(&client, &room, &livekit_service_url).await?;
                 let id = rtc_random_member_id()?;
+                let (livekit_url, _jwt) = fetch_rtc_livekit_credentials(
+                    &client, &room, &livekit_transport, Some(&id)
+                ).await?;
                 let content = serde_json::json!({
                     "slot_id": "m.call#room",
                     "member": { "id": id, "membership": "join" },
@@ -2668,7 +2765,7 @@ impl MatrixClientManager {
 
             let state_key = rtc_membership_state_key(&room, &user_id, &device_id);
 
-            let content = serde_json::json!({
+            let mut content = serde_json::json!({
                 "application": "m.call",
                 "call_id": "",
                 "scope": "m.room",
@@ -2677,12 +2774,16 @@ impl MatrixClientManager {
                 "focus_active": {
                     "type": "livekit",
                     "focus_selection": "oldest_membership"
-                },
-                "foci_preferred": [{
-                    "type": "livekit",
-                    "livekit_service_url": livekit_service_url.as_str()
-                }]
+                }
             });
+            // Only advertise the standalone JWT service in legacy state
+            // membership. An MSC4195 SFU URL is not a /sfu/get endpoint.
+            if let Some(service_url) = livekit_transport.legacy_service_url.as_deref() {
+                content["foci_preferred"] = serde_json::json!([{
+                    "type": "livekit",
+                    "livekit_service_url": service_url
+                }]);
+            }
 
             let membership_response = room.send_state_event_raw(
                 "org.matrix.msc3401.call.member",
@@ -2790,7 +2891,7 @@ impl MatrixClientManager {
         }
         self.rtc_livekit_services.insert(
             room_id.to_owned(),
-            livekit_service_url,
+            livekit_transport,
         );
 
         if encrypted {
@@ -2855,10 +2956,13 @@ impl MatrixClientManager {
             return Err("Astro has no active MatrixRTC membership in this room".into());
         }
 
-        let service_url = self.rtc_livekit_services
+        let transport = self.rtc_livekit_services
             .get(room_id)
             .cloned()
-            .ok_or_else(|| "No LiveKit service was selected for this room".to_string())?;
+            .ok_or_else(|| "No LiveKit transport was selected for this room".to_string())?;
+        let member_id = self.rtc_modern_memberships
+            .get(room_id)
+            .map(|(member_id, _)| member_id.clone());
 
         let client = self.client.as_ref()
             .ok_or_else(|| "No active Matrix session".to_string())?
@@ -2871,7 +2975,9 @@ impl MatrixClientManager {
             let room = client.joined_rooms().into_iter()
                 .find(|room| room.room_id() == &parsed_room_id)
                 .ok_or_else(|| "You are no longer joined to this room".to_string())?;
-            let (livekit_url, jwt) = fetch_rtc_livekit_credentials(&client, &room, &service_url).await?;
+            let (livekit_url, jwt) = fetch_rtc_livekit_credentials(
+                &client, &room, &transport, member_id.as_deref()
+            ).await?;
             Ok(serde_json::json!({ "url": livekit_url, "jwt": jwt }).to_string())
         })
     }
