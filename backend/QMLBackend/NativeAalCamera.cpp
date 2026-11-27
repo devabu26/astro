@@ -289,7 +289,6 @@ bool NativeAalCamera::start(int cameraId, int sensorOrientation,
             << "size:" << m_width << "x" << m_height
             << "format: YUV420SP"
             << "sensorOrientation:" << m_sensorOrientation
-            << "frontFacing:" << m_frontFacing
             << "texture:" << m_previewTexture
             << "callback: enabled";
 
