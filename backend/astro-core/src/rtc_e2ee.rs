@@ -789,6 +789,11 @@ fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMed
     let bytes = decode_base64_no_pad(encoded_key)?;
     if bytes.len() != RTC_KEY_BYTES { return None; }
 
+    eprintln!(
+        "ASTRO RTC E2EE: received encrypted media-key event; event_type={}, sender={}, device={}, member_id={}, index={}, key_bytes={}",
+        event_type, info.sender, sender_device, member_id, index, bytes.len()
+    );
+
     Some(PendingMediaKey {
         room_id,
         member_id,
@@ -989,8 +994,16 @@ async fn publish_local_key_legacy(
         }
         if !device_is_cross_signed(client, &member.user_id, &member.device_id).await {
             rejected_not_owner_cross_signed += 1;
+            eprintln!(
+                "ASTRO RTC E2EE legacy: excluded member device by owner-cross-signing policy; user={}, device={}, member_id={}, reason=not_owner_cross_signed",
+                member.user_id, member.device_id, member.member_id
+            );
             continue;
         }
+        eprintln!(
+            "ASTRO RTC E2EE legacy: eligible key recipient; user={}, device={}, member_id={}",
+            member.user_id, member.device_id, member.member_id
+        );
         let Ok(device) = DeviceIdOrAllDevices::try_from(member.device_id.as_str()) else {
             continue;
         };
@@ -1070,13 +1083,27 @@ async fn try_store_received_key_legacy(
         return true;
     }
 
-    let Some(members) = legacy_memberships(room).await else { return false };
+    let Some(members) = legacy_memberships(room).await else {
+        eprintln!(
+            "ASTRO RTC E2EE legacy: incoming key is waiting for room-state membership; sender={}, device={}, member_id={}, index={}",
+            candidate.sender, candidate.sender_device, candidate.member_id, candidate.index
+        );
+        return false;
+    };
     let matching = members.iter().any(|member| {
         member.member_id == candidate.member_id
             && member.user_id == candidate.sender
             && member.device_id == candidate.sender_device
     });
     if !matching {
+        let observed_members = members.iter()
+            .map(|member| format!("{}|{}|{}", member.user_id, member.device_id, member.member_id))
+            .collect::<Vec<_>>()
+            .join(",");
+        eprintln!(
+            "ASTRO RTC E2EE legacy: incoming key does not match an active legacy member; sender={}, device={}, member_id={}, index={}, active_members=[{}]",
+            candidate.sender, candidate.sender_device, candidate.member_id, candidate.index, observed_members
+        );
         return false;
     }
 
