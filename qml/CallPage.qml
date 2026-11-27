@@ -1,6 +1,7 @@
 
 import QtQuick 2.7
 import QtQuick.Window 2.2
+import QtMultimedia 5.12
 import QtGraphicalEffects 1.0
 import Lomiri.Components 1.3
 import Astro.Backend 1.0
