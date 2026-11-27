@@ -1679,8 +1679,11 @@ public:
                     << "planes:" << frame.planeCount();
         }
 
+        const qint64 framePixelCount =
+            static_cast<qint64>(width) * static_cast<qint64>(height);
         if (width < 2 || height < 2 ||
-            width > 1920 || height > 1080 ||
+            width > 1920 || height > 1920 ||
+            framePixelCount > 1920LL * 1080LL ||
             (width & 1) || (height & 1)) {
             if (m_loggedInvalidDimensions.testAndSetOrdered(0, 1))
                 qWarning() << "RTC camera rejected frame dimensions:"
