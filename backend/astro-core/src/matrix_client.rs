@@ -4006,8 +4006,14 @@ impl MatrixClientManager {
                         }))
                     }
                     RoomEvent::ParticipantDisconnected(participant) => {
-                        let prefix = format!("{room_id}\u{1f}{}\u{1f}", participant.identity());
+                        let prefix = format!("{room_id}\\u{1f}{}\\u{1f}", participant.identity());
                         cancelled_prefixes.insert(prefix);
+                        tracing::info!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            participant_sid = %participant.sid(),
+                            "LiveKit participant disconnected"
+                        );
                         Some(serde_json::json!({
                             "room_id": room_id,
                             "type": "participant_disconnected",
@@ -4015,7 +4021,69 @@ impl MatrixClientManager {
                             "name": participant.name()
                         }))
                     }
+                    RoomEvent::Connected { participants_with_tracks } => {
+                        let participant_count = participants_with_tracks.len();
+                        let track_count: usize = participants_with_tracks
+                            .iter()
+                            .map(|(_, publications)| publications.len())
+                            .sum();
+                        tracing::info!(
+                            room_id = %room_id,
+                            participants = participant_count,
+                            published_tracks = track_count,
+                            "LiveKit room connected with existing remote publications"
+                        );
+                        for (participant, publications) in &participants_with_tracks {
+                            for publication in publications {
+                                tracing::info!(
+                                    room_id = %room_id,
+                                    participant = %participant.identity(),
+                                    participant_sid = %participant.sid(),
+                                    track_sid = %publication.sid(),
+                                    "LiveKit existing remote track publication"
+                                );
+                            }
+                        }
+                        None
+                    }
+                    RoomEvent::TrackPublished { participant, publication } => {
+                        tracing::info!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            participant_sid = %participant.sid(),
+                            track_sid = %publication.sid(),
+                            "LiveKit remote track published"
+                        );
+                        None
+                    }
+                    RoomEvent::TrackSubscriptionFailed { participant, track_sid, error } => {
+                        tracing::error!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            participant_sid = %participant.sid(),
+                            track_sid = %track_sid,
+                            error = ?error,
+                            "LiveKit remote track subscription failed"
+                        );
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "track_subscription_failed",
+                            "identity": participant.identity().to_string(),
+                            "track_sid": track_sid.to_string(),
+                            "error": format!("{error:?}")
+                        }))
+                    }
                     RoomEvent::TrackSubscribed { participant, track, .. } => {
+                        tracing::info!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            participant_sid = %participant.sid(),
+                            track_sid = %track.sid(),
+                            track_kind = ?track.kind(),
+                            track_source = ?track.source(),
+                            muted = track.is_muted(),
+                            "LiveKit remote track subscription succeeded"
+                        );
                         if let RemoteTrack::Video(video_track) = track {
                             let track_source = match video_track.source() {
                                 TrackSource::Camera => Some("camera"),
