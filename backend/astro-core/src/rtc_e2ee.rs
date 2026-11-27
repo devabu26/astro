@@ -1095,3 +1095,17 @@ fn decode_base64_no_pad(input: &str) -> Option<Vec<u8>> {
 
     Some(output)
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::modern_livekit_identity;
+
+    #[test]
+    fn msc4195_participant_identity_matches_spec_test_vector() {
+        assert_eq!(
+            modern_livekit_identity("@alice:example.com", "memberABC").unwrap(),
+            "M3VnsLXrkbxIDINXO64u8PZzFyD9ZYFiQULR2dshWYs"
+        );
+    }
+}
