@@ -361,7 +361,7 @@ Item {
             backend.stopRtcVideo(roomId)
         } else {
             pendingOperation = "startVideo"
-            backend.startRtcVideo(roomId, 360, 480)
+            backend.startRtcVideo(roomId, 480, 640)
         }
     }
 
