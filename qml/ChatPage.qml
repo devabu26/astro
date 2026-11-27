@@ -27,6 +27,7 @@ Item {
     property string selectedPreview: "Your Matrix client starts here."
     property string selectedRoomAvatarUrl: ""
     property string selectedRoomKind: ""
+    property bool selectedRoomEncrypted: false
 
     // MatrixRTC membership snapshots, indexed by room ID.
     property var rtcMembershipsByRoom: ({})
@@ -163,6 +164,7 @@ function openNotification(roomId, eventId) {
         root.selectedPreview = room.preview
         root.selectedRoomAvatarUrl = room.avatarUrl || ""
         root.selectedRoomKind = room.kind || "room"
+        root.selectedRoomEncrypted = room.isEncrypted === true
         found = true
         break
     }
@@ -174,6 +176,7 @@ function openNotification(roomId, eventId) {
         root.selectedPreview = ""
         root.selectedRoomAvatarUrl = ""
         root.selectedRoomKind = "room"
+        root.selectedRoomEncrypted = false
     }
 
     root.showConversation = true
@@ -263,6 +266,7 @@ function loadRooms(json, finished) {
                 colour: colour,
                 roomId: roomId,
                 kind: kind,
+                isEncrypted: room.is_encrypted === true,
                 unreadCount: Number(room.unread_count || 0),
                 mentionCount: Number(room.mention_count || 0),
                 parentSpaceIds: JSON.stringify(
@@ -1164,6 +1168,8 @@ function loadRooms(json, finished) {
                                         roomModel.get(i).avatarUrl
                                     root.selectedRoomKind =
                                         roomModel.get(i).kind || "room"
+                                    root.selectedRoomEncrypted =
+                                        roomModel.get(i).isEncrypted === true
                                     break
                                 }
                             }
@@ -1229,6 +1235,7 @@ function loadRooms(json, finished) {
                 roomId: root.selectedRoomId
                 roomName: root.selectedRoom
                 avatarUrl: root.selectedRoomAvatarUrl
+                isEncrypted: root.selectedRoomEncrypted
                 rtcMemberships:
                     root.rtcMembershipsByRoom[root.selectedRoomId] || []
                 rtcCallState:
