@@ -5603,7 +5603,7 @@ impl MatrixClientManager {
                     conditions.push(PushCondition::EventPropertyIs(
                         EventPropertyIsConditionData::new(
                             r"content.m\.mentions.room".to_owned(),
-                            serde_json::Value::Bool(true),
+                            true.into(),
                         ),
                     ));
                 } else {
