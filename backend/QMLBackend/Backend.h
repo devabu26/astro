@@ -5,7 +5,7 @@
 #include <QByteArray>
 #include <QPointer>
 
-#class QThread;
+class QThread;
 class QCamera;
 class QVideoFrame;
 class QImage;
