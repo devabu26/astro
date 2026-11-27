@@ -764,14 +764,34 @@ async fn publish_local_key(
 }
 
 fn parse_incoming_key(message: matrix_sdk::ToDeviceMessage) -> Option<PendingMediaKey> {
+    // Log receipt before parsing so we can distinguish an absent peer key
+    // from a message that arrives but is rejected by our format/identity checks.
+    let value: Value = match serde_json::from_str(message.raw.json().get()) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("ASTRO RTC E2EE: received subscribed to-device message with invalid JSON: {error}");
+            return None;
+        }
+    };
+    let event_type = value.get("type").and_then(Value::as_str).unwrap_or("<missing>");
+    let info = message.encryption_info.as_ref();
+    eprintln!(
+        "ASTRO RTC E2EE: observed subscribed to-device message; event_type={}, sender={}, device={}, encrypted={}",
+        event_type,
+        info.map(|info| info.sender.as_str()).unwrap_or("<unknown>"),
+        info.and_then(|info| info.sender_device.as_ref())
+            .map(|device| device.as_str()).unwrap_or("<unknown>"),
+        info.is_some()
+    );
+
     // Olm metadata authenticates the to-device sender. The associated
     // membership is checked later, including the MSC4153 owner-cross-signing
     // requirement, once its sticky event is available.
     let info = message.encryption_info?;
 
-    let value: Value = serde_json::from_str(message.raw.json().get()).ok()?;
     let event_type = value.get("type").and_then(Value::as_str)?;
     if event_type != RTC_KEY_EVENT && event_type != LEGACY_RTC_KEY_EVENT {
+        eprintln!("ASTRO RTC E2EE: ignoring subscribed to-device event type={event_type}");
         return None;
     }
     if value.get("sender").and_then(Value::as_str) != Some(info.sender.as_str()) {
