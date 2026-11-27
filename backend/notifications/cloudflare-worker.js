@@ -168,9 +168,9 @@ async function forwardToUbuntu(device, data, expiresAt) {
 
     const responseText = await response.text();
     if (!response.ok) {
-        throw new Error("Ubuntu Push returned HTTP " + response.status + ": "
-            + responseText.slice(0, 500));
+        throw new Error("Ubuntu Push returned HTTP " + response.status);
     }
+    return response.status;
 }
 
 export default {
@@ -206,21 +206,37 @@ export default {
         const roomId = safeString(notification.room_id);
         const call = getCallDetails(notification);
         const isCall = call !== null;
+        const matchingDevices = notification.devices.filter((device) => device
+            && device.app_id === ASTRO_APP_ID
+            && safeString(device.pushkey));
+
+        console.info("ASTRO PUSH: request received", {
+            deviceCount: notification.devices.length,
+            matchingDeviceCount: matchingDevices.length,
+            notificationKind: isCall ? "call" : "message",
+            hasEventId: Boolean(eventId),
+            hasRoomId: Boolean(roomId)
+        });
 
         if (!eventId || !roomId) {
+            console.warn("ASTRO PUSH: skipped request because event or room ID is missing");
             return jsonResponse({ rejected: [] });
         }
 
         if (isCall && call.expiresAtMs <= Date.now()) {
+            console.info("ASTRO PUSH: skipped expired call notification");
             return jsonResponse({ rejected: [] });
         }
 
+        if (matchingDevices.length === 0) {
+            console.warn("ASTRO PUSH: no devices matched app ID " + ASTRO_APP_ID);
+        }
+
+        let duplicateCount = 0;
+        let forwardedCount = 0;
+        const upstreamStatuses = [];
         const rejected = [];
-        const deliveries = notification.devices
-            .filter((device) => device
-                && device.app_id === ASTRO_APP_ID
-                && safeString(device.pushkey))
-            .map(async (device) => {
+        const deliveries = matchingDevices.map(async (device) => {
                 const privacyLevel = safeString(
                     device.data && device.data.privacy_level,
                     "sender_room"
@@ -234,6 +250,8 @@ export default {
                 const key = "push:" + dedupKey;
 
                 if (await isDuplicate(env, key)) {
+                    duplicateCount += 1;
+                    console.info("ASTRO PUSH: skipped duplicate delivery");
                     return;
                 }
 
@@ -242,8 +260,13 @@ export default {
                     : Date.now() + DEFAULT_MESSAGE_TTL_SECONDS * 1000;
 
                 try {
-                    await forwardToUbuntu(device, data, expiresAt);
+                    const upstreamStatus = await forwardToUbuntu(device, data, expiresAt);
                     await rememberDelivery(env, key);
+                    forwardedCount += 1;
+                    upstreamStatuses.push(upstreamStatus);
+                    console.info("ASTRO PUSH: forwarded notification to Ubuntu Push", {
+                        upstreamStatus
+                    });
                 } catch (error) {
                     console.error("ASTRO PUSH: delivery failed", error);
                     // A transient upstream error must be retried by the
@@ -255,12 +278,23 @@ export default {
         try {
             await Promise.all(deliveries);
         } catch (_) {
+            console.error("ASTRO PUSH: request failed while forwarding to Ubuntu Push", {
+                matchingDeviceCount: matchingDevices.length,
+                forwardedCount,
+                duplicateCount
+            });
             return jsonResponse({
                 errcode: "M_PUSH_GATEWAY_ERROR",
                 error: "Could not forward one or more notifications to Ubuntu Push"
             }, 502);
         }
 
+        console.info("ASTRO PUSH: request completed", {
+            matchingDeviceCount: matchingDevices.length,
+            forwardedCount,
+            duplicateCount,
+            upstreamStatuses
+        });
         return jsonResponse({ rejected });
     }
 };
