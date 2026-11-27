@@ -2727,6 +2727,15 @@ impl MatrixClientManager {
                 && client.available_sliding_sync_versions().await.iter()
                     .any(|version| matches!(version, Version::Native));
 
+            if livekit_transport.sfu_url.is_some()
+                && livekit_transport.legacy_service_url.is_none()
+                && !sticky_supported
+            {
+                return Err(
+                    "The homeserver advertises the MSC4195 LiveKit transport, but Astro cannot use it without MatrixRTC sticky-event support".into()
+                );
+            }
+
             let mut modern_membership: Option<serde_json::Value> = None;
             let mut member_id: Option<String> = None;
 
