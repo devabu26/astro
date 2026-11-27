@@ -947,10 +947,12 @@ void StorageWorker::pollRtcRemoteAudioFrames()
                     << "channels:" << outputFormat.channelCount();
         }
 
-        const qint16 *input = reinterpret_cast<const qint16 *>(frame->data);
         const int inputSamples = static_cast<int>(
             frame->len / sizeof(qint16)
         );
+        QVector<qint16> alignedInput(inputSamples);
+        std::memcpy(alignedInput.data(), frame->data, frame->len);
+        const qint16 *input = alignedInput.constData();
         const int inputChannels = static_cast<int>(frame->channels);
         const int outputChannels =
             m_rtcRemoteAudioOutput->format().channelCount();
