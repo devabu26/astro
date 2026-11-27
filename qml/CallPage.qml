@@ -1056,6 +1056,8 @@ Item {
             return
 
         foregroundCameraRestartTimer.stop()
+        foregroundCameraActivationTimer.stop()
+        foregroundCameraActivationAttempts = 0
         backgroundCameraStartTimer.stop()
         backgroundCameraRetryTimer.stop()
         nativeBackgroundCameraRetryScheduled = false
@@ -1581,6 +1583,17 @@ Item {
                 "status:", cameraStatus,
                 "active:", root.applicationActive
             )
+            if (cameraState === Camera.ActiveState &&
+                    cameraStatus === Camera.ActiveStatus &&
+                    root.applicationActive &&
+                    root.videoStarted) {
+                foregroundCameraActivationTimer.stop()
+                root.foregroundCameraActivationAttempts = 0
+                root.waitingForForegroundCamera = false
+                console.info(
+                    "ASTRO_BACKGROUND_CAMERA: foreground QML camera activation confirmed by state"
+                )
+            }
         }
     }
 
