@@ -424,10 +424,11 @@ QImage NativeAalCamera::convertYuv420Sp(
         for (int x = 0; x < m_width; ++x) {
             const int yy = qMax(0, int(yPlane[yRow + x]) - 16);
             const int chroma = chromaRow + (x & ~1);
-            // YUV420SP preview callback data is NV21: V then U.
-            // The ordering is the same for front- and rear-facing cameras.
-            const int v = int(vuPlane[chroma]) - 128;
-            const int u = int(vuPlane[chroma + 1]) - 128;
+            // Test the alternate semiplanar ordering (NV12: U then V).
+            // The device's libhybris callback appears not to match the
+            // standard NV21 ordering despite requesting YUV420SP.
+            const int u = int(vuPlane[chroma]) - 128;
+            const int v = int(vuPlane[chroma + 1]) - 128;
             const int c = 298 * yy;
             line[x] = qRgb(
                 qBound(0, (c + 409 * v + 128) >> 8, 255),
