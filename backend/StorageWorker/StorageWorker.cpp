@@ -249,6 +249,9 @@ void StorageWorker::openStorage(const QString &passphrase)
     if (m_rtcVideoPollTimer) {
         m_rtcVideoPollTimer->start();
     }
+    if (m_rtcAudioPollTimer) {
+        m_rtcAudioPollTimer->start();
+    }
 
     registerPushTokenIfReady();
 
@@ -274,6 +277,17 @@ void StorageWorker::closeStorage()
     if (m_rtcVideoPollTimer) {
         m_rtcVideoPollTimer->stop();
     }
+    if (m_rtcAudioPollTimer) {
+        m_rtcAudioPollTimer->stop();
+    }
+    if (m_rtcRemoteAudioOutput) {
+        m_rtcRemoteAudioOutput->stop();
+        m_rtcRemoteAudioOutput->deleteLater();
+        m_rtcRemoteAudioOutput = nullptr;
+        m_rtcRemoteAudioDevice = nullptr;
+    }
+    m_rtcRemoteAudioPending.clear();
+    m_loggedFirstRemoteRtcAudioFrame = false;
 
     // Clear the retained passphrase before closing the session.
     m_storagePassphrase.fill('\0');
