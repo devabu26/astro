@@ -811,27 +811,36 @@ async fn try_store_received_key(
         }
 
         if !device_is_cross_signed(client, &candidate.sender, &candidate.sender_device).await {
+            eprintln!(
+                "ASTRO RTC E2EE: rejected incoming MSC4195 key; sender device is not owner-cross-signed; sender={}, device={}, member_id={}",
+                candidate.sender, candidate.sender_device, candidate.member_id
+            );
             return true;
         }
 
+        let livekit_identity = match modern_livekit_identity(
+            candidate.sender.as_str(), &candidate.member_id
+        ) {
+            Ok(identity) => identity,
+            Err(error) => {
+                eprintln!("ASTRO RTC E2EE: could not derive MSC4195 participant identity: {error}");
+                return true;
+            }
+        };
         if let Ok(mut keys) = received_keys.lock() {
             keys.insert(
                 (candidate.member_id.clone(), candidate.index),
                 ReceivedMediaKey {
-                    livekit_identity: match modern_livekit_identity(
-                        candidate.sender.as_str(), &candidate.member_id
-                    ) {
-                        Ok(identity) => identity,
-                        Err(error) => {
-                            eprintln!("ASTRO RTC E2EE: could not derive MSC4195 participant identity: {error}");
-                            return true;
-                        }
-                    },
+                    livekit_identity,
                     bytes: candidate.bytes.clone(),
                     activate_at: Instant::now() + RTC_KEY_ACTIVATION_DELAY,
                 },
             );
         }
+        eprintln!(
+            "ASTRO RTC E2EE: accepted MSC4195 key index {}; sender={}, device={}, member_id={}",
+            candidate.index, candidate.sender, candidate.sender_device, candidate.member_id
+        );
         return true;
     }
 
@@ -1045,6 +1054,10 @@ async fn try_store_received_key_legacy(
     }
 
     if !device_is_cross_signed(client, &candidate.sender, &candidate.sender_device).await {
+        eprintln!(
+            "ASTRO RTC E2EE legacy: rejected incoming key; sender device is not owner-cross-signed; sender={}, device={}, member_id={}",
+            candidate.sender, candidate.sender_device, candidate.member_id
+        );
         return true;
     }
 
@@ -1058,6 +1071,10 @@ async fn try_store_received_key_legacy(
             },
         );
     }
+    eprintln!(
+        "ASTRO RTC E2EE legacy: accepted key index {}; sender={}, device={}, member_id={}",
+        candidate.index, candidate.sender, candidate.sender_device, candidate.member_id
+    );
     true
 }
 
