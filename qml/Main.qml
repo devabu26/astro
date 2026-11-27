@@ -122,16 +122,26 @@ MainView {
                 }
 
                 if (Qt.application.state === Qt.ApplicationActive) {
-                    incomingCallBanner.showIncomingCall(
-                        data.sender || "Someone",
-                        callRoomId,
-                        callEventId,
-                        data.call_intent || "unknown",
-                        callExpiry
-                    )
-                    notificationPushClient.clearPersistent([
-                        data.tag || ("astro-call-" + callEventId)
-                    ])
+                    if (root.matrixAuthenticated && root.matrixRoomsReady) {
+                        incomingCallBanner.showIncomingCall(
+                            data.sender || "Someone",
+                            callRoomId,
+                            callEventId,
+                            data.call_intent || "unknown",
+                            callExpiry
+                        )
+                        notificationPushClient.clearPersistent([
+                            data.tag || ("astro-call-" + callEventId)
+                        ])
+                    } else {
+                        pendingNotificationRoomId = callRoomId
+                        pendingNotificationEventId = callEventId
+                        pendingIncomingCallPush = true
+                        pendingIncomingCallSender = data.sender || "Someone"
+                        pendingIncomingCallIntent = data.call_intent || "unknown"
+                        pendingIncomingCallExpiry = callExpiry
+                        root.openPendingNotificationIfReady()
+                    }
                 }
                 return
             }
