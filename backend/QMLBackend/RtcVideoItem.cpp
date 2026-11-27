@@ -38,6 +38,7 @@ void RtcVideoItem::setRoomId(const QString &roomId)
     }
     m_roomId = roomId;
     m_loggedFirstRemoteFrame = false;
+    m_loggedFirstLocalFrame = false;
     clearFrame();
 }
 
@@ -48,6 +49,7 @@ void RtcVideoItem::setIdentity(const QString &identity)
     }
     m_identity = identity;
     m_loggedFirstRemoteFrame = false;
+    m_loggedFirstLocalFrame = false;
     clearFrame();
 }
 
@@ -66,9 +68,10 @@ void RtcVideoItem::setBackend(Backend *backend)
         return;
     }
 
-    if (m_frameConnection) {
+    if (m_frameConnection)
         disconnect(m_frameConnection);
-    }
+    if (m_localFrameConnection)
+        disconnect(m_localFrameConnection);
 
     m_backend = backend;
 
@@ -78,6 +81,12 @@ void RtcVideoItem::setBackend(Backend *backend)
             &Backend::matrixRtcRemoteVideoFrame,
             this,
             &RtcVideoItem::receiveRemoteFrame
+        );
+        m_localFrameConnection = connect(
+            m_backend,
+            &Backend::matrixRtcLocalVideoFrame,
+            this,
+            &RtcVideoItem::receiveLocalFrame
         );
     }
 
@@ -110,6 +119,27 @@ void RtcVideoItem::receiveRemoteFrame(
                        << "bytes:" << i420.size();
         }
         m_loggedFirstRemoteFrame = true;
+    }
+}
+
+void RtcVideoItem::receiveLocalFrame(
+    const QString &roomId,
+    int width,
+    int height,
+    const QByteArray &i420
+)
+{
+    if (m_source != QStringLiteral("local") || roomId != m_roomId)
+        return;
+
+    setI420Frame(i420, width, height);
+
+    if (!m_loggedFirstLocalFrame) {
+        qInfo() << "RTC local camera frame displayed:"
+                << width << "x" << height
+                << "bytes:" << i420.size()
+                << "accepted:" << hasFrame();
+        m_loggedFirstLocalFrame = true;
     }
 }
 
