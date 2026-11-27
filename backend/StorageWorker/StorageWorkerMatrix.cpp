@@ -910,8 +910,17 @@ void StorageWorker::pollRtcRemoteAudioFrames()
                 outputFormat.setChannelCount(1);
             }
             if (!outputDevice.isFormatSupported(outputFormat)) {
-                qWarning() << "ASTRO RTC AUDIO: output device does not support"
-                           << "48 kHz signed 16-bit PCM"
+                outputFormat = outputDevice.nearestFormat(outputFormat);
+            }
+            if (outputFormat.codec() != QStringLiteral("audio/pcm") ||
+                outputFormat.sampleSize() != 16 ||
+                outputFormat.sampleType() != QAudioFormat::SignedInt ||
+                outputFormat.byteOrder() != QAudioFormat::LittleEndian ||
+                (outputFormat.channelCount() != 1 &&
+                 outputFormat.channelCount() != 2) ||
+                outputFormat.sampleRate() <= 0 ||
+                !outputDevice.isFormatSupported(outputFormat)) {
+                qWarning() << "ASTRO RTC AUDIO: no supported signed 16-bit PCM output format"
                            << "preferred:" << outputDevice.preferredFormat().sampleRate()
                            << outputDevice.preferredFormat().channelCount()
                            << outputDevice.preferredFormat().sampleSize();
@@ -946,19 +955,48 @@ void StorageWorker::pollRtcRemoteAudioFrames()
         const int outputChannels =
             m_rtcRemoteAudioOutput->format().channelCount();
 
+        const int inputSamplesPerChannel = inputSamples / inputChannels;
+        const int outputRate = m_rtcRemoteAudioOutput->format().sampleRate();
+        const int outputSamplesPerChannel = qMax(
+            1,
+            qRound(static_cast<double>(inputSamplesPerChannel) *
+                   outputRate / static_cast<double>(frame->sample_rate))
+        );
+
         QByteArray pcm;
         pcm.resize(
-            (inputSamples / inputChannels) *
-            outputChannels * static_cast<int>(sizeof(qint16))
+            outputSamplesPerChannel * outputChannels *
+            static_cast<int>(sizeof(qint16))
         );
         qint16 *output = reinterpret_cast<qint16 *>(pcm.data());
-        const int samplesPerChannel = inputSamples / inputChannels;
 
-        for (int sample = 0; sample < samplesPerChannel; ++sample) {
-            qint16 left = input[sample * inputChannels];
-            qint16 right = inputChannels == 2
-                ? input[sample * inputChannels + 1] : left;
+        auto inputSample = [input, inputChannels, inputSamplesPerChannel](
+            int sample, int channel
+        ) -> qint16 {
+            sample = qBound(0, sample, inputSamplesPerChannel - 1);
+            if (inputChannels == 1)
+                return input[sample];
+            return input[sample * inputChannels + channel];
+        };
 
+        for (int sample = 0; sample < outputSamplesPerChannel; ++sample) {
+            const double sourcePosition =
+                static_cast<double>(sample) * frame->sample_rate / outputRate;
+            const int sourceIndex = static_cast<int>(sourcePosition);
+            const double fraction = sourcePosition - sourceIndex;
+            auto interpolate = [&](int channel) -> qint16 {
+                const qint16 first = inputSample(sourceIndex, channel);
+                const qint16 second = inputSample(sourceIndex + 1, channel);
+                const double value = first +
+                    (static_cast<double>(second) - first) * fraction;
+                return static_cast<qint16>(qBound(
+                    -32768, static_cast<int>(qRound(value)), 32767
+                ));
+            };
+
+            const qint16 left = interpolate(0);
+            const qint16 right = inputChannels == 2
+                ? interpolate(1) : left;
             if (outputChannels == 1) {
                 output[sample] = static_cast<qint16>(
                     (static_cast<int>(left) + static_cast<int>(right)) / 2
@@ -981,7 +1019,7 @@ void StorageWorker::pollRtcRemoteAudioFrames()
 
         // Keep at most one second of pending PCM. If the audio device stalls,
         // discard the oldest samples instead of building unbounded latency.
-        constexpr int maxPendingBytes = 48000 * 2 * 2;
+        const int maxPendingBytes = outputRate * outputChannels * 2;
         if (m_rtcRemoteAudioPending.size() + pcm.size() > maxPendingBytes) {
             const int excess = m_rtcRemoteAudioPending.size() + pcm.size()
                 - maxPendingBytes;
