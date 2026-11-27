@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QByteArray>
 #include <QPointer>
 
@@ -143,6 +144,7 @@ public:
         int height
     );
     Q_INVOKABLE void stopRtcVideo(const QString &roomId);
+    Q_INVOKABLE QStringList rtcCameraResolutions();
     Q_INVOKABLE void startRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
     Q_INVOKABLE void stopRtcScreenShare(const QString &roomId);
     Q_INVOKABLE void switchRtcCamera(const QString &roomId);
@@ -567,6 +569,8 @@ private:
     QString m_rtcCameraRoomId;
     QString m_nativeRtcCameraDeviceId;
     bool m_rtcCameraSwitchPending = false;
+    int m_rtcCameraOutputWidth = 480;
+    int m_rtcCameraOutputHeight = 640;
 
     // ---------------------------------------------------------
     // Internal helpers
