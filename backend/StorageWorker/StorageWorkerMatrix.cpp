@@ -2148,7 +2148,8 @@ void StorageWorker::startRtcBackgroundCamera(
             m_rtcBackgroundCameraRestartDeviceId = deviceId;
             qInfo() << "RTC background camera restart deferred until unload completes";
             return;
-        } else if (m_rtcCamera) {
+        } else if (cameraGuard && m_rtcCamera == cameraGuard.data() &&
+                            m_rtcCameraGeneration == cameraGeneration) {
             // Never destroy a QCamera while its backend may still be using
             // its viewfinder. All camera replacement must pass through the
             // asynchronous unload path.
@@ -2194,12 +2195,14 @@ void StorageWorker::startRtcBackgroundCamera(
                         << "parent:" << this;
 
                 m_rtcCamera = new QCamera(selected, this);
+                const quint64 cameraGeneration = ++m_rtcCameraGeneration;
+                const QPointer<QCamera> cameraGuard(m_rtcCamera);
 
                 connect(
                     m_rtcCamera,
                     &QCamera::stateChanged,
                     this,
-                    [this, roomId](QCamera::State state) {
+                    [this, roomId, cameraGuard, cameraGeneration](QCamera::State state) {
                         if (m_rtcCamera) {
                             qInfo() << "ASTRO_BACKGROUND_CAMERA: native state changed"
                                     << "room:" << roomId
@@ -2216,6 +2219,9 @@ void StorageWorker::startRtcBackgroundCamera(
                     &QCamera::statusChanged,
                     this,
                     [this, roomId](QCamera::Status status) {
+                        if (!cameraGuard || m_rtcCamera != cameraGuard.data() ||
+                            m_rtcCameraGeneration != cameraGeneration)
+                            return;
                         qInfo() << "ASTRO_BACKGROUND_CAMERA: native status changed"
                                 << "room:" << roomId
                                 << "status:" << static_cast<int>(status)
@@ -2233,6 +2239,9 @@ void StorageWorker::startRtcBackgroundCamera(
                     QOverload<QCamera::Error>::of(&QCamera::error),
                     this,
                     [this, roomId](QCamera::Error error) {
+                        if (!cameraGuard || m_rtcCamera != cameraGuard.data() ||
+                            m_rtcCameraGeneration != cameraGeneration)
+                            return;
                         qWarning() << "ASTRO_BACKGROUND_CAMERA: native camera error signal"
                                    << "room:" << roomId
                                    << "error:" << static_cast<int>(error)
@@ -2278,9 +2287,10 @@ void StorageWorker::startRtcBackgroundCamera(
                     &QCamera::statusChanged,
                     this,
                     [this, roomId](QCamera::Status status) {
-                        if (!m_rtcBackgroundCameraStartPending ||
-                            m_rtcBackgroundCameraPendingRoomId != roomId ||
-                            !m_rtcCamera)
+                        if (!cameraGuard || m_rtcCamera != cameraGuard.data() ||
+                            m_rtcCameraGeneration != cameraGeneration ||
+                            !m_rtcBackgroundCameraStartPending ||
+                            m_rtcBackgroundCameraPendingRoomId != roomId)
                             return;
 
                         qInfo() << "RTC background camera status:"
@@ -2486,7 +2496,7 @@ void StorageWorker::startRtcBackgroundCamera(
                             );
                         }
                     },
-                    Qt::QueuedConnection
+                    Qt::AutoConnection
                 );
 
                 qInfo() << "ASTRO_BACKGROUND_CAMERA: native camera status handler connected"
@@ -2498,7 +2508,9 @@ void StorageWorker::startRtcBackgroundCamera(
                     QOverload<QCamera::Error>::of(&QCamera::error),
                     this,
                     [this, roomId](QCamera::Error cameraError) {
-                        if (cameraError == QCamera::NoError || !m_rtcCamera)
+                        if (!cameraGuard || m_rtcCamera != cameraGuard.data() ||
+                            m_rtcCameraGeneration != cameraGeneration ||
+                            cameraError == QCamera::NoError)
                             return;
 
                         const QString message = m_rtcCamera->errorString();
@@ -2539,6 +2551,10 @@ void StorageWorker::startRtcBackgroundCamera(
                         << "device:" << selectedDeviceId
                         << "thread:" << QThread::currentThreadId();
                 m_rtcCamera->load();
+                qInfo() << "ASTRO_BACKGROUND_CAMERA: asynchronous load state"
+                        << "status:" << static_cast<int>(m_rtcCamera->status())
+                        << "state:" << static_cast<int>(m_rtcCamera->state())
+                        << "generation:" << cameraGeneration;
                 qInfo() << "ASTRO_BACKGROUND_CAMERA: QCamera::load returned"
                         << "statusAfter:" << static_cast<int>(m_rtcCamera->status())
                         << "stateAfter:" << static_cast<int>(m_rtcCamera->state())
@@ -2555,7 +2571,9 @@ void StorageWorker::startRtcBackgroundCamera(
                 // does not mean that capture has started. Wait for ActiveStatus
                 // and fail explicitly if the backend never activates.
                 QTimer::singleShot(8000, this, [this, roomId]() {
-                    if (!m_rtcBackgroundCameraStartPending ||
+                    if (!cameraGuard || m_rtcCamera != cameraGuard.data() ||
+                        m_rtcCameraGeneration != cameraGeneration ||
+                        !m_rtcBackgroundCameraStartPending ||
                         m_rtcBackgroundCameraPendingRoomId != roomId)
                         return;
 
@@ -2663,6 +2681,9 @@ void StorageWorker::stopRtcBackgroundCamera(const QString &roomId)
     if (!cameraToUnload)
         return;
 
+    const quint64 cameraGeneration = m_rtcCameraGeneration;
+    const QPointer<QCamera> cameraGuard(cameraToUnload);
+
     // QCamera::stop() only returns to LoadedState and keeps the device open.
     // unload() closes the device asynchronously. Keep the camera and its
     // viewfinder alive until the backend confirms UnloadedStatus.
@@ -2670,8 +2691,9 @@ void StorageWorker::stopRtcBackgroundCamera(const QString &roomId)
         cameraToUnload,
         &QCamera::statusChanged,
         this,
-        [this, cameraToUnload](QCamera::Status status) {
-            if (cameraToUnload != m_rtcCamera ||
+        [this, cameraGuard, cameraGeneration](QCamera::Status status) {
+            if (!cameraGuard || cameraGuard.data() != m_rtcCamera ||
+                cameraGeneration != m_rtcCameraGeneration ||
                 !m_rtcBackgroundCameraStopPending ||
                 status != QCamera::UnloadedStatus) {
                 return;
@@ -2685,11 +2707,16 @@ void StorageWorker::stopRtcBackgroundCamera(const QString &roomId)
             << m_rtcBackgroundCameraStopRoomId
             << "current status:" << static_cast<int>(cameraToUnload->status());
 
-    cameraToUnload->unload();
+    if (!cameraGuard || cameraGuard.data() != m_rtcCamera ||
+        cameraGeneration != m_rtcCameraGeneration)
+        return;
+    cameraGuard->unload();
 
     // Some backends complete unload synchronously and may not emit another
     // statusChanged notification after the call returns.
-    if (cameraToUnload->status() == QCamera::UnloadedStatus)
+    if (cameraGuard && cameraGuard.data() == m_rtcCamera &&
+        cameraGeneration == m_rtcCameraGeneration &&
+        cameraGuard->status() == QCamera::UnloadedStatus)
         finishRtcBackgroundCameraStop();
 }
 
@@ -4239,6 +4266,7 @@ void StorageWorker::redactRoomEvent(
 void StorageWorker::stopRtcCamera()
 {
     QMutexLocker frameLocker(&m_rtcCameraFrameMutex);
+    ++m_rtcCameraGeneration;
 
     if (m_rtcCamera) {
         m_rtcCamera->stop();
