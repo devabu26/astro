@@ -24,9 +24,13 @@ use matrix_sdk::ruma::push::{
     EventPropertyIsConditionData, HttpPusherData, PushCondition, RuleKind, Tweak,
 };
 use matrix_sdk::{
-    config::SyncSettings, ruma::room::RoomType, store::RoomLoadSettings, Client, LoopCtrl,
-    Room, RoomMemberships, SqliteStoreConfig, TransmissionProgress,
+    config::SyncSettings,
+    encryption::{BackupDownloadStrategy, EncryptionSettings},
+    ruma::room::RoomType,
+    store::RoomLoadSettings,
+    Client, LoopCtrl, Room, RoomMemberships, SqliteStoreConfig, TransmissionProgress,
 };
+use matrix_sdk_base::crypto::{CollectStrategy, DecryptionSettings, TrustRequirement};
 use livekit::prelude::{LocalAudioTrack, LocalVideoTrack, LocalTrack, PlatformAudio, RemoteTrack, Room as LiveKitRoom, RoomEvent, RoomOptions, TrackSource};
 use livekit::options::TrackPublishOptions;
 use livekit::e2ee::{
@@ -52,6 +56,9 @@ use matrix_sdk_ui::spaces::SpaceService;
 use matrix_sdk_ui::timeline::{
     MembershipChange, Timeline, TimelineBuilder, TimelineEventItemId,
     TimelineItem, TimelineItemContent,
+};
+use matrix_sdk_ui::unable_to_decrypt_hook::{
+    UnableToDecryptHook, UnableToDecryptInfo, UtdHookManager,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::c_void;
@@ -390,6 +397,26 @@ fn timeline_item_to_json(
     }))
 }
 
+/// Reports Matrix SDK undecryptable-event causes without logging message content.
+#[derive(Debug)]
+struct AstroUnableToDecryptLogger;
+
+impl UnableToDecryptHook for AstroUnableToDecryptLogger {
+    fn on_utd(&self, info: UnableToDecryptInfo) {
+        let late_decryption_ms = info.time_to_decrypt.map(|duration| duration.as_millis());
+        eprintln!(
+            "ASTRO E2EE UTD: event_id={}, cause={:?}, late_decryption_ms={:?}, event_local_age_ms={}, own_identity_trusted={}, sender_homeserver={}, own_homeserver={:?}",
+            info.event_id,
+            info.cause,
+            late_decryption_ms,
+            info.event_local_age_millis,
+            info.user_trusts_own_identity,
+            info.sender_homeserver,
+            info.own_homeserver
+        );
+    }
+}
+
 struct SyncTask {
     cancel: tokio::sync::oneshot::Sender<()>,
     thread: std::thread::JoinHandle<()>,
@@ -697,6 +724,7 @@ fn rtc_random_member_id() -> Result<String, String> {
 
 pub struct MatrixClientManager {
     client: Option<Client>,
+    utd_hook: Arc<UtdHookManager>,
     rtc_livekit_audio_sessions: HashMap<String, LiveKitAudioSession>,
     rtc_pending_screenshare_stops: HashMap<String, Arc<Mutex<Option<Result<(), String>>>>>,
     rtc_remote_video_frames: Arc<Mutex<VecDeque<RtcRemoteVideoFrame>>>,
@@ -808,6 +836,21 @@ impl MatrixClientManager {
             Client::builder()
                 .homeserver_url(homeserver)
                 .handle_refresh_tokens()
+                // Chat E2EE trust policy: only share room keys with devices
+                // signed by their owner's cross-signing identity, and only
+                // decrypt messages from cross-signed devices.
+                .with_room_key_recipient_strategy(CollectStrategy::IdentityBasedStrategy)
+                .with_decryption_settings(DecryptionSettings {
+                    sender_device_trust_requirement: TrustRequirement::CrossSigned,
+                })
+                // If an existing server-side backup key is available, retry
+                // a failed Megolm decryption against that backup. Do not
+                // automatically create backups or bootstrap cross-signing.
+                .with_encryption_settings(EncryptionSettings {
+                    auto_enable_cross_signing: false,
+                    backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
+                    auto_enable_backups: false,
+                })
                 .sqlite_store_with_config_and_cache_path(config, Some(database_path))
                 .build()
                 .await
@@ -815,6 +858,20 @@ impl MatrixClientManager {
         })?;
 
         eprintln!("ASTRO DEBUG: Matrix client build completed");
+
+        let utd_hook = runtime.block_on(async {
+            let mut hook = UtdHookManager::new(
+                Arc::new(AstroUnableToDecryptLogger),
+                client.clone(),
+            )
+            .with_max_delay(Duration::from_secs(15));
+
+            if let Err(error) = hook.reload_from_store().await {
+                eprintln!("ASTRO E2EE UTD: could not restore diagnostic history: {error}");
+            }
+
+            Arc::new(hook)
+        });
 
         // Incoming verification requests are collected here and delivered
         // to the UI through Astro's existing polling path.
@@ -896,6 +953,7 @@ impl MatrixClientManager {
             active_verifications: HashMap::new(),
             last_verification_states: HashMap::new(),
             client: Some(client),
+            utd_hook,
             rtc_livekit_audio_sessions: HashMap::new(),
             rtc_pending_screenshare_stops: HashMap::new(),
             rtc_remote_video_frames: Arc::new(Mutex::new(VecDeque::new())),
@@ -2197,6 +2255,7 @@ impl MatrixClientManager {
 
         let (timeline, json, update_stream) = self.runtime.block_on(async {
             let timeline = TimelineBuilder::new(&room)
+                .with_unable_to_decrypt_hook(Arc::clone(&self.utd_hook))
                 .build()
                 .await
                 .map_err(|error| format!("Could not build room timeline: {error}"))?;
