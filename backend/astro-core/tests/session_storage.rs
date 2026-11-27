@@ -40,7 +40,7 @@ fn session_round_trip_and_wrong_passphrase() {
         &path,
         "correct-test-passphrase",
         TEST_HOMESERVER,
-        TEST_STORE_ID,
+        Some(TEST_STORE_ID),
         &original,
     )
     .unwrap();
@@ -70,7 +70,7 @@ fn session_file_does_not_contain_plaintext_secrets() {
         &path,
         "correct-test-passphrase",
         TEST_HOMESERVER,
-        TEST_STORE_ID,
+        Some(TEST_STORE_ID),
         &session,
     )
     .unwrap();
@@ -121,7 +121,7 @@ fn empty_homeserver_is_rejected() {
         &path,
         "test-passphrase",
         "",
-        TEST_STORE_ID,
+        Some(TEST_STORE_ID),
         &test_session(),
     );
 
@@ -137,7 +137,7 @@ fn invalid_store_id_is_rejected() {
         &path,
         "test-passphrase",
         TEST_HOMESERVER,
-        "invalid-store-id",
+        Some("invalid-store-id"),
         &test_session(),
     );
 
