@@ -12,6 +12,7 @@ Item {
 
     signal acceptRequested(string roomId, string eventId)
     signal declineRequested(string roomId, string eventId)
+    signal dismissRequested(string roomId, string eventId)
     signal alertRequested()
 
     visible: roomId !== ""
@@ -103,7 +104,10 @@ Item {
 
                 Button {
                     text: "Dismiss"
-                    onClicked: root.clear()
+                    onClicked: {
+                        root.dismissRequested(root.roomId, root.eventId)
+                        root.clear()
+                    }
                 }
             }
         }
