@@ -578,6 +578,7 @@ private:
     // Polls retained timeline subscriptions on this worker's thread.
     QTimer *m_timelinePollTimer = nullptr;
     QTimer *m_rtcVideoPollTimer = nullptr;
+    QTimer *m_rtcAudioPollTimer = nullptr;
     bool m_loggedFirstRemoteRtcFrame = false;
 
     // Retained only while encrypted storage is unlocked.
