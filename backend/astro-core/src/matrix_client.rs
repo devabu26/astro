@@ -1308,16 +1308,35 @@ impl MatrixClientManager {
                         .await
                         .unwrap_or_default();
 
-                    let other_member = members
+                    let other_members: Vec<_> = members
                         .iter()
-                        .find(|member| Some(member.user_id()) != client.user_id());
+                        .filter(|member| Some(member.user_id()) != client.user_id())
+                        .collect();
 
-                    let name = other_member
-                        .and_then(|member| member.display_name().map(str::to_owned))
-                        .or_else(|| info.name().map(str::to_owned))
-                        .unwrap_or_else(|| room_id.clone());
+                    let participant_names: Vec<String> = other_members
+                        .iter()
+                        .map(|member| {
+                            member
+                                .display_name()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| member.user_id().to_string())
+                        })
+                        .collect();
 
-                    let avatar_url = other_member
+                    let name = if other_members.len() > 1 {
+                        let first = participant_names.get(0).cloned().unwrap_or_default();
+                        let second = participant_names.get(1).cloned().unwrap_or_default();
+                        format!("{}+{} ({})", first, second, members.len())
+                    } else {
+                        participant_names
+                            .first()
+                            .cloned()
+                            .or_else(|| info.name().map(str::to_owned))
+                            .unwrap_or_else(|| room_id.clone())
+                    };
+
+                    let avatar_url = other_members
+                        .first()
                         .and_then(|member| member.avatar_url().map(ToString::to_string))
                         .or_else(|| info.avatar_url().map(ToString::to_string));
 
@@ -2049,16 +2068,35 @@ impl MatrixClientManager {
                         .await
                         .unwrap_or_default();
 
-                    let other_member = members
+                    let other_members: Vec<_> = members
                         .iter()
-                        .find(|member| Some(member.user_id()) != client.user_id());
+                        .filter(|member| Some(member.user_id()) != client.user_id())
+                        .collect();
 
-                    let name = other_member
-                        .and_then(|member| member.display_name().map(str::to_owned))
-                        .or_else(|| info.name().map(str::to_owned))
-                        .unwrap_or_else(|| room_id.clone());
+                    let participant_names: Vec<String> = other_members
+                        .iter()
+                        .map(|member| {
+                            member
+                                .display_name()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| member.user_id().to_string())
+                        })
+                        .collect();
 
-                    let avatar_url = other_member
+                    let name = if other_members.len() > 1 {
+                        let first = participant_names.get(0).cloned().unwrap_or_default();
+                        let second = participant_names.get(1).cloned().unwrap_or_default();
+                        format!("{}+{} ({})", first, second, members.len())
+                    } else {
+                        participant_names
+                            .first()
+                            .cloned()
+                            .or_else(|| info.name().map(str::to_owned))
+                            .unwrap_or_else(|| room_id.clone())
+                    };
+
+                    let avatar_url = other_members
+                        .first()
                         .and_then(|member| member.avatar_url().map(ToString::to_string))
                         .or_else(|| info.avatar_url().map(ToString::to_string));
 
