@@ -1,9 +1,21 @@
 # astro
 
-Matrix Client For Ubuntu Touch
+Native Matrix Client For Ubuntu Touch, [Qt/QML, a C++ backend and a Rust Matrix core];
+
+This is an early release of the app! There are still some performance optimizations, but works well! I tried really hard with this, and yes I did use some AI tools (wouldn't have been possible alone otherwise).
 
 https://github.com/devabu26/astro
 
+
+currently supports:
+E2EE,
+Video Calls, 
+Rooms and Spaces -> cannot currently join/leave/edit rooms+spaces,
+Live updating chats, -> emoji+replies+edit+delete,
+Device verification + Handling,
+
+Working now on stability fixes, 
+intended next work will commence on adding / editing rooms and friends and also adding more customization settings.
 
 ## License
 
