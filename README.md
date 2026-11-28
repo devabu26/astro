@@ -1,6 +1,6 @@
 <p align="center" color:blue>
   <img src="https://github.com/devabu26/astro/blob/main/assets/logo.svg" alt="Astro" width = 200 height = 200> <br>
-  ## <img src="https://img.shields.io/badge/ASTRO-7B61FF" />
+  <img src="https://img.shields.io/badge/ASTRO-7B61FF" />
 </p>
   
 <p align="center">
