@@ -680,7 +680,8 @@ MainView {
             roomId: root.callRoomId
             roomName: root.callRoomName
             roomEncrypted: chatPage.roomIsEncrypted(root.callRoomId)
-            directCall: chatPage.roomIsDirect(root.callRoomId) &&
+            directCall: chatPage.roomIsDirect(root.callRoomId)
+            autoHangup: chatPage.roomIsDirect(root.callRoomId) &&
                         chatPage.roomMemberCount(root.callRoomId) === 2
             incomingCall: root.incomingCall
             audioState: chatPage.rtcAudioStatesByRoom[root.callRoomId] || ({})
