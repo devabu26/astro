@@ -1,131 +1,170 @@
-# astro
+# 🌌 Astro
 
-Native Matrix Client For Ubuntu Touch, [Qt/QML, a C++ backend and a Rust Matrix core];
+<p align="center">
+  <strong>A native Matrix client for Ubuntu Touch</strong><br>
+  Private conversations, rich media and real-time calls — built for the Ubuntu Touch experience.
+</p>
 
-This is an early release of the app! There are still some performance optimizations, but works well! I tried really hard with this, and yes I did use some AI tools (wouldn't have been possible alone otherwise).
+<p align="center">
+  <a href="https://github.com/devabu26/astro"><img src="https://img.shields.io/badge/platform-Ubuntu%20Touch-E95420?logo=ubuntu&logoColor=white" alt="Ubuntu Touch"></a>
+  <a href="https://matrix.org/"><img src="https://img.shields.io/badge/protocol-Matrix-0DBD8B?logo=matrix&logoColor=white" alt="Matrix"></a>
+  <img src="https://img.shields.io/badge/language-C%2B%2B%20%7C%20Rust%20%7C%20QML-6C8EBF" alt="C++, Rust and QML">
+  <img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0">
+  <img src="https://img.shields.io/badge/status-early%20release-orange" alt="Early release">
+</p>
 
-https://github.com/devabu26/astro
+Astro is an open-source Matrix client built specifically for Ubuntu Touch. It combines a Qt/QML interface with a C++ application backend and a Rust-powered Matrix core.
 
+> **Project status:** Astro is in early release. Core messaging and calling features are available, while stability, performance and room-management capabilities continue to be developed.
 
-currently supports:
-E2EE,
-Video Calls, 
-Rooms and Spaces -> cannot currently join/leave/edit rooms+spaces,
-Live updating chats, -> emoji+replies+edit+delete,
-Device verification + Handling,
+## ✨ Features
 
-Working now on stability fixes, 
-intended next work will commence on adding / editing rooms and friends and also adding more customization settings.
+### 💬 Messaging and conversations
+- Live-updating Matrix room timelines.
+- Room and Space browsing.
+- Message replies, editing and deletion.
+- Emoji support.
+- Unread-message and mention tracking.
+- Older-message pagination.
 
-Building Astro for Ubuntu Touch
+### 🔐 Privacy and security
+- Matrix end-to-end encrypted (E2EE) conversations.
+- Matrix device verification and device handling.
+- Encrypted event and media support.
 
-Astro is a native Matrix client for Ubuntu Touch. It is built using Clickable, Qt/QML, C++, and Rust.
+### 📷 Media and calls
+- Image and video content in conversations.
+- Image viewer with pinch-to-zoom and panning.
+- Voice and video calling.
+- Front and rear camera support.
+- Camera rotation handling and video resolution controls.
+- Call controls and encrypted-call indication.
 
-##Building
-This guide covers building the ARM64 Ubuntu Touch application from source and deploying it to a device.
+### 🔔 Ubuntu Touch integration
+- Native Ubuntu Touch interface.
+- In-app notification banners.
+- Matrix-driven notification handling and push-notification integration.
+- ARM64 Click packaging for Ubuntu Touch devices.
 
-1. Build environment
-The current development configuration uses:
-#Component
-Version / configuration
-#Host OS
-Fedora KDE
-#Build system
-Clickable 8.10.0
-#Target architecture
-ARM64 (aarch64)
-#Ubuntu SDK
-ubuntu-sdk-20.04.1
-#Build container
-docker.io/clickable/amd64-20.04-arm64
-#UI framework
-Qt 5 / QML
-#Device platform
-Ubuntu Touch 24.04
+## 🚧 Known limitations and work in progress
 
-#Matrix backend
-Rust Matrix SDK
-Native backend
-C++ / Qt
-The build is container-based, so the Ubuntu SDK environment is provided by the Clickable build configuration rather than requiring a complete Ubuntu development environment on Fedora.
+Astro is actively developed. Some capabilities are not yet complete:
 
-2. Requirements
-Install and configure:
-#Git
-#Clickable 8.10.0
-#Podman or Docker, configured for Clickable
-#Android Debug Bridge (adb) for USB device deployment
-#An Ubuntu Touch device with Developer Mode enabled
+- Joining, leaving and editing rooms or Spaces is not currently supported.
+- Room and contact management is still planned.
+- Additional customisation settings are planned.
+- Media playback, calling stability and performance continue to be refined.
 
-#Verify the installed tools:
-git --version
-clickable --version
-adb version
+## 🛠️ Technology
 
-3. Get the source code
+| Component | Technology |
+| --- | --- |
+| User interface | Qt 5 / QML |
+| Native application backend | C++ / Qt |
+| Matrix protocol implementation | Rust Matrix SDK |
+| Messaging protocol | Matrix |
+| Target platform | Ubuntu Touch |
+| Target architecture | ARM64 (AArch64) |
+| Build system | Clickable / CMake |
 
-#Clone the repository:
-git clone https://github.com/devabu26/Astro.git
-cd Astro
+## 🧱 Building from source
 
-#Switch to the main development branch:
+These instructions build Astro for an Ubuntu Touch device. The repository's `clickable.yaml` is the authoritative source for the current build configuration.
+
+### Requirements
+
+- Git
+- [Clickable](https://clickable-ut.dev/) **8.9.0 or newer**
+- Docker or Podman configured for Clickable
+- An Ubuntu Touch device with Developer Mode enabled (for installation and testing)
+- ADB for USB device access
+
+The Clickable configuration selects the Ubuntu Touch 24.04 framework and prepares the required native and Rust cross-compilation toolchain inside the build environment.
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/devabu26/astro.git
+cd astro
 git checkout main
 git pull origin main
+```
 
-#The primary development branch is main.
+### 2. Build
 
-4. Build Astro
+From the repository root:
 
-#From the repository root:
+```bash
 clickable build
+```
 
-Clickable reads the project's clickable.yaml, prepares the configured build container, and builds the application for its configured target architecture.
+For a clean rebuild:
 
-The project includes both native and QML components, as well as the Rust Matrix backend.
-
-#If you need a clean rebuild:
+```bash
 clickable clean
 clickable build
+```
 
-5. Connect an Ubuntu Touch device
+### 3. Connect your device
 
-#On the device:
-Enable Developer Mode.
-Connect the device to your computer using USB.
-Unlock the device.
+Enable Developer Mode on the Ubuntu Touch device, connect it over USB, unlock it and accept the debugging authorisation prompt if one appears.
 
-Accept the debugging authorisation prompt if requested.
+Check that ADB can see the device:
 
-#Check the connection:
+```bash
 adb devices
+```
 
-(or: clickable devices)
-The device should appear as connected.
+### 4. Install and launch
 
-6. Install Astro
-#Install the newly built application:
+```bash
 clickable install
-
-#Launch it:
 clickable launch
+```
 
-#For a typical development cycle, these commands can be run after each source change:
+A typical development cycle after making changes is:
+
+```bash
 clickable build
 clickable install
 clickable launch
+```
 
-## License
+### 5. Debugging
 
-Copyright (C) 2026  Marc D.B [madabu], Sydney, Australia,
-    
-This program is free software: you can redistribute it and/or modify it under
-the terms of the GNU General Public License version 3, as published by the
-Free Software Foundation.
+View application logs with Clickable:
 
-This program is distributed in the hope that it will be useful, but WITHOUT ANY
-WARRANTY; without even the implied warranties of MERCHANTABILITY, SATISFACTORY
-QUALITY, or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-for more details.
+```bash
+clickable logs
+```
 
-You should have received a copy of the GNU General Public License along with
-this program. If not, see <http://www.gnu.org/licenses/>.
+For system-level diagnostics on the device:
+
+```bash
+adb shell journalctl -b --no-pager
+```
+
+Filter for Astro messages:
+
+```bash
+adb shell "journalctl -b --no-pager | grep -i astro"
+```
+
+## 🤝 Contributing
+
+Contributions, bug reports and testing feedback are welcome. Astro is under active development, so please include useful diagnostic information when reporting a problem:
+
+- Ubuntu Touch device and OS version.
+- Steps to reproduce the issue.
+- Relevant Astro or system logs.
+- Whether the issue is repeatable.
+
+Please check the existing repository issues and discussions before opening a new report.
+
+## 📄 License
+
+Astro is free software released under the **GNU General Public License v3.0**.
+
+Copyright © 2026 Marc D.B. (madabu).
+
+See the [GNU GPL v3.0](https://www.gnu.org/licenses/gpl-3.0.html) for the full license terms.
