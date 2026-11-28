@@ -220,6 +220,7 @@ function openNotification(roomId, eventId) {
 function roomDataForModel(room) {
     var roomName = room.name || room.room_id || "Unnamed room"
     var kind = room.kind || "room"
+    var memberCount = Number(room.human_member_count || room.member_count || 0)
     var preview = room.topic || (
         kind === "space" ? "Matrix Space" :
         kind === "dm" ? "Direct message" :
@@ -229,7 +230,9 @@ function roomDataForModel(room) {
     if (kind === "space")
         preview = "Space · " + preview
     else if (kind === "dm")
-        preview = "Direct message · " + preview
+        preview = memberCount > 2
+                ? "Group direct message · " + memberCount + " people"
+                : "Direct message"
 
     return {
         name: roomName,
@@ -240,6 +243,7 @@ function roomDataForModel(room) {
                 kind === "dm" ? "#398875" : "#a16b9b",
         roomId: room.room_id || "",
         kind: kind,
+        memberCount: memberCount,
         isEncrypted: room.is_encrypted === true,
         unreadCount: Number(room.unread_count || 0),
         mentionCount: Number(room.mention_count || 0),
