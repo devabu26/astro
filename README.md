@@ -1,4 +1,5 @@
-#<img src="https://github.com/devabu26/astro/blob/main/assets/logo.svg" alt="Astro" width = 20 height = 20> Astro
+#<img src="https://github.com/devabu26/astro/blob/main/assets/logo.svg" alt="Astro" width = 200 height = 200> 
+Astro
 
 <p align="center">
   <strong>A native Matrix client for Ubuntu Touch</strong><br>
