@@ -867,6 +867,24 @@ void StorageWorker::fetchMessageVideo(
         cachedFile.isReadable() &&
         cachedFile.size() > 0) {
 
+        QMimeDatabase cachedMimeDatabase;
+        const QMimeType cachedMime =
+            cachedMimeDatabase.mimeTypeForFile(
+                cachedFile,
+                QMimeDatabase::MatchContent
+            );
+
+        qInfo().noquote()
+            << "[AstroVideoDiag] using cached video"
+            << "requestKey=" << requestKey
+            << "path=" << filePath
+            << "size=" << cachedFile.size()
+            << "declaredMime=" << mimeType
+            << "detectedMime="
+            << (cachedMime.isValid()
+                ? cachedMime.name()
+                : QStringLiteral("unknown"));
+
         emit messageVideoRetrieved(
             requestKey,
             QUrl::fromLocalFile(filePath).toString()
@@ -979,6 +997,25 @@ void StorageWorker::fetchMessageVideo(
         );
         return;
     }
+
+    QMimeDatabase savedMimeDatabase;
+    const QMimeType savedMime =
+        savedMimeDatabase.mimeTypeForFile(
+            savedFile,
+            QMimeDatabase::MatchContent
+        );
+
+    qInfo().noquote()
+        << "[AstroVideoDiag] downloaded video cached"
+        << "requestKey=" << requestKey
+        << "path=" << filePath
+        << "size=" << savedFile.size()
+        << "declaredMime=" << mimeType
+        << "detectedMime="
+        << (savedMime.isValid()
+            ? savedMime.name()
+            : QStringLiteral("unknown"))
+        << "suffix=" << suffix;
 
     emit messageVideoRetrieved(
         requestKey,

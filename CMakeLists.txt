@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.0)
-project(astro VERSION 1.1.1 LANGUAGES C CXX)
+project(astro VERSION 1.2.0 LANGUAGES C CXX)
 
 # Automatically create moc files
 find_package(PkgConfig REQUIRED)
