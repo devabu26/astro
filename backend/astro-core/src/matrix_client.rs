@@ -847,7 +847,7 @@ impl MatrixClientManager {
                 // decrypt messages from cross-signed devices.
                 .with_room_key_recipient_strategy(CollectStrategy::IdentityBasedStrategy)
                 .with_decryption_settings(DecryptionSettings {
-                    sender_device_trust_requirement: TrustRequirement::CrossSigned,
+                    sender_device_trust_requirement: TrustRequirement::Untrusted,
                 })
                 // If an existing server-side backup key is available, retry
                 // a failed Megolm decryption against that backup. Do not

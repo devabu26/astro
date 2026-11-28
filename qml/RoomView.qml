@@ -161,72 +161,67 @@ Item {
     property var activeVideoOwner: null
     property var activeVideoOutputHost: null
 
-    // The active player is replaced for each different video.
-    // The VideoOutput itself remains persistent.
-    property var roomSharedVideoPlayer: null
+    // One decoder and one renderer live for the lifetime of RoomView.
+    // Switching messages changes the source, never the MediaPlayer object.
+    property var roomSharedVideoPlayer: roomSharedVideoPlayerItem
+    property var roomSharedVideoOutput: roomSharedVideoOutputItem
 
-    Component {
-        id: sharedVideoPlayerComponent
+    MediaPlayer {
+        id: roomSharedVideoPlayerItem
+        autoPlay: false
 
-        MediaPlayer {
-            autoPlay: false
-
-            onPlaybackStateChanged: {
-                console.log(
-                    "[AstroVideoDiag] playbackState changed:",
-                    playbackState,
-                    "status:", status,
-                    "source:", source
-                )
-            }
-
-            onStatusChanged: {
-                console.log(
-                    "[AstroVideoDiag] status changed:",
-                    status,
-                    "playbackState:", playbackState,
-                    "source:", source
-                )
-
-                console.log(
-                    "[AstroVideoDiag] output orientation:",
-                    roomSharedVideoOutputItem.orientation,
-                    "autoOrientation:",
-                    roomSharedVideoOutputItem.autoOrientation
-                )
-            }
+        onError: {
+            if (error !== MediaPlayer.NoError)
+                console.warn("[AstroVideo] MediaPlayer error:", error, errorString)
         }
     }
 
-    // Keep one renderer alive for the lifetime of RoomView.
-    property var roomSharedVideoOutput: roomSharedVideoOutputItem
-
-    Component.onCompleted: {
-        root.requestRtcParticipantAvatars()
-
-        if (!root.replaceSharedVideoPlayer())
-            console.error("[AstroVideo] Initial MediaPlayer creation failed")
+    VideoOutput {
+        id: roomSharedVideoOutputItem
+        parent: root
+        source: roomSharedVideoPlayerItem
+        fillMode: VideoOutput.PreserveAspectFit
+        visible: false
+        z: 100
     }
 
+    Component.onCompleted: root.requestRtcParticipantAvatars()
 
     property string pendingSharedVideoKey: ""
     property string pendingSharedVideoUrl: ""
     property var pendingSharedVideoHost: null
     property var pendingSharedVideoOwner: null
 
-    VideoOutput {
-        id: roomSharedVideoOutputItem
+    // Inline playback uses Flickable content coordinates, so scrolling
+    // moves the video and its message together without reparenting it.
+    function positionSharedVideoOutput(host, fullscreen) {
+        var output = root.roomSharedVideoOutput
+        if (!output || !host)
+            return
 
-        anchors.fill: parent
-        source: null
-        fillMode: VideoOutput.PreserveAspectFit
-        visible: false
-        z: 0
+        var target = fullscreen ? fullscreenVideoOverlay : messageList.contentItem
+        var point = host.mapToItem(target, 0, 0)
+
+        output.parent = target
+        output.x = point.x
+        output.y = point.y
+        output.width = host.width
+        output.height = host.height
+        output.z = fullscreen ? 2 : 1
+        output.visible = true
+    }
+
+    Connections {
+        target: root.activeVideoOutputHost
+
+        onXChanged: if (root.activeVideoKey !== "" && !root.fullscreenVideoOutput) Qt.callLater(function() { root.positionSharedVideoOutput(root.activeVideoOutputHost, false) })
+        onYChanged: if (root.activeVideoKey !== "" && !root.fullscreenVideoOutput) Qt.callLater(function() { root.positionSharedVideoOutput(root.activeVideoOutputHost, false) })
+        onWidthChanged: if (root.activeVideoKey !== "" && !root.fullscreenVideoOutput) Qt.callLater(function() { root.positionSharedVideoOutput(root.activeVideoOutputHost, false) })
+        onHeightChanged: if (root.activeVideoKey !== "" && !root.fullscreenVideoOutput) Qt.callLater(function() { root.positionSharedVideoOutput(root.activeVideoOutputHost, false) })
     }
 
     Timer {
         id: sharedVideoOutputRecreateTimer
-
         interval: 0
         repeat: false
 
@@ -243,42 +238,28 @@ Item {
 
             if (!requestKey || !fileUrl || !outputHost || !owner)
                 return
-
             if (root.activeVideoKey !== requestKey ||
                     root.activeVideoOwner !== owner)
                 return
 
-            // Reuse the persistent renderer instead of recreating
-            // the VideoOutput and its underlying graphics surface.
-            var output = root.roomSharedVideoOutput
+            root.positionSharedVideoOutput(outputHost, false)
 
-            if (!output) {
-                console.error("[AstroVideo] Shared VideoOutput is unavailable")
-                root.activeVideoKey = ""
-                root.activeVideoOwner = null
-                root.activeVideoOutputHost = null
-                return
-            }
-
-            output.parent = outputHost
-            output.visible = true
-            root.activeVideoOutputHost = outputHost
-
-            var player = root.replaceSharedVideoPlayer()
-
+            var player = root.roomSharedVideoPlayer
             if (!player) {
-                console.error("[AstroVideo] Could not create replacement player")
+                console.error("[AstroVideo] Shared MediaPlayer is unavailable")
                 root.activeVideoKey = ""
                 root.activeVideoOwner = null
                 root.activeVideoOutputHost = null
                 return
             }
 
+            // Pause the current item before switching the source. This keeps
+            // the one-decoder guarantee without tearing down the player.
+            player.pause()
             player.source = fileUrl
             player.play()
         }
     }
-
 
     property var backend
 
@@ -501,32 +482,6 @@ Item {
         )
     }
 
-    function replaceSharedVideoPlayer() {
-        var oldPlayer = root.roomSharedVideoPlayer
-        var output = root.roomSharedVideoOutput
-
-        var newPlayer = sharedVideoPlayerComponent.createObject(root)
-
-        if (!newPlayer)
-            return null
-
-        // Reconnect the persistent renderer to the fresh decoder.
-        root.roomSharedVideoPlayer = newPlayer
-
-        if (output)
-            output.source = newPlayer
-
-        // Retain the old source until its player is destroyed.
-        if (oldPlayer) {
-            oldPlayer.stop()
-            oldPlayer.destroy()
-        }
-
-        console.log("[AstroVideoDiag] Created fresh MediaPlayer")
-
-        return newPlayer
-    }
-
     function playMessageVideo(requestKey, fileUrl, outputHost, owner) {
         if (!requestKey || !fileUrl || !outputHost || !owner)
             return
@@ -542,8 +497,7 @@ Item {
                 root.roomSharedVideoOutput &&
                 root.roomSharedVideoPlayer &&
                 root.roomSharedVideoPlayer.source.toString() === fileUrl) {
-            root.roomSharedVideoOutput.parent = outputHost
-            root.roomSharedVideoOutput.visible = true
+            root.positionSharedVideoOutput(outputHost, false)
             root.activeVideoOutputHost = outputHost
 
             if (root.roomSharedVideoPlayer.status === MediaPlayer.EndOfMedia)
@@ -562,10 +516,8 @@ Item {
 
         // Keep the renderer alive while the deferred request is prepared.
         // The timer moves this same output into the new message host.
-        if (root.roomSharedVideoOutput) {
-            root.roomSharedVideoOutput.parent = root
+        if (root.roomSharedVideoOutput)
             root.roomSharedVideoOutput.visible = false
-        }
 
         root.activeVideoKey = requestKey
         root.activeVideoOwner = owner
@@ -595,10 +547,10 @@ Item {
         root.pendingSharedVideoOwner = null
 
         if (root.roomSharedVideoPlayer)
-            root.roomSharedVideoPlayer.stop()
+            root.roomSharedVideoPlayer.pause()
 
 
-        // Retain the VideoOutput; only detach and hide it when idle.
+        // Keep the room-owned VideoOutput alive and hide it while idle.
         if (root.roomSharedVideoOutput) {
             root.roomSharedVideoOutput.parent = root
             root.roomSharedVideoOutput.visible = false
@@ -613,7 +565,7 @@ Item {
         var player = root.roomSharedVideoPlayer
 
         console.log(
-            "[AstroVideoDiag] stopSharedVideo ENTER",
+            "[AstroVideo] stopSharedVideo",
             "visible:", root.visible,
             "activeKey:", root.activeVideoKey,
             "playerAvailable:", player !== null,
@@ -633,9 +585,9 @@ Item {
         root.pendingSharedVideoOwner = null
 
         if (player) {
-            player.stop()
+            player.pause()
             console.log(
-                "[AstroVideoDiag] player.stop() returned",
+                "[AstroVideo] player paused",
                 "playbackState:", player.playbackState,
                 "status:", player.status
             )
@@ -646,10 +598,8 @@ Item {
 
 
         console.log(
-            "[AstroVideoDiag] source retained after stop",
-            "playbackState:", player ? player.playbackState : "unavailable",
-            "status:", player ? player.status : "unavailable",
-            "source:", player ? player.source : "unavailable"
+            "[AstroVideo] playback paused; source retained",
+            player ? player.source : "unavailable"
         )
 
         // Retain the VideoOutput; only detach and hide it when idle.
@@ -683,16 +633,13 @@ Item {
 
         fullscreenControlsTimer.restart()
 
-        output.parent = fullscreenVideoOverlay
         fullscreenVideoOverlay.visible = true
+        root.positionSharedVideoOutput(root.activeVideoOutputHost, true)
     }
 
     function closeFullscreenVideo() {
-        if (root.fullscreenVideoOutput &&
-            root.fullscreenVideoOriginalParent) {
-            root.fullscreenVideoOutput.parent =
-                root.fullscreenVideoOriginalParent
-        }
+        if (root.fullscreenVideoOutput && root.activeVideoOutputHost)
+            root.positionSharedVideoOutput(root.activeVideoOutputHost, false)
 
         root.fullscreenVideoOutput = null
         root.fullscreenVideoOriginalParent = null
@@ -2278,6 +2225,7 @@ Item {
 
                         Column {
                             id: messageColumn
+                            z: root.activeVideoKey !== "" ? 2 : 0
 
                             width: messageList.width
                             spacing: units.gu(1)

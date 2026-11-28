@@ -300,7 +300,7 @@ function togglePlayback() {
     Rectangle {
         anchors.fill: parent
         radius: units.gu(1)
-        color: "#080d12"
+        color: root.isActivePlayback ? "transparent" : "#080d12"
         clip: true
 
         // RoomView reparents its single VideoOutput into this host when

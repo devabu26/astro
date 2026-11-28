@@ -4,6 +4,7 @@ import QtGraphicalEffects 1.0
 
 Item {
     id: root
+    z: root.isActiveVideoPlayback ? 2 : 0
 
     signal imageClicked(string imageUrl)
     signal videoFullscreenRequested(var output, var originalParent, var mediaPlayer,var downloadItem)
@@ -50,6 +51,9 @@ Item {
     property var sharedVideoPlayer: null
     property var sharedVideoOutput: null
     property string sharedPlaybackKey: ""
+    readonly property bool isActiveVideoPlayback:
+        root.isVideo && root.videoRequestKey !== "" &&
+        root.sharedPlaybackKey === root.videoRequestKey
 
     property bool isOwn: false
     property bool isEncrypted: false
@@ -453,13 +457,15 @@ Item {
 
             radius: units.gu(1.5)
 
-            color: Qt.tint(
-                Qt.lighter(
-                    root.isOwn ? "#245b78" : "#263744",
-                    1.0 + root.swipeProgress * 0.32
-                ),
-                Qt.rgba(0.10, 1.0, 0.28, root.swipeProgress * 0.55)
-            )
+            color: root.isActiveVideoPlayback
+                   ? "transparent"
+                   : Qt.tint(
+                       Qt.lighter(
+                           root.isOwn ? "#245b78" : "#263744",
+                           1.0 + root.swipeProgress * 0.32
+                       ),
+                       Qt.rgba(0.10, 1.0, 0.28, root.swipeProgress * 0.55)
+                   )
             border.width: root.messageSelected ? units.gu(0.25) : 0
             border.color: "#83d9a5"
             Column {
