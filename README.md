@@ -20,9 +20,9 @@ Astro is an open-source Matrix client built specifically for Ubuntu Touch. It co
 
 > **Project status:** Astro is in early release. Core messaging and calling features are available, while stability, performance and room-management capabilities continue to be developed.
 
-## ✨ Features
+## Features
 
-### 💬 Messaging and conversations
+### Messaging and conversations
 - Live-updating Matrix room timelines.
 - Room and Space browsing.
 - Message replies, editing and deletion.
@@ -30,12 +30,12 @@ Astro is an open-source Matrix client built specifically for Ubuntu Touch. It co
 - Unread-message and mention tracking.
 - Older-message pagination.
 
-### 🔐 Privacy and security
+### Privacy and security
 - Matrix end-to-end encrypted (E2EE) conversations.
 - Matrix device verification and device handling.
 - Encrypted event and media support.
 
-### 📷 Media and calls
+### Media and calls
 - Image and video content in conversations.
 - Image viewer with pinch-to-zoom and panning.
 - Voice and video calling.
@@ -43,13 +43,13 @@ Astro is an open-source Matrix client built specifically for Ubuntu Touch. It co
 - Camera rotation handling and video resolution controls.
 - Call controls and encrypted-call indication.
 
-### 🔔 Ubuntu Touch integration
+### Ubuntu Touch integration
 - Native Ubuntu Touch interface.
 - In-app notification banners.
 - Matrix-driven notification handling and push-notification integration.
 - ARM64 Click packaging for Ubuntu Touch devices.
 
-## 🚧 Known limitations and work in progress
+## Known limitations and work in progress
 
 Astro is actively developed. Some capabilities are not yet complete:
 
@@ -70,7 +70,7 @@ Astro is actively developed. Some capabilities are not yet complete:
 | Target architecture | ARM64 (AArch64) |
 | Build system | Clickable / CMake |
 
-## 🧱 Building from source
+## Building from source
 
 These instructions build Astro for an Ubuntu Touch device. The repository's `clickable.yaml` is the authoritative source for the current build configuration.
 
@@ -155,7 +155,7 @@ adb shell "journalctl -b --no-pager | grep -i astro"
 
 ## 🤝 Contributing
 
-Contributions, bug reports and testing feedback are welcome. Astro is under active development, so please include useful diagnostic information when reporting a problem:
+Contributions, bug reports and testing feedback are welcome. Please fork! I am now super experienced, I would be happy for a fork to occur!! Astro is under active development, so please include useful diagnostic information when reporting a problem:
 
 - Ubuntu Touch device and OS version.
 - Steps to reproduce the issue.
