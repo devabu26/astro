@@ -1,5 +1,6 @@
 import QtQuick 2.7
 import Lomiri.Components 1.3
+import "MarkdownRenderer.js" as MarkdownRenderer
 
 Column {
     id: root
@@ -11,12 +12,20 @@ Column {
     property bool loading: false
     property var activeRequest: null
 
+    readonly property bool isMarkdown: documentTitle === "README"
+    readonly property string renderedDocument: isMarkdown
+        ? MarkdownRenderer.markdownToHtml(documentText)
+        : documentText
+
     width: parent ? parent.width : units.gu(40)
     spacing: units.gu(1)
 
     function loadDocument() {
         if (!documentUrl || documentUrl.toString() === "")
             return
+
+        if (activeRequest)
+            activeRequest.abort()
 
         loading = true
         errorMessage = ""
@@ -52,6 +61,11 @@ Column {
 
     Component.onCompleted: loadDocument()
 
+    Component.onDestruction: {
+        if (activeRequest)
+            activeRequest.abort()
+    }
+
     Text {
         width: parent.width
         text: root.documentTitle
@@ -69,16 +83,24 @@ Column {
         wrapMode: Text.WordWrap
         visible: root.loading || root.errorMessage !== ""
     }
+
     Text {
         id: documentContent
 
         width: parent.width
-
-        text: root.documentText
+        text: root.renderedDocument
         color: "#dce4eb"
-        font.family: "monospace"
-        font.pixelSize: units.gu(1.45)
+        font.family: "Ubuntu"
+        font.pixelSize: units.gu(1.55)
         wrapMode: Text.Wrap
-        textFormat: Text.PlainText
+        textFormat: root.isMarkdown ? Text.RichText : Text.PlainText
+        linkColor: "#b9a6ff"
+        visible: !root.loading && root.errorMessage === ""
+        onLinkActivated: {
+            if (link.indexOf("https://") === 0
+                    || link.indexOf("http://") === 0) {
+                Qt.openUrlExternally(link)
+            }
+        }
     }
 }
