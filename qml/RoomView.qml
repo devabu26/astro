@@ -170,9 +170,65 @@ Item {
         id: roomSharedVideoPlayerItem
         autoPlay: false
 
+        Component.onCompleted: {
+            console.log(
+                "[AstroVideoDiag] MediaPlayer created",
+                "source:", source,
+                "status:", status,
+                "playbackState:", playbackState
+            )
+        }
+
+        onSourceChanged: {
+            console.log(
+                "[AstroVideoDiag] source changed",
+                "source:", source,
+                "status:", status,
+                "playbackState:", playbackState
+            )
+        }
+
+        onStatusChanged: {
+            console.log(
+                "[AstroVideoDiag] status changed",
+                "status:", status,
+                "source:", source,
+                "playbackState:", playbackState,
+                "duration:", duration,
+                "error:", error,
+                "errorString:", errorString
+            )
+        }
+
+        onPlaybackStateChanged: {
+            console.log(
+                "[AstroVideoDiag] playback state changed",
+                "playbackState:", playbackState,
+                "status:", status,
+                "position:", position,
+                "duration:", duration,
+                "source:", source
+            )
+        }
+
+        onDurationChanged: {
+            console.log(
+                "[AstroVideoDiag] duration changed",
+                "duration:", duration,
+                "status:", status,
+                "source:", source
+            )
+        }
+
         onError: {
-            if (error !== MediaPlayer.NoError)
-                console.warn("[AstroVideo] MediaPlayer error:", error, errorString)
+            console.error(
+                "[AstroVideoDiag] MediaPlayer error",
+                "error:", error,
+                "errorString:", errorString,
+                "status:", status,
+                "playbackState:", playbackState,
+                "source:", source
+            )
         }
     }
 
@@ -255,9 +311,48 @@ Item {
 
             // Pause the current item before switching the source. This keeps
             // the one-decoder guarantee without tearing down the player.
+            console.log(
+                "[AstroVideoDiag] assigning local media",
+                "requestKey:", requestKey,
+                "url:", fileUrl,
+                "urlValid:", Qt.resolvedUrl(fileUrl),
+                "existsAtQmlLevel: checking through backend logs",
+                "oldSource:", player.source,
+                "oldStatus:", player.status,
+                "oldPlaybackState:", player.playbackState
+            )
+
             player.pause()
             player.source = fileUrl
+
+            console.log(
+                "[AstroVideoDiag] source assigned",
+                "source:", player.source,
+                "status:", player.status,
+                "playbackState:", player.playbackState
+            )
+
             player.play()
+
+            console.log(
+                "[AstroVideoDiag] play() returned",
+                "source:", player.source,
+                "status:", player.status,
+                "playbackState:", player.playbackState
+            )
+
+            Qt.callLater(function() {
+                console.log(
+                    "[AstroVideoDiag] deferred player snapshot",
+                    "source:", player.source,
+                    "status:", player.status,
+                    "playbackState:", player.playbackState,
+                    "position:", player.position,
+                    "duration:", player.duration,
+                    "error:", player.error,
+                    "errorString:", player.errorString
+                )
+            })
         }
     }
 
