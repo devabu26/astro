@@ -2506,7 +2506,13 @@ impl MatrixClientManager {
                 true
             } else {
                 let mut states = backups.state_stream();
-                tokio::time::timeout(Duration::from_secs(60), async {
+
+                // Close the small race where the recovery key is processed
+                // between the initial are_enabled() check and subscription.
+                if backups.are_enabled().await {
+                    true
+                } else {
+                    tokio::time::timeout(Duration::from_secs(60), async {
                     while let Some(update) = states.next().await {
                         match update {
                             Ok(matrix_sdk::encryption::backups::BackupState::Enabled) => {
@@ -2525,9 +2531,10 @@ impl MatrixClientManager {
                         }
                     }
                     false
-                })
-                .await
-                .unwrap_or(false)
+                    })
+                    .await
+                    .unwrap_or(false)
+                }
             };
 
             if !backup_enabled || !backups.are_enabled().await {
