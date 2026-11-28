@@ -480,11 +480,13 @@ QImage NativeAalCamera::convertYuv420Sp(
         }
     }
     // Android camera preview callbacks contain sensor-oriented bytes; the
-    // legacy display-orientation API does not rotate callback buffers. The
-    // downstream I420 path rotates landscape frames clockwise by 90 degrees
-    // to match Astro's portrait track, so compensate relative to that fixed
-    // rotation using the selected camera's sensor orientation.
-    const int additionalRotation = (m_sensorOrientation - 90 + 360) % 360;
+    // legacy display-orientation API does not rotate callback buffers.
+    // Compensate for the sensor orientation here for every output aspect
+    // ratio, including square tracks (which the downstream I420 transform
+    // intentionally does not rotate). The device reports the camera's
+    // clockwise sensor orientation; invert it to make the captured scene
+    // upright before any portrait-track crop/scale is applied.
+    const int additionalRotation = (m_sensorOrientation + 180) % 360;
     if (additionalRotation != 0) {
         image = image.transformed(
             QTransform().rotate(additionalRotation),

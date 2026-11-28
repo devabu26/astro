@@ -82,7 +82,7 @@ static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RTC_VIDEO_FRAME_QUEUE_LIMIT: usize = 12;
 const RTC_AUDIO_FRAME_QUEUE_LIMIT: usize = 200;
 const RTC_VIDEO_MAX_WIDTH: u32 = 1920;
-const RTC_VIDEO_MAX_HEIGHT: u32 = 1080;
+const RTC_VIDEO_MAX_HEIGHT: u32 = 1920;
 
 struct RtcRemoteAudioFrame {
     key: String,
