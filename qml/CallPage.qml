@@ -680,8 +680,16 @@ Item {
         interval: 30000
         repeat: false
         onTriggered: {
-            if (!root.autoHangup || root.remoteAnswered)
+            if (!root.directCall || root.remoteAnswered)
                 return
+
+            // Group direct messages may keep the call open for other people.
+            // Stop the outgoing ringback after the normal wait, but do not
+            // automatically leave the group call.
+            if (!root.autoHangup) {
+                root.stopRingback()
+                return
+            }
 
             // A connected local LiveKit session is not a failed call. Stop
             // ringback at the timeout, but never hang up an established room.
