@@ -693,11 +693,9 @@ MainView {
             // grabToImage() rendering is required to keep publishing.
             // Hide the page when it is not the active interface to avoid
             // drawing its call controls and video tiles underneath ChatPage.
-            // Diagnostic isolation: keep CallPage rendered behind ChatPage,
-            // as before the idle-rendering optimisation. This tests whether
-            // hiding the page triggers the chat video playback freeze.
             visible: astroBackend.storageReady &&
-                     root.matrixAuthenticated
+                     root.matrixAuthenticated &&
+                     root.showingCallPage
             enabled: root.showingCallPage
             z: root.showingCallPage ? 1 : 0
 
