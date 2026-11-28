@@ -13,6 +13,9 @@ Item {
     property string roomId: ""
     property string roomName: ""
     property bool directCall: false
+    // Only one-to-one DMs should automatically end when the other side leaves
+    // or fails to answer. Group DMs remain active for their other participants.
+    property bool autoHangup: false
     property bool incomingCall: false
     property bool roomEncrypted: false
     property var audioState: ({})
@@ -677,7 +680,7 @@ Item {
         interval: 30000
         repeat: false
         onTriggered: {
-            if (!root.directCall || root.remoteAnswered)
+            if (!root.autoHangup || root.remoteAnswered)
                 return
 
             // A connected local LiveKit session is not a failed call. Stop
@@ -1091,7 +1094,7 @@ Item {
                         // the remote hang-up signal. End our local MatrixRTC /
                         // LiveKit session too, rather than leaving the caller
                         // stranded in an empty call.
-                        if (root.directCall && root.remoteAnswered &&
+                        if (root.autoHangup && root.remoteAnswered &&
                                 (root.audioStarted ||
                                  root.audioState.active === true) &&
                                 root.pendingOperation.length === 0) {
