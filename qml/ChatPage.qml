@@ -109,6 +109,19 @@ Item {
         id: roomModel
     }
 
+    // Queue room snapshots and apply them over several UI turns.
+    property var pendingRoomQueue: []
+    property int pendingRoomIndex: 0
+    property bool pendingRoomResponseFinished: false
+    property var pendingRoomIds: []
+
+    Timer {
+        id: roomPopulationTimer
+        interval: 65
+        repeat: false
+        onTriggered: root.populateRoomBatch()
+    }
+
     // =========================================================
     // Matrix room loading state
     // =========================================================
@@ -204,128 +217,156 @@ function openNotification(roomId, eventId) {
         root.backend.requestRoomTimeline(roomId)
 }
 
+function roomDataForModel(room) {
+    var roomName = room.name || room.room_id || "Unnamed room"
+    var kind = room.kind || "room"
+    var preview = room.topic || (
+        kind === "space" ? "Matrix Space" :
+        kind === "dm" ? "Direct message" :
+        "Matrix room"
+    )
+
+    if (kind === "space")
+        preview = "Space · " + preview
+    else if (kind === "dm")
+        preview = "Direct message · " + preview
+
+    return {
+        name: roomName,
+        preview: preview,
+        avatar: roomName.length > 0
+                ? roomName.charAt(0).toUpperCase() : "#",
+        colour: kind === "space" ? "#5265a4" :
+                kind === "dm" ? "#398875" : "#a16b9b",
+        roomId: room.room_id || "",
+        kind: kind,
+        isEncrypted: room.is_encrypted === true,
+        unreadCount: Number(room.unread_count || 0),
+        mentionCount: Number(room.mention_count || 0),
+        parentSpaceIds: JSON.stringify(room.parent_space_ids || []),
+        lastActivity: Number(room.last_activity || 0),
+        spaceLastActivity: Number(room.space_last_activity || 0)
+    }
+}
+
+function applyRoomData(room) {
+    var values = root.roomDataForModel(room)
+    var roomId = values.roomId
+    if (!roomId)
+        return
+
+    var existingIndex = -1
+    for (var i = 0; i < roomModel.count; i++) {
+        if (roomModel.get(i).roomId === roomId) {
+            existingIndex = i
+            break
+        }
+    }
+
+    if (existingIndex >= 0) {
+        // Keep an already downloaded avatar while refreshing room metadata.
+        values.avatarUrl = roomModel.get(existingIndex).avatarUrl || ""
+        roomModel.set(existingIndex, values)
+    } else {
+        values.avatarUrl = ""
+        roomModel.append(values)
+    }
+
+    var mxcUri = room.avatar_url || ""
+    if (root.backend && mxcUri !== "")
+        root.backend.requestRoomAvatar(roomId, mxcUri)
+
+    if (root.selectedRoomId === roomId) {
+        root.selectedRoom = values.name
+        root.selectedPreview = values.preview
+        root.selectedRoomKind = values.kind
+        root.selectedRoomEncrypted = values.isEncrypted
+    }
+}
+
+function populateRoomBatch() {
+    var batchSize = 3
+    var processed = 0
+
+    while (pendingRoomIndex < pendingRoomQueue.length &&
+           processed < batchSize) {
+        var room = pendingRoomQueue[pendingRoomIndex]
+        pendingRoomIndex++
+        processed++
+
+        if (!room || !room.room_id)
+            continue
+
+        root.applyRoomData(room)
+
+        if (pendingRoomResponseFinished &&
+            pendingRoomIds.indexOf(room.room_id) < 0) {
+            pendingRoomIds.push(room.room_id)
+        }
+    }
+
+    if (processed > 0)
+        roomNavigator.rebuild()
+
+    if (pendingRoomIndex < pendingRoomQueue.length) {
+        roomPopulationTimer.start()
+        return
+    }
+
+    // Cached snapshots are not authoritative for removals. Only the final
+    // network snapshot may remove rooms that are no longer joined.
+    if (pendingRoomResponseFinished) {
+        for (var i = roomModel.count - 1; i >= 0; i--) {
+            if (pendingRoomIds.indexOf(roomModel.get(i).roomId) < 0)
+                roomModel.remove(i)
+        }
+        roomNavigator.rebuild()
+        root.stopRoomLoading()
+    }
+
+    pendingRoomQueue = []
+    pendingRoomIndex = 0
+    pendingRoomIds = []
+    pendingRoomResponseFinished = false
+}
+
 function loadRooms(json, finished) {
     try {
         var data = JSON.parse(json)
 
-        console.log("ASTRO UNREAD DEBUG: Initial room response:", data.rooms.length)
-
-        for (var d = 0; d < data.rooms.length; d++) {
-            console.log(
-                "ASTRO UNREAD DEBUG: Initial:",
-                data.rooms[d].name,
-                "ID:", data.rooms[d].room_id,
-                "Unread:", data.rooms[d].unread_count,
-                "Mentions:", data.rooms[d].mention_count
-            )
-        }
-
-        if (!data || !data.rooms) {
-            console.log(
-                "ASTRO: Invalid Matrix rooms response"
-            )
-
-            root.stopRoomLoading()
-
+        if (!data || !Array.isArray(data.rooms)) {
+            console.log("ASTRO: Invalid Matrix rooms response")
+            if (finished)
+                root.stopRoomLoading()
             return
         }
 
-        roomModel.clear()
-
-        for (var i = 0; i < data.rooms.length; i++) {
-            var room = data.rooms[i]
-
-            var roomName = room.name ||
-                           room.room_id ||
-                           "Unnamed room"
-
-            var kind = room.kind || "room"
-
-            var preview = room.topic || (
-                kind === "space" ? "Matrix Space" :
-                kind === "dm" ? "Direct message" :
-                "Matrix room"
-            )
-
-            if (kind === "space")
-                preview = "Space · " + preview
-            else if (kind === "dm")
-                preview = "Direct message · " + preview
-
-            var avatar = roomName.length > 0
-                         ? roomName.charAt(0).toUpperCase()
-                         : "#"
-
-            var colour = kind === "space" ? "#5265a4" :
-                         kind === "dm" ? "#398875" :
-                         "#a16b9b"
-
-            var roomId = room.room_id || ""
-            var mxcUri = room.avatar_url || ""
-
-            console.log(
-                "ASTRO SPACE DEBUG:",
-                roomName,
-                "kind:", kind,
-                "roomId:", roomId,
-                "parents:",
-                JSON.stringify(room.parent_space_ids || [])
-            )
-
-            roomModel.append({
-                name: roomName,
-                preview: preview,
-                avatar: avatar,
-                avatarUrl: "",
-                colour: colour,
-                roomId: roomId,
-                kind: kind,
-                isEncrypted: room.is_encrypted === true,
-                unreadCount: Number(room.unread_count || 0),
-                mentionCount: Number(room.mention_count || 0),
-                parentSpaceIds: JSON.stringify(
-                    room.parent_space_ids || []
-                ),
-                lastActivity: Number(room.last_activity || 0),
-                spaceLastActivity: Number(room.space_last_activity || 0)
-            })
-
-            if (root.backend &&
-                roomId !== "" &&
-                mxcUri !== "") {
-
-                root.backend.requestRoomAvatar(
-                    roomId,
-                    mxcUri
-                )
-            }
-        }
-
-        roomNavigator.rebuild()
+        // A fresh snapshot supersedes any older entries not yet applied.
+        roomPopulationTimer.stop()
+        pendingRoomQueue = data.rooms.slice(0)
+        pendingRoomIndex = 0
+        pendingRoomResponseFinished = finished === true
+        pendingRoomIds = []
 
         console.log(
-            "ASTRO: Loaded",
-            data.rooms.length,
+            "ASTRO: Queued",
+            pendingRoomQueue.length,
             "Matrix rooms and Spaces",
-            "finished:", finished
+            "finished:", pendingRoomResponseFinished
         )
 
-        // Cached results populate the UI immediately.
-        // Initial loading ends once the first room response arrives.
-        root.stopRoomLoading()
+        // First batch appears immediately; later batches are paced to let
+        // the UI render between insertions.
+        root.populateRoomBatch()
 
     } catch (error) {
-        console.log(
-            "ASTRO: Could not parse Matrix rooms:",
-            error
-        )
-
-        root.stopRoomLoading()
+        console.log("ASTRO: Could not parse Matrix rooms:", error)
+        if (finished)
+            root.stopRoomLoading()
     }
 }
 
 
-    // =========================================================
     // Room avatar updates
     // =========================================================
 
