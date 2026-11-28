@@ -1302,7 +1302,7 @@ impl MatrixClientManager {
                     "room"
                 };
 
-                let (name, avatar_url) = if is_dm {
+                let (name, avatar_url, human_member_count) = if is_dm {
                     let members = room
                         .members_no_sync(RoomMemberships::JOIN)
                         .await
@@ -1312,16 +1312,44 @@ impl MatrixClientManager {
                         .iter()
                         .find(|member| Some(member.user_id()) != client.user_id());
 
-                    let name = other_member
-                        .and_then(|member| member.display_name().map(str::to_owned))
-                        .or_else(|| info.name().map(str::to_owned))
-                        .unwrap_or_else(|| room_id.clone());
+                    let mut other_member_names: Vec<String> = members
+                        .iter()
+                        .filter(|member| Some(member.user_id()) != client.user_id())
+                        .map(|member| {
+                            member
+                                .display_name()
+                                .map(str::trim)
+                                .filter(|name| !name.is_empty())
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| member.user_id().to_string())
+                        })
+                        .collect();
+                    other_member_names.sort_by_key(|name| name.to_lowercase());
+
+                    let human_member_count = room
+                        .human_member_ids(RoomMemberships::JOIN)
+                        .await
+                        .map(|members| members.len())
+                        .unwrap_or(members.len());
+
+                    let name = if other_member_names.len() > 1 {
+                        format!(
+                            "{} ({})",
+                            other_member_names.iter().take(2).cloned().collect::<Vec<_>>().join("+"),
+                            human_member_count
+                        )
+                    } else {
+                        other_member
+                            .and_then(|member| member.display_name().map(str::to_owned))
+                            .or_else(|| info.name().map(str::to_owned))
+                            .unwrap_or_else(|| room_id.clone())
+                    };
 
                     let avatar_url = other_member
                         .and_then(|member| member.avatar_url().map(ToString::to_string))
                         .or_else(|| info.avatar_url().map(ToString::to_string));
 
-                    (name, avatar_url)
+                    (name, avatar_url, human_member_count)
                 } else {
                     let name = info
                         .name()
@@ -1330,7 +1358,7 @@ impl MatrixClientManager {
 
                     let avatar_url = info.avatar_url().map(ToString::to_string);
 
-                    (name, avatar_url)
+                    (name, avatar_url, info.joined_members_count() as usize)
                 };
 
                 let parent_ids = space_service
@@ -1347,6 +1375,7 @@ impl MatrixClientManager {
                     "topic": info.topic(),
                     "avatar_url": avatar_url,
                     "member_count": info.joined_members_count(),
+                    "human_member_count": human_member_count,
                     "unread_count": room.unread_notification_counts().notification_count,
                     "mention_count": room.unread_notification_counts().highlight_count,
                     "last_activity": room.latest_event_timestamp().map(|timestamp| timestamp.get()),
@@ -2043,7 +2072,7 @@ impl MatrixClientManager {
                     "room"
                 };
 
-                let (name, avatar_url) = if is_dm {
+                let (name, avatar_url, human_member_count) = if is_dm {
                     let members = room
                         .members_no_sync(RoomMemberships::JOIN)
                         .await
@@ -2053,16 +2082,44 @@ impl MatrixClientManager {
                         .iter()
                         .find(|member| Some(member.user_id()) != client.user_id());
 
-                    let name = other_member
-                        .and_then(|member| member.display_name().map(str::to_owned))
-                        .or_else(|| info.name().map(str::to_owned))
-                        .unwrap_or_else(|| room_id.clone());
+                    let mut other_member_names: Vec<String> = members
+                        .iter()
+                        .filter(|member| Some(member.user_id()) != client.user_id())
+                        .map(|member| {
+                            member
+                                .display_name()
+                                .map(str::trim)
+                                .filter(|name| !name.is_empty())
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| member.user_id().to_string())
+                        })
+                        .collect();
+                    other_member_names.sort_by_key(|name| name.to_lowercase());
+
+                    let human_member_count = room
+                        .human_member_ids(RoomMemberships::JOIN)
+                        .await
+                        .map(|members| members.len())
+                        .unwrap_or(members.len());
+
+                    let name = if other_member_names.len() > 1 {
+                        format!(
+                            "{} ({})",
+                            other_member_names.iter().take(2).cloned().collect::<Vec<_>>().join("+"),
+                            human_member_count
+                        )
+                    } else {
+                        other_member
+                            .and_then(|member| member.display_name().map(str::to_owned))
+                            .or_else(|| info.name().map(str::to_owned))
+                            .unwrap_or_else(|| room_id.clone())
+                    };
 
                     let avatar_url = other_member
                         .and_then(|member| member.avatar_url().map(ToString::to_string))
                         .or_else(|| info.avatar_url().map(ToString::to_string));
 
-                    (name, avatar_url)
+                    (name, avatar_url, human_member_count)
                 } else {
                     let name = info
                         .name()
@@ -2071,7 +2128,7 @@ impl MatrixClientManager {
 
                     let avatar_url = info.avatar_url().map(ToString::to_string);
 
-                    (name, avatar_url)
+                    (name, avatar_url, info.joined_members_count() as usize)
                 };
 
                 let parent_ids = space_service
@@ -2087,6 +2144,7 @@ impl MatrixClientManager {
                     "topic": info.topic(),
                     "avatar_url": avatar_url,
                     "member_count": info.joined_members_count(),
+                    "human_member_count": human_member_count,
                     "unread_count": room.unread_notification_counts().notification_count,
                     "mention_count": room.unread_notification_counts().highlight_count,
                     "last_activity": room.latest_event_timestamp().map(|timestamp| timestamp.get()),
