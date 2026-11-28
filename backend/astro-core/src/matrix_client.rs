@@ -1316,12 +1316,14 @@ impl MatrixClientManager {
                         .iter()
                         .filter(|member| Some(member.user_id()) != client.user_id())
                         .map(|member| {
-                            member
+                            let display_name = member
                                 .display_name()
                                 .map(str::trim)
                                 .filter(|name| !name.is_empty())
                                 .map(str::to_owned)
-                                .unwrap_or_else(|| member.user_id().to_string())
+                                .unwrap_or_else(|| member.user_id().to_string());
+
+                            display_name.chars().take(3).collect::<String>()
                         })
                         .collect();
                     other_member_names.sort_by_key(|name| name.to_lowercase());
@@ -2086,12 +2088,14 @@ impl MatrixClientManager {
                         .iter()
                         .filter(|member| Some(member.user_id()) != client.user_id())
                         .map(|member| {
-                            member
+                            let display_name = member
                                 .display_name()
                                 .map(str::trim)
                                 .filter(|name| !name.is_empty())
                                 .map(str::to_owned)
-                                .unwrap_or_else(|| member.user_id().to_string())
+                                .unwrap_or_else(|| member.user_id().to_string());
+
+                            display_name.chars().take(3).collect::<String>()
                         })
                         .collect();
                     other_member_names.sort_by_key(|name| name.to_lowercase());
