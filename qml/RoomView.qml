@@ -156,124 +156,93 @@ Item {
     }
 
 
-    // RoomView owns the single video player and video output.
+    // RoomView owns one active player and one persistent video output.
+    // A fresh MediaPlayer is created for each new video because the Ubuntu
+    // Touch AAL/media-hub backend can stall when its source is replaced.
     property string activeVideoKey: ""
     property var activeVideoOwner: null
     property var activeVideoOutputHost: null
-
-    // One decoder and one renderer live for the lifetime of RoomView.
-    // Switching messages changes the source, never the MediaPlayer object.
-    property var roomSharedVideoPlayer: roomSharedVideoPlayerItem
+    property var roomSharedVideoPlayer: null
     property var roomSharedVideoOutput: roomSharedVideoOutputItem
 
-    MediaPlayer {
-        id: roomSharedVideoPlayerItem
-        autoPlay: false
+    Component {
+        id: sharedVideoPlayerComponent
 
-        Component.onCompleted: {
-            console.log(
-                "[AstroVideoDiag] MediaPlayer created",
-                "source:", source,
-                "status:", status,
-                "playbackState:", playbackState
-            )
-        }
+        MediaPlayer {
+            autoPlay: false
 
-        onSourceChanged: {
-            console.log(
-                "[AstroVideoDiag] source changed",
-                "source:", source,
-                "status:", status,
-                "playbackState:", playbackState
-            )
-        }
+            Component.onCompleted: {
+                console.log("[AstroVideoDiag] fresh MediaPlayer created")
+            }
 
-        onStatusChanged: {
-            console.log(
-                "[AstroVideoDiag] status changed",
-                "status:", status,
-                "source:", source,
-                "playbackState:", playbackState,
-                "duration:", duration,
-                "error:", error,
-                "errorString:", errorString
-            )
-        }
+            onSourceChanged: {
+                console.log("[AstroVideoDiag] source changed", source,
+                            "status:", status, "playbackState:", playbackState)
+            }
 
-        onPlaybackStateChanged: {
-            console.log(
-                "[AstroVideoDiag] playback state changed",
-                "playbackState:", playbackState,
-                "status:", status,
-                "position:", position,
-                "duration:", duration,
-                "source:", source
-            )
-        }
+            onStatusChanged: {
+                console.log("[AstroVideoDiag] status changed", status,
+                            "playbackState:", playbackState,
+                            "duration:", duration, "error:", error,
+                            "errorString:", errorString)
+            }
 
-        onDurationChanged: {
-            console.log(
-                "[AstroVideoDiag] duration changed",
-                "duration:", duration,
-                "status:", status,
-                "source:", source
-            )
-        }
+            onPlaybackStateChanged: {
+                console.log("[AstroVideoDiag] playback state changed",
+                            playbackState, "status:", status,
+                            "position:", position, "duration:", duration)
+            }
 
-        onError: {
-            console.error(
-                "[AstroVideoDiag] MediaPlayer error",
-                "error:", error,
-                "errorString:", errorString,
-                "status:", status,
-                "playbackState:", playbackState,
-                "source:", source
-            )
+            onError: {
+                console.error("[AstroVideoDiag] MediaPlayer error",
+                              error, errorString, "status:", status)
+            }
         }
     }
 
     VideoOutput {
         id: roomSharedVideoOutputItem
         parent: root
-        source: roomSharedVideoPlayerItem
+        source: null
         fillMode: VideoOutput.PreserveAspectFit
         visible: false
         z: 100
     }
 
-    Component.onCompleted: root.requestRtcParticipantAvatars()
+    Component.onCompleted: {
+        root.requestRtcParticipantAvatars()
+        if (!root.replaceSharedVideoPlayer())
+            console.error("[AstroVideo] Initial MediaPlayer creation failed")
+    }
+
+    Component.onDestruction: {
+        if (root.roomSharedVideoPlayer) {
+            root.roomSharedVideoPlayer.stop()
+            root.roomSharedVideoPlayer.destroy()
+            root.roomSharedVideoPlayer = null
+        }
+    }
 
     property string pendingSharedVideoKey: ""
     property string pendingSharedVideoUrl: ""
     property var pendingSharedVideoHost: null
     property var pendingSharedVideoOwner: null
 
-    // Inline playback uses Flickable content coordinates, so scrolling
-    // moves the video and its message together without reparenting it.
+    // Keep the VideoOutput directly attached to its active message host.
+    // This avoids an independently positioned overlay in Flickable content.
     function positionSharedVideoOutput(host, fullscreen) {
         var output = root.roomSharedVideoOutput
         if (!output || !host)
             return
 
-        var target = fullscreen ? fullscreenVideoOverlay : messageList.contentItem
-        var point = host.mapToItem(target, 0, 0)
-
+        var target = fullscreen ? fullscreenVideoOverlay : host
         output.parent = target
-        output.x = point.x
-        output.y = point.y
-        output.width = host.width
-        output.height = host.height
+        output.x = 0
+        output.y = 0
+        output.width = fullscreen ? fullscreenVideoOverlay.width : host.width
+        output.height = fullscreen ? fullscreenVideoOverlay.height : host.height
         output.z = fullscreen ? 2 : 1
         output.visible = true
-    }
-
-    Connections {
-        target: root.activeVideoOutputHost
-
-        onXChanged: if (root.activeVideoKey !== "" && !root.fullscreenVideoOutput) Qt.callLater(function() { root.positionSharedVideoOutput(root.activeVideoOutputHost, false) })
-        onYChanged: if (root.activeVideoKey !== "" && !root.fullscreenVideoOutput) Qt.callLater(function() { root.positionSharedVideoOutput(root.activeVideoOutputHost, false) })
-        onWidthChanged: if (root.activeVideoKey !== "" && !root.fullscreenVideoOutput) Qt.callLater(function() { root.positionSharedVideoOutput(root.activeVideoOutputHost, false) })
-        onHeightChanged: if (root.activeVideoKey !== "" && !root.fullscreenVideoOutput) Qt.callLater(function() { root.positionSharedVideoOutput(root.activeVideoOutputHost, false) })
     }
 
     Timer {
@@ -298,61 +267,37 @@ Item {
                     root.activeVideoOwner !== owner)
                 return
 
-            root.positionSharedVideoOutput(outputHost, false)
-
-            var player = root.roomSharedVideoPlayer
-            if (!player) {
-                console.error("[AstroVideo] Shared MediaPlayer is unavailable")
+            var output = root.roomSharedVideoOutput
+            if (!output) {
+                console.error("[AstroVideo] Shared VideoOutput is unavailable")
                 root.activeVideoKey = ""
                 root.activeVideoOwner = null
                 root.activeVideoOutputHost = null
                 return
             }
 
-            // Pause the current item before switching the source. This keeps
-            // the one-decoder guarantee without tearing down the player.
-            console.log(
-                "[AstroVideoDiag] assigning local media",
-                "requestKey:", requestKey,
-                "url:", fileUrl,
-                "urlValid:", Qt.resolvedUrl(fileUrl),
-                "existsAtQmlLevel: checking through backend logs",
-                "oldSource:", player.source,
-                "oldStatus:", player.status,
-                "oldPlaybackState:", player.playbackState
-            )
+            root.positionSharedVideoOutput(outputHost, false)
 
-            player.pause()
+            // Replace the MediaPlayer object, not merely its source. This
+            // forces AAL/media-hub to establish a clean playback session.
+            var player = root.replaceSharedVideoPlayer()
+            if (!player) {
+                console.error("[AstroVideo] Could not create fresh MediaPlayer")
+                root.activeVideoKey = ""
+                root.activeVideoOwner = null
+                root.activeVideoOutputHost = null
+                return
+            }
+
+            console.log("[AstroVideoDiag] assigning local media",
+                        "requestKey:", requestKey, "url:", fileUrl)
             player.source = fileUrl
-
-            console.log(
-                "[AstroVideoDiag] source assigned",
-                "source:", player.source,
-                "status:", player.status,
-                "playbackState:", player.playbackState
-            )
-
             player.play()
 
-            console.log(
-                "[AstroVideoDiag] play() returned",
-                "source:", player.source,
-                "status:", player.status,
-                "playbackState:", player.playbackState
-            )
-
-            Qt.callLater(function() {
-                console.log(
-                    "[AstroVideoDiag] deferred player snapshot",
-                    "source:", player.source,
-                    "status:", player.status,
-                    "playbackState:", player.playbackState,
-                    "position:", player.position,
-                    "duration:", player.duration,
-                    "error:", player.error,
-                    "errorString:", player.errorString
-                )
-            })
+            console.log("[AstroVideoDiag] play() returned",
+                        "source:", player.source,
+                        "status:", player.status,
+                        "playbackState:", player.playbackState)
         }
     }
 
@@ -577,6 +522,27 @@ Item {
         )
     }
 
+    function replaceSharedVideoPlayer() {
+        var oldPlayer = root.roomSharedVideoPlayer
+        var output = root.roomSharedVideoOutput
+        var newPlayer = sharedVideoPlayerComponent.createObject(root)
+
+        if (!newPlayer)
+            return null
+
+        root.roomSharedVideoPlayer = newPlayer
+        if (output)
+            output.source = newPlayer
+
+        if (oldPlayer) {
+            oldPlayer.stop()
+            oldPlayer.destroy()
+        }
+
+        console.log("[AstroVideoDiag] installed fresh MediaPlayer")
+        return newPlayer
+    }
+
     function playMessageVideo(requestKey, fileUrl, outputHost, owner) {
         if (!requestKey || !fileUrl || !outputHost || !owner)
             return
@@ -602,15 +568,10 @@ Item {
             return
         }
 
-        // Cancel any pending renderer creation before switching again.
+        // Cancel any pending playback request before switching videos.
         sharedVideoOutputRecreateTimer.stop()
 
-        // Changing the source in the recreation timer replaces the
-        // previous media. Do not call stop() here: the Ubuntu Touch
-        // media backend can reset its URI when stop() is called.
-
-        // Keep the renderer alive while the deferred request is prepared.
-        // The timer moves this same output into the new message host.
+        // Hide the persistent output while the fresh player is prepared.
         if (root.roomSharedVideoOutput)
             root.roomSharedVideoOutput.visible = false
 
