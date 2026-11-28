@@ -7,6 +7,7 @@
 
 #include <QCoreApplication>
 #include <QStandardPaths>
+#include <QSettings>
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
@@ -38,6 +39,32 @@
 
 // =============================================================
 
+namespace {
+
+QString rtcCameraSettingsFilePath()
+{
+    const QString configPath =
+        QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    if (configPath.isEmpty())
+        return QString();
+
+    QDir directory(configPath);
+    if (!directory.mkpath(QStringLiteral(".")))
+        return QString();
+
+    return directory.filePath(QStringLiteral("camera.ini"));
+}
+
+bool validRtcCameraResolution(int width, int height)
+{
+    return width >= 2 && height >= 2 &&
+        width <= 1920 && height <= 1920 &&
+        (width & 1) == 0 && (height & 1) == 0 &&
+        qint64(width) * height <= 1920LL * 1920LL;
+}
+
+} // namespace
+
 
 Backend::~Backend()
 {
@@ -67,6 +94,53 @@ Backend::~Backend()
 // =============================================================
 // General application status
 // =============================================================
+
+
+int Backend::rtcCameraResolutionWidth() const
+{
+    QSettings settings(rtcCameraSettingsFilePath(), QSettings::IniFormat);
+    const int width = settings.value(QStringLiteral("camera/resolutionWidth"), 480).toInt();
+    const int height = settings.value(QStringLiteral("camera/resolutionHeight"), 640).toInt();
+    return validRtcCameraResolution(width, height) ? width : 480;
+}
+
+int Backend::rtcCameraResolutionHeight() const
+{
+    QSettings settings(rtcCameraSettingsFilePath(), QSettings::IniFormat);
+    const int width = settings.value(QStringLiteral("camera/resolutionWidth"), 480).toInt();
+    const int height = settings.value(QStringLiteral("camera/resolutionHeight"), 640).toInt();
+    return validRtcCameraResolution(width, height) ? height : 640;
+}
+
+void Backend::setRtcCameraResolution(int width, int height)
+{
+    if (!validRtcCameraResolution(width, height)) {
+        qWarning() << "ASTRO_RTC_CAMERA: refusing invalid saved resolution"
+                   << width << "x" << height;
+        return;
+    }
+
+    const QString settingsPath = rtcCameraSettingsFilePath();
+    if (settingsPath.isEmpty()) {
+        qWarning() << "ASTRO_RTC_CAMERA: could not resolve persistent settings path";
+        return;
+    }
+
+    QSettings settings(settingsPath, QSettings::IniFormat);
+    settings.setValue(QStringLiteral("camera/resolutionWidth"), width);
+    settings.setValue(QStringLiteral("camera/resolutionHeight"), height);
+    settings.sync();
+    if (settings.status() != QSettings::NoError) {
+        qWarning() << "ASTRO_RTC_CAMERA: failed to persist resolution"
+                   << width << "x" << height
+                   << "settingsStatus:" << static_cast<int>(settings.status());
+        return;
+    }
+
+    qInfo() << "ASTRO_RTC_CAMERA: persisted outgoing resolution"
+            << width << "x" << height
+            << "path:" << settingsPath;
+}
 
 
 QString Backend::rtcRingbackToneUrl() const

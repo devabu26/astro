@@ -42,6 +42,9 @@ public:
     Q_INVOKABLE QString rtcRingbackToneUrl() const;
     Q_INVOKABLE QString rtcConnectionToneUrl() const;
     Q_INVOKABLE QString rtcHangupToneUrl() const;
+    Q_INVOKABLE int rtcCameraResolutionWidth() const;
+    Q_INVOKABLE int rtcCameraResolutionHeight() const;
+    Q_INVOKABLE void setRtcCameraResolution(int width, int height);
     Q_INVOKABLE QString prepareDataDirectory() const;
     Q_INVOKABLE bool hasExistingStorage() const;
     Q_INVOKABLE QString secretServiceStatus() const;

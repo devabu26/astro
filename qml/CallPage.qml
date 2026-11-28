@@ -353,11 +353,27 @@ Item {
         backend.setRtcAudioMuted(roomId, pendingMuted)
     }
 
+    function restoreCameraResolution() {
+        if (!backend)
+            return
+
+        var savedWidth = backend.rtcCameraResolutionWidth()
+        var savedHeight = backend.rtcCameraResolutionHeight()
+        if (savedWidth >= 2 && savedHeight >= 2) {
+            cameraResolutionWidth = savedWidth
+            cameraResolutionHeight = savedHeight
+            console.info("ASTRO_RTC_CAMERA: restored outgoing resolution",
+                         savedWidth, "x", savedHeight)
+        }
+    }
+
     function selectCameraResolution(width, height) {
         var changed = cameraResolutionWidth !== width ||
                       cameraResolutionHeight !== height
         cameraResolutionWidth = width
         cameraResolutionHeight = height
+        if (backend)
+            backend.setRtcCameraResolution(width, height)
         cameraResolutionMenuVisible = false
         console.info("ASTRO_RTC_CAMERA: selected outgoing resolution", width, "x", height)
 
@@ -702,6 +718,7 @@ Item {
     }
 
     Component.onCompleted: {
+        restoreCameraResolution()
         console.info(
             "ASTRO_CALL_RINGBACK: audio capabilities",
             "availability:", ringbackAudio.availability,
@@ -714,6 +731,8 @@ Item {
             console.info("ASTRO_CALL_RINGBACK: resolved source", ringbackSource)
         }
     }
+
+    onBackendChanged: restoreCameraResolution()
 
     onDirectCallChanged: {
         if (directCall && backend && ringbackSource.length === 0)
