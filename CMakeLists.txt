@@ -179,7 +179,6 @@ add_custom_command(
         --release
         --locked
     DEPENDS
-    DEPENDS
         backend/astro-core/Cargo.toml
         backend/astro-core/Cargo.lock
         backend/astro-core/src/lib.rs
@@ -189,6 +188,7 @@ add_custom_command(
         backend/astro-core/src/notifications.rs
         backend/astro-core/src/media.rs
         backend/astro-core/src/session_storage.rs
+        backend/astro-core/src/rtc_e2ee.rs
 
 
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/backend/astro-core"
