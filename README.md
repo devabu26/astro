@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://github.com/devabu26/astro/blob/main/assets/logo.svg" alt="Astro" width = 200 height = 200> <br>
-  <b color="red">Astro</b>
+  <b style="color: blue;">Astro</b>
 </p>
   
 <p align="center">
