@@ -237,10 +237,7 @@ Item {
 
         var target = fullscreen ? fullscreenVideoOverlay : host
         output.parent = target
-        output.x = 0
-        output.y = 0
-        output.width = fullscreen ? fullscreenVideoOverlay.width : host.width
-        output.height = fullscreen ? fullscreenVideoOverlay.height : host.height
+        output.anchors.fill = target
         output.z = fullscreen ? 2 : 1
         output.visible = true
     }
