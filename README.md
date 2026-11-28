@@ -12,7 +12,7 @@
   <a href="https://github.com/devabu26/astro"><img src="https://img.shields.io/badge/platform-Ubuntu%20Touch-E95420?logo=ubuntu&logoColor=white" alt="Ubuntu Touch"></a>
   <a href="https://matrix.org/"><img src="https://img.shields.io/badge/protocol-Matrix-0DBD8B?logo=matrix&logoColor=white" alt="Matrix"></a>
   <img src="https://img.shields.io/badge/language-C%2B%2B%20%7C%20Rust%20%7C%20QML-6C8EBF" alt="C++, Rust and QML">
-  <img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0">
+  <img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0 [or later]">
   <img src="https://img.shields.io/badge/status-early%20release-orange" alt="Early release">
 </p>
 
@@ -166,7 +166,7 @@ Please check the existing repository issues and discussions before opening a new
 
 ## License
 
-Astro is free software released under the **GNU General Public License v3.0**.
+Astro is free software released under the **GNU General Public License v3.0 or later**.
 
 Copyright © 2026 Marc D.B. (madabu).
 
