@@ -10,6 +10,8 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QDebug>
+#include <QVideoFrame>
+#include <QImage>
 #include <QUuid>
 #include <QMap>
 #include <QVariantMap>
@@ -238,3 +240,38 @@ void Backend::requestMessageVideo(
 // =============================================================
 
 // Request a room's initial message timeline.
+
+
+void Backend::processRtcCameraFrame(
+    const QString &roomId,
+    const QVideoFrame &frame
+)
+{
+    if (!m_storageWorker || roomId.isEmpty() || !frame.isValid())
+        return;
+
+    // This is intentionally a direct call: the video filter runs with the
+    // Qt Quick GL context current, and the worker's surface reads the texture
+    // before queueing the converted I420 bytes back to the worker thread.
+    m_storageWorker->processRtcCameraFrame(frame);
+}
+
+
+void Backend::processRtcCameraImage(
+    const QString &roomId,
+    const QImage &image
+)
+{
+    if (!m_storageWorker || roomId.isEmpty() || image.isNull() ||
+        roomId != m_rtcCameraRoomId)
+        return;
+
+    StorageWorker *worker = m_storageWorker;
+    QMetaObject::invokeMethod(
+        worker,
+        [worker, roomId, image]() {
+            worker->processRtcCameraImage(roomId, image);
+        },
+        Qt::QueuedConnection
+    );
+}

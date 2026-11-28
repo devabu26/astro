@@ -1,6 +1,7 @@
 
 
 #include "Backend.h"
+#include "NativeAalCamera.h"
 #include "StorageWorker/StorageWorker.h"
 #include "notifications/NotificationManager.h"
 
@@ -15,6 +16,10 @@
 #include <QVariantMap>
 #include <QList>
 #include <QThread>
+#include <QCamera>
+#include <QAbstractVideoSurface>
+#include <QCameraInfo>
+#include <QTimer>
 #include <QMetaObject>
 #include <functional>
 
@@ -29,6 +34,7 @@
 #include <QDBusVariant>
 #include <QDBusArgument>
 #include <QDBusMetaType>
+
 
 // =============================================================
 
@@ -102,6 +108,20 @@ void Backend::loginMatrix(
 // =============================================================
 // Matrix room and Space retrieval
 // =============================================================
+
+
+void Backend::refreshMatrixAccountProfile()
+{
+    if (!m_storageReady) {
+        emit matrixAccountProfileRetrieved(
+            QString(),
+            QStringLiteral("Unlock encrypted storage to view your Matrix account.")
+        );
+        return;
+    }
+
+    emit requestFetchMatrixAccountProfile();
+}
 
 
 void Backend::refreshMatrixDevices()
@@ -393,6 +413,36 @@ void Backend::sendRoomAttachment(
 
 
 
+void Backend::declineRtcCall(const QString &roomId, const QString &eventId)
+{
+    if (!m_storageReady || roomId.isEmpty() || eventId.isEmpty()) {
+        emit matrixRtcActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID or call event ID is empty")
+        );
+        return;
+    }
+    emit requestDeclineRtcCall(roomId, eventId);
+}
+
+
+void Backend::acceptRtcCall(const QString &roomId)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+    emit requestAcceptRtcCall(roomId);
+}
+
+
 void Backend::joinRtcRoom(const QString &roomId)
 {
     if (!m_storageReady || roomId.isEmpty()) {
@@ -422,12 +472,57 @@ void Backend::leaveRtcRoom(const QString &roomId)
 }
 
 
-void Backend::requestRtcLiveKitCredentials(const QString &roomId)
+void Backend::startRtcAudio(const QString &roomId)
 {
     if (!m_storageReady || roomId.isEmpty()) {
-        emit matrixRtcCredentialsReady(
+        emit matrixRtcAudioActionFinished(
             roomId,
-            QString(),
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+    emit requestStartRtcAudio(roomId);
+}
+
+void Backend::stopRtcAudio(const QString &roomId)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcAudioActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+    emit requestStopRtcAudio(roomId);
+}
+
+void Backend::setRtcAudioMuted(const QString &roomId, bool muted)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcAudioActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+    emit requestSetRtcAudioMuted(roomId, muted);
+}
+
+void Backend::startRtcVideo(
+    const QString &roomId,
+    int width,
+    int height
+)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
             !m_storageReady
                 ? QStringLiteral("Encrypted storage is not open")
                 : QStringLiteral("Room ID is empty")
@@ -435,7 +530,278 @@ void Backend::requestRtcLiveKitCredentials(const QString &roomId)
         return;
     }
 
-    emit requestRtcLiveKitCredentialsWorker(roomId);
+    if (width < 2 || height < 2) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            QStringLiteral("Invalid video dimensions")
+        );
+        return;
+    }
+
+    m_rtcCameraOutputWidth = width;
+    m_rtcCameraOutputHeight = height;
+    emit requestStartRtcVideo(roomId, width, height);
+}
+
+void Backend::startRtcScreenShare(
+    const QString &roomId,
+    int width,
+    int height,
+    bool includeDeviceAudio
+)
+{
+    qInfo() << "ASTRO_SCREEN_SHARE: backend request received"
+            << "storageReady:" << m_storageReady
+            << "roomIdEmpty:" << roomId.isEmpty()
+            << "size:" << width << "x" << height;
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    if (width < 2 || height < 2) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId, QStringLiteral("Invalid screen-share dimensions")
+        );
+        return;
+    }
+
+    emit requestStartRtcScreenShare(roomId, width, height, includeDeviceAudio);
+}
+
+void Backend::stopRtcScreenShare(const QString &roomId)
+{
+    qInfo() << "ASTRO_SCREEN_SHARE_DIAG: backend stop received"
+            << "room:" << roomId;
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcScreenShareActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    emit requestStopRtcScreenShare(roomId);
+}
+
+
+QObject *Backend::rtcCamera() const
+{
+    return m_nativeRtcCamera && m_nativeRtcCamera->isRunning()
+        ? static_cast<QObject *>(m_nativeRtcCamera) : nullptr;
+}
+
+void Backend::switchRtcCamera(const QString &roomId)
+{
+    if (!m_storageReady || roomId.isEmpty() ||
+        !m_nativeRtcCamera || !m_nativeRtcCamera->isRunning() ||
+        m_rtcCameraRoomId != roomId) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Camera is not running for this room")
+        );
+        return;
+    }
+
+    const QList<QCameraInfo> cameras = QCameraInfo::availableCameras();
+    if (cameras.size() < 2) {
+        emit matrixRtcVideoActionFinished(
+            roomId, QStringLiteral("Only one camera is available")
+        );
+        return;
+    }
+
+    QCameraInfo selected;
+    for (int i = 0; i < cameras.size(); ++i) {
+        if (cameras.at(i).deviceName() == m_nativeRtcCameraDeviceId) {
+            selected = cameras.at((i + 1) % cameras.size());
+            break;
+        }
+    }
+    if (selected.deviceName().isEmpty() ||
+        selected.deviceName() == m_nativeRtcCameraDeviceId) {
+        emit matrixRtcVideoActionFinished(
+            roomId, QStringLiteral("Could not find another camera device")
+        );
+        return;
+    }
+
+    m_rtcCameraSwitchPending = true;
+    startRtcBackgroundCamera(roomId, selected.deviceName());
+}
+
+void Backend::startRtcBackgroundCamera(
+    const QString &roomId,
+    const QString &deviceId
+)
+{
+    if (!m_storageReady || roomId.isEmpty() || !m_nativeRtcCamera) {
+        emit matrixRtcBackgroundCameraActionFinished(
+            roomId, false, QString(),
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : roomId.isEmpty()
+                    ? QStringLiteral("Room ID is empty")
+                    : QStringLiteral("Native camera service is unavailable")
+        );
+        return;
+    }
+
+    if (m_nativeRtcCamera->isRunning() &&
+        m_rtcCameraRoomId == roomId &&
+        (deviceId.isEmpty() || deviceId == m_nativeRtcCameraDeviceId)) {
+        emit matrixRtcBackgroundCameraActionFinished(
+            roomId, true, m_nativeRtcCameraDeviceId, QString()
+        );
+        return;
+    }
+
+    if (m_nativeRtcCamera->isRunning()) {
+        m_nativeRtcCamera->stop();
+        m_rtcCameraRoomId.clear();
+        m_nativeRtcCameraDeviceId.clear();
+        emit rtcCameraChanged();
+    }
+
+    const QList<QCameraInfo> cameras = QCameraInfo::availableCameras();
+    QCameraInfo selected;
+    if (!deviceId.isEmpty()) {
+        for (const QCameraInfo &candidate : cameras) {
+            if (candidate.deviceName() == deviceId) {
+                selected = candidate;
+                break;
+            }
+        }
+    } else {
+        selected = QCameraInfo::defaultCamera();
+    }
+
+    if (selected.deviceName().isEmpty()) {
+        const QString error = deviceId.isEmpty()
+            ? QStringLiteral("No native camera device is available")
+            : QStringLiteral("The requested camera device is unavailable");
+        emit matrixRtcBackgroundCameraActionFinished(
+            roomId, false, QString(), error
+        );
+        if (m_rtcCameraSwitchPending) {
+            m_rtcCameraSwitchPending = false;
+            emit matrixRtcVideoActionFinished(roomId, error);
+        }
+        return;
+    }
+
+    bool cameraIdOk = false;
+    const int cameraId = selected.deviceName().toInt(&cameraIdOk);
+    if (!cameraIdOk) {
+        const QString error = QStringLiteral(
+            "AAL camera device ID is not numeric: %1"
+        ).arg(selected.deviceName());
+        emit matrixRtcBackgroundCameraActionFinished(
+            roomId, false, QString(), error
+        );
+        if (m_rtcCameraSwitchPending) {
+            m_rtcCameraSwitchPending = false;
+            emit matrixRtcVideoActionFinished(roomId, error);
+        }
+        return;
+    }
+
+    QString error;
+    if (!m_nativeRtcCamera->start(
+            cameraId,
+            selected.orientation(),
+            m_rtcCameraOutputWidth,
+            m_rtcCameraOutputHeight,
+            roomId,
+            &error)) {
+        qWarning() << "ASTRO_RTC_AAL: native camera start failed:" << error;
+        emit matrixRtcBackgroundCameraActionFinished(
+            roomId, false, QString(), error
+        );
+        if (m_rtcCameraSwitchPending) {
+            m_rtcCameraSwitchPending = false;
+            emit matrixRtcVideoActionFinished(roomId, error);
+        }
+        return;
+    }
+
+    m_rtcCameraRoomId = roomId;
+    m_nativeRtcCameraDeviceId = selected.deviceName();
+    emit rtcCameraChanged();
+    emit matrixRtcBackgroundCameraActionFinished(
+        roomId, true, m_nativeRtcCameraDeviceId, QString()
+    );
+    if (m_rtcCameraSwitchPending) {
+        m_rtcCameraSwitchPending = false;
+        emit matrixRtcVideoActionFinished(roomId, QString());
+    }
+}
+
+void Backend::stopRtcBackgroundCamera(const QString &roomId)
+{
+    if (!m_rtcCameraRoomId.isEmpty() && !roomId.isEmpty() &&
+        roomId != m_rtcCameraRoomId)
+        return;
+
+    if (m_nativeRtcCamera)
+        m_nativeRtcCamera->stop();
+    m_rtcCameraRoomId.clear();
+    m_nativeRtcCameraDeviceId.clear();
+    m_rtcCameraSwitchPending = false;
+    emit rtcCameraChanged();
+}
+
+QStringList Backend::rtcCameraResolutions()
+{
+    if (!m_nativeRtcCamera)
+        return {};
+
+    int cameraId = -1;
+    if (m_nativeRtcCamera->isRunning()) {
+        // The running camera's cached list belongs to the actual selected
+        // device, including after the user flips between front and rear.
+        return m_nativeRtcCamera->supportedPreviewResolutions(-1);
+    }
+
+    QCameraInfo selected = QCameraInfo::defaultCamera();
+    if (selected.deviceName().isEmpty()) {
+        const QList<QCameraInfo> cameras = QCameraInfo::availableCameras();
+        if (!cameras.isEmpty())
+            selected = cameras.first();
+    }
+    if (selected.deviceName().isEmpty())
+        return {};
+
+    bool ok = false;
+    cameraId = selected.deviceName().toInt(&ok);
+    if (!ok)
+        return {};
+
+    return m_nativeRtcCamera->supportedPreviewResolutions(cameraId);
+}
+
+void Backend::stopRtcVideo(const QString &roomId)
+{
+    if (!m_storageReady || roomId.isEmpty()) {
+        emit matrixRtcVideoActionFinished(
+            roomId,
+            !m_storageReady
+                ? QStringLiteral("Encrypted storage is not open")
+                : QStringLiteral("Room ID is empty")
+        );
+        return;
+    }
+
+    emit requestStopRtcVideo(roomId);
 }
 
 void Backend::toggleRoomReaction(

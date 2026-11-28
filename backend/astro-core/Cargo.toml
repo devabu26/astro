@@ -8,14 +8,19 @@ name = "astro_core"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d", features = ["unstable-msc4354"] }
+matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d", features = ["unstable-msc4354", "experimental-send-custom-to-device"] }
+matrix-sdk-base = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d", default-features = false, features = ["e2e-encryption"] }
+sha2 = "=0.10.9"
 mime = "=0.3.18"
 eyeball = "=0.8.8"
 matrix-sdk-ui = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d" }
 matrix-sdk-sqlite = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d", features = ["bundled"] }
 matrix-sdk-store-encryption = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "56bc59112822e7eb25943a95e02502855cdeef2d" }
-livekit = "=0.12.0"
-tokio = { version = "=1.54.1", features = ["rt-multi-thread", "sync", "macros"] }
+livekit = { version = "=0.9.7", features = ["rustls-tls-native-roots"] }
+# Keep the signaling API compatible with livekit 0.9.7.
+livekit-signaling = "=0.1.7"
+rustls = { version = "=0.23.46", default-features = false, features = ["std", "aws_lc_rs"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "sync", "macros", "time"] }
 serde_json = "1"
 futures-util = "0.3"
 getrandom = "=0.2.17"
@@ -25,7 +30,7 @@ tracing = "=0.1.44"
 
 
 [dev-dependencies]
-livekit = "=0.12.0"
+livekit = "=0.9.7"
 tokio = { version = "=1.54.1", features = ["macros"] }
 
 [patch.crates-io]

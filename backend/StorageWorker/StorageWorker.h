@@ -2,12 +2,36 @@
 #pragma once
 
 #include <QObject>
+#include <memory>
+#include <atomic>
 #include <QString>
 #include <QByteArray>
 #include <QTimer>
+#include <QAtomicInt>
+#include <QElapsedTimer>
+#include <QMutex>
+#include <QCamera>
+#include <QPointer>
+#include <QPointer>
+#include <QAudioInput>
+#include <QAudioOutput>
+#include <QAudioDeviceInfo>
+#include <QAudioFormat>
+#include <QIODevice>
 #include <cstdint>
 
+class RtcCameraVideoSurface;
+class QVideoFrame;
+class QImage;
+class QOpenGLContext;
+class QOffscreenSurface;
+class QSurface;
+
 #include "../astro_core_ffi.h"
+
+#include <mir_toolkit/mir_client_library.h>
+#include <mir_toolkit/mir_screencast.h>
+#include <mir_toolkit/mir_buffer_stream.h>
 
 /*
  * Background worker responsible for encrypted storage, Matrix operations,
@@ -26,6 +50,20 @@ class StorageWorker : public QObject
 public:
     explicit StorageWorker(QObject *parent = nullptr);
     ~StorageWorker() override;
+
+    void setRtcCameraOpenGLContext(
+        QOpenGLContext *context,
+        QOffscreenSurface *surface
+    );
+    bool makeRtcCameraOpenGLContextCurrent(
+        QOpenGLContext **previousContext = nullptr,
+        QSurface **previousSurface = nullptr
+    );
+    void releaseRtcCameraOpenGLContext(
+        QOpenGLContext *previousContext = nullptr,
+        QSurface *previousSurface = nullptr
+    );
+    void recordRtcNativeGlFrame() { m_rtcNativeGlFrameCount.fetchAndAddRelaxed(1); }
 
 public slots:
 
@@ -62,6 +100,7 @@ public slots:
     // Matrix devices, rooms and timelines
     // ---------------------------------------------------------
 
+    void fetchMatrixAccountProfile();
     void fetchMatrixDevices();
     void requestDeviceVerification(const QString &deviceId);
     void renameMatrixDevice(
@@ -83,9 +122,34 @@ public slots:
     void paginateRoomTimeline(const QString &roomId);
     void markRoomAsRead(const QString &roomId);
     void sendRoomMessage(const QString &roomId, const QString &message);
+    void declineRtcCall(const QString &roomId, const QString &eventId);
+    void acceptRtcCall(const QString &roomId);
     void joinRtcRoom(const QString &roomId);
     void leaveRtcRoom(const QString &roomId);
-    void requestRtcLiveKitCredentials(const QString &roomId);
+    void startRtcAudio(const QString &roomId);
+    void stopRtcAudio(const QString &roomId);
+    void setRtcAudioMuted(const QString &roomId, bool muted);
+
+    // ASTRO_RTC_VIDEO_STAGE3
+    void startRtcVideo(const QString &roomId, int width, int height);
+    void startRtcBackgroundCamera(const QString &roomId, const QString &deviceId);
+    void stopRtcBackgroundCamera(const QString &roomId);
+    void startRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
+    void stopRtcScreenShare(const QString &roomId);
+    void pollRtcScreenShareStop();
+    // Called directly by the Qt Quick video-filter render thread while its GL context is current.
+    void processRtcCameraFrame(const QVideoFrame &frame);
+    void processRtcCameraImage(const QString &roomId, const QImage &image);
+    void switchRtcCamera(const QString &roomId);
+    void pushRtcVideoFrame(
+        const QString &roomId,
+        int width,
+        int height,
+        const QByteArray &i420,
+        bool nativeCameraFrame = false,
+        bool localCameraFrame = false
+    );
+    void stopRtcVideo(const QString &roomId);
 
     void sendRoomAttachment(
         const QString &requestKey,
@@ -144,6 +208,8 @@ public slots:
     // Called by the worker-thread timer to process retained
     // Matrix timeline subscriptions.
     void pollRoomTimelineUpdates();
+    void pollRtcRemoteVideoFrames();
+    void pollRtcRemoteAudioFrames();
 
 
     // ---------------------------------------------------------
@@ -223,6 +289,7 @@ signals:
     // Matrix device and room results
     // ---------------------------------------------------------
 
+    void matrixAccountProfileUpdated(const QString &json, const QString &error);
     void matrixDevicesUpdated(const QString &json, const QString &error);
 
     /*
@@ -288,10 +355,31 @@ signals:
     // MatrixRTC membership changes are forwarded separately from timeline events.
     void matrixRtcMembershipsUpdated(const QString &json);
     void matrixRtcActionFinished(const QString &roomId, const QString &error);
-    void matrixRtcCredentialsReady(
+
+    // LiveKit audio events and audio-session actions are separate from MatrixRTC presence.
+    void matrixRtcAudioEventsUpdated(const QString &json);
+    void matrixRtcAudioActionFinished(const QString &roomId, const QString &error);
+    void matrixRtcVideoActionFinished(const QString &roomId, const QString &error);
+    void matrixRtcBackgroundCameraActionFinished(
         const QString &roomId,
-        const QString &credentialsJson,
+        bool running,
+        const QString &deviceId,
         const QString &error
+    );
+    void matrixRtcScreenShareActionFinished(const QString &roomId, const QString &error);
+    void matrixRtcRemoteVideoFrame(
+        const QString &roomId,
+        const QString &identity,
+        const QString &source,
+        int width,
+        int height,
+        const QByteArray &i420
+    );
+    void matrixRtcLocalVideoFrame(
+        const QString &roomId,
+        int width,
+        int height,
+        const QByteArray &i420
     );
 
     void matrixDeviceVerificationFinished(
@@ -390,6 +478,19 @@ signals:
 
 
 private:
+    void stopRtcCamera();
+    void finishRtcBackgroundCameraStop();
+    void checkRtcBackgroundCameraUnload(
+        const QPointer<QCamera> &cameraGuard,
+        quint64 cameraGeneration
+    );
+    void finishRtcCameraSwitch(const QString &roomId, const QString &deviceId);
+    void stopRtcScreenShareCapture(const QString &releaseRoomId = QString());
+    void releaseRtcScreenShareMirConnection(const QString &roomId);
+    void beginRtcScreenShareUnpublish(const QString &roomId, const QString &completionError);
+    bool startRtcScreenShareAudioCapture(const QString &roomId, QString *error);
+    void captureRtcScreenShareAudio();
+    void captureRtcScreenShareFrame();
 
     /*
      * Common signature for Rust verification actions.
@@ -422,6 +523,83 @@ private:
 
     // Rust Matrix client; its lifecycle is managed through the FFI.
     AstroMatrixClient *m_matrixClient = nullptr;
+    QOpenGLContext *m_rtcCameraOpenGLContext = nullptr;
+    QOffscreenSurface *m_rtcCameraOffscreenSurface = nullptr;
+    QMutex m_rtcCameraFrameMutex;
+    QCamera *m_rtcCamera = nullptr;
+    // Invalidates queued callbacks from prior native camera instances.
+    quint64 m_rtcCameraGeneration = 0;
+    QTimer *m_rtcBackgroundCameraWatchdogTimer = nullptr;
+    QAtomicInt m_rtcNativeGlFrameCount{0};
+    int m_rtcNativeGlWatchdogPreviousCount = 0;
+    int m_rtcNativeGlWatchdogTicks = 0;
+    bool m_rtcBackgroundCameraStartPending = false;
+    QString m_rtcBackgroundCameraPendingRoomId;
+    QString m_rtcBackgroundCameraPendingDeviceId;
+    bool m_rtcBackgroundCameraStopPending = false;
+    QString m_rtcBackgroundCameraStopRoomId;
+    int m_rtcBackgroundCameraUnloadAttempts = 0;
+    bool m_rtcBackgroundCameraRestartAfterStop = false;
+    QString m_rtcBackgroundCameraRestartRoomId;
+    QString m_rtcBackgroundCameraRestartDeviceId;
+    bool m_rtcStopVideoAfterBackgroundUnload = false;
+    QString m_rtcStopVideoAfterBackgroundUnloadRoomId;
+    bool m_rtcStopAudioAfterBackgroundUnload = false;
+    QString m_rtcStopAudioAfterBackgroundUnloadRoomId;
+    bool m_rtcStartVideoAfterBackgroundUnload = false;
+    QString m_rtcStartVideoAfterBackgroundUnloadRoomId;
+    int m_rtcStartVideoAfterBackgroundUnloadWidth = 0;
+    int m_rtcStartVideoAfterBackgroundUnloadHeight = 0;
+    bool m_rtcSwitchCameraAfterBackgroundUnload = false;
+    QString m_rtcSwitchCameraAfterBackgroundUnloadRoomId;
+    QString m_rtcSwitchCameraAfterBackgroundUnloadDeviceId;
+    RtcCameraVideoSurface *m_rtcVideoSurface = nullptr;
+    QString m_rtcVideoRoomId;
+    int m_rtcVideoWidth = 0;
+    int m_rtcVideoHeight = 0;
+    QString m_rtcScreenShareRoomId;
+    MirConnection *m_rtcScreenShareConnection = nullptr;
+    MirScreencast *m_rtcScreenCast = nullptr;
+    MirBufferStream *m_rtcScreenShareStream = nullptr;
+    QTimer *m_rtcScreenShareTimer = nullptr;
+    QTimer *m_rtcScreenShareStopPollTimer = nullptr;
+    // Covers the complete stop operation, including both LiveKit
+    // unpublish and asynchronous Mir screencast release.
+    QString m_rtcScreenShareStopPendingRoomId;
+    QString m_rtcScreenShareStopCompletionError;
+    bool m_rtcScreenShareUnpublishStarted = false;
+    bool m_rtcScreenShareUnpublishFinished = false;
+    QString m_rtcMirReleasePendingRoomId;
+    QString m_rtcMirReleasePendingError;
+    std::shared_ptr<std::atomic_bool> m_rtcMirReleaseComplete;
+    int m_rtcScreenShareWidth = 0;
+    int m_rtcScreenShareHeight = 0;
+    bool m_rtcScreenShareStartPending = false;
+    // Invalidates queued timer/timeout callbacks from an older capture session.
+    quint64 m_rtcScreenShareGeneration = 0;
+    QByteArray m_rtcScreenShareLastFrame;
+    QElapsedTimer m_rtcScreenShareLastFrameSent;
+    // Aggregate screen-share stage timings; emitted every five seconds.
+    QElapsedTimer m_rtcScreenSharePerfWindow;
+    quint64 m_rtcScreenSharePerfFrames = 0;
+    qint64 m_rtcScreenSharePerfMapUs = 0;
+    qint64 m_rtcScreenSharePerfCompareUs = 0;
+    qint64 m_rtcScreenSharePerfCopyConvertUs = 0;
+    qint64 m_rtcScreenSharePerfSubmitUs = 0;
+    QAudioOutput *m_rtcRemoteAudioOutput = nullptr;
+    QIODevice *m_rtcRemoteAudioDevice = nullptr;
+    QByteArray m_rtcRemoteAudioPending;
+    bool m_loggedFirstRemoteRtcAudioFrame = false;
+
+    QAudioInput *m_rtcScreenShareAudioInput = nullptr;
+    QIODevice *m_rtcScreenShareAudioDevice = nullptr;
+    QByteArray m_rtcScreenShareAudioBuffer;
+    QString m_rtcScreenShareAudioRoomId;
+    QElapsedTimer m_rtcScreenShareAudioDiagnosticsTimer;
+    quint64 m_rtcScreenShareAudioDiagnosticBytes = 0;
+    quint64 m_rtcScreenShareAudioDiagnosticFrames = 0;
+    long double m_rtcScreenShareAudioDiagnosticSquares = 0.0L;
+    quint64 m_rtcScreenShareAudioDiagnosticSamples = 0;
 
     // Retained push notification configuration.
     QByteArray m_pushToken;
@@ -430,6 +608,9 @@ private:
 
     // Polls retained timeline subscriptions on this worker's thread.
     QTimer *m_timelinePollTimer = nullptr;
+    QTimer *m_rtcVideoPollTimer = nullptr;
+    QTimer *m_rtcAudioPollTimer = nullptr;
+    bool m_loggedFirstRemoteRtcFrame = false;
 
     // Retained only while encrypted storage is unlocked.
     QByteArray m_storagePassphrase;

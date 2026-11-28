@@ -8,7 +8,6 @@ use matrix_sdk::ruma::api::client::device::delete_device;
 use matrix_sdk::ruma::api::client::push::{PusherIds, PusherInit, PusherKind};
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk::ruma::api::client::uiaa;
-use matrix_sdk::ruma::api::client::rtc::RtcTransport;
 use matrix_sdk::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk::ruma::events::room::message::{
     RoomMessageEventContent, RoomMessageEventContentWithoutRelation,
@@ -20,19 +19,48 @@ use matrix_sdk::ruma::events::{
     key::verification::request::ToDeviceKeyVerificationRequestEvent,
     room::message::{MessageType, OriginalSyncRoomMessageEvent},
 };
-use matrix_sdk::ruma::push::HttpPusherData;
-use matrix_sdk::{
-    config::SyncSettings, ruma::room::RoomType, store::RoomLoadSettings, Client, LoopCtrl,
-    Room, RoomMemberships, SqliteStoreConfig, TransmissionProgress,
+use matrix_sdk::ruma::push::{
+    Action as PushAction, EventMatchConditionData, EventPropertyContainsConditionData,
+    EventPropertyIsConditionData, HttpPusherData, PushCondition, RuleKind, Tweak,
 };
-use livekit::prelude::{LocalAudioTrack, LocalTrack, PlatformAudio, Room as LiveKitRoom, RoomEvent, RoomOptions, RtcAudioSource, TrackPublishOptions, TrackSource};
-use tokio::task::JoinHandle;
+use matrix_sdk::{
+    config::SyncSettings,
+    encryption::{BackupDownloadStrategy, EncryptionSettings},
+    ruma::room::RoomType,
+    store::RoomLoadSettings,
+    Client, LoopCtrl, Room, RoomMemberships, SqliteStoreConfig, TransmissionProgress,
+};
+use matrix_sdk_base::crypto::{CollectStrategy, DecryptionSettings, TrustRequirement};
+use livekit::prelude::{LocalAudioTrack, LocalVideoTrack, LocalTrack, PlatformAudio, RemoteTrack, Room as LiveKitRoom, RoomEvent, RoomOptions, TrackSource};
+use livekit::options::TrackPublishOptions;
+use livekit::e2ee::{
+    key_provider::{KeyDerivationAlgorithm, KeyProvider, KeyProviderOptions},
+    E2eeOptions, EncryptionType,
+};
+use livekit::prelude::ParticipantIdentity;
+use livekit::webrtc::audio_frame::AudioFrame;
+use livekit::webrtc::audio_stream::native::NativeAudioStream;
+use livekit::webrtc::audio_source::native::NativeAudioSource;
+use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
+use livekit::webrtc::video_stream::native::NativeVideoStream;
+use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
+use livekit::webrtc::video_frame::{VideoBuffer, VideoBufferType};
+use livekit::webrtc::video_source::native::NativeVideoSource;
+use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
+use livekit::webrtc::video_frame::{
+    I420Buffer, VideoFrame, VideoRotation,
+};
+
+
 use matrix_sdk_ui::spaces::SpaceService;
 use matrix_sdk_ui::timeline::{
     MembershipChange, Timeline, TimelineBuilder, TimelineEventItemId,
     TimelineItem, TimelineItemContent,
 };
-use std::collections::{HashMap, HashSet};
+use matrix_sdk_ui::unable_to_decrypt_hook::{
+    UnableToDecryptHook, UnableToDecryptInfo, UtdHookManager,
+};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::c_void;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -45,10 +73,111 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::{Builder, Runtime};
 
 use crate::media::MediaManager;
-use crate::notifications::{register_notification_handler, NotificationQueue};
+use crate::rtc_e2ee::{has_active_legacy_membership, has_active_modern_membership, RtcE2eeSession};
+use crate::notifications::{register_incoming_call_handler, register_notification_handler, NotificationQueue};
 use crate::session_storage::{delete_session, load_session, save_session};
 
 static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+const RTC_VIDEO_FRAME_QUEUE_LIMIT: usize = 12;
+const RTC_AUDIO_FRAME_QUEUE_LIMIT: usize = 200;
+const RTC_VIDEO_MAX_WIDTH: u32 = 1920;
+const RTC_VIDEO_MAX_HEIGHT: u32 = 1920;
+
+struct RtcRemoteAudioFrame {
+    key: String,
+    room_id: String,
+    identity: String,
+    sample_rate: u32,
+    channels: u32,
+    data: Vec<u8>,
+}
+
+struct RtcRemoteVideoFrame {
+    key: String,
+    room_id: String,
+    identity: String,
+    source: String,
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+fn pack_remote_i420_frame(buffer: &I420Buffer) -> Option<Vec<u8>> {
+    let width = buffer.width() as usize;
+    let height = buffer.height() as usize;
+
+    if width < 2 || height < 2 || width % 2 != 0 || height % 2 != 0
+        || width > RTC_VIDEO_MAX_WIDTH as usize
+        || height > RTC_VIDEO_MAX_HEIGHT as usize
+    {
+        return None;
+    }
+
+    let chroma_width = (width + 1) / 2;
+    let chroma_height = (height + 1) / 2;
+    let (stride_y, stride_u, stride_v) = buffer.strides();
+    let (plane_y, plane_u, plane_v) = buffer.data();
+
+    let capacity = width.checked_mul(height)?
+        .checked_add(chroma_width.checked_mul(chroma_height)?.checked_mul(2)?)?;
+    let mut packed = Vec::with_capacity(capacity);
+
+    fn append_plane(
+        output: &mut Vec<u8>,
+        source: &[u8],
+        stride: usize,
+        row_width: usize,
+        rows: usize,
+    ) -> Option<()> {
+        if stride < row_width {
+            return None;
+        }
+        for row in 0..rows {
+            let start = row.checked_mul(stride)?;
+            let end = start.checked_add(row_width)?;
+            output.extend_from_slice(source.get(start..end)?);
+        }
+        Some(())
+    }
+
+    append_plane(&mut packed, plane_y, stride_y as usize, width, height)?;
+    append_plane(&mut packed, plane_u, stride_u as usize, chroma_width, chroma_height)?;
+    append_plane(&mut packed, plane_v, stride_v as usize, chroma_width, chroma_height)?;
+
+    (packed.len() == capacity).then_some(packed)
+}
+
+fn pack_remote_video_frame(buffer: &dyn VideoBuffer) -> Option<Vec<u8>> {
+    match buffer.buffer_type() {
+        VideoBufferType::I420 => pack_remote_i420_frame(buffer.as_i420()?),
+        VideoBufferType::Native => {
+            let i420 = buffer.as_native()?.to_i420();
+            pack_remote_i420_frame(&i420)
+        }
+        VideoBufferType::I420A => {
+            let i420 = buffer.as_i420a()?.to_i420();
+            pack_remote_i420_frame(&i420)
+        }
+        VideoBufferType::I422 => {
+            let i420 = buffer.as_i422()?.to_i420();
+            pack_remote_i420_frame(&i420)
+        }
+        VideoBufferType::I444 => {
+            let i420 = buffer.as_i444()?.to_i420();
+            pack_remote_i420_frame(&i420)
+        }
+        VideoBufferType::I010 => {
+            let i420 = buffer.as_i010()?.to_i420();
+            pack_remote_i420_frame(&i420)
+        }
+        VideoBufferType::NV12 => {
+            let i420 = buffer.as_nv12()?.to_i420();
+            pack_remote_i420_frame(&i420)
+        }
+        _ => None,
+    }
+}
 
 type TimelineUpdateStream = Pin<Box<dyn Stream<Item = Vec<VectorDiff<Arc<TimelineItem>>>>>>;
 
@@ -72,6 +201,13 @@ fn timeline_item_to_json(
         .filter(|name| !name.trim().is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| event.sender().to_string());
+
+    // RTC notification events are signalling, not chat messages. They are
+    // handled by the global incoming-call notification queue; exposing them
+    // as m.room.event makes the QML message renderer show "unsupported message".
+    if matches!(content, TimelineItemContent::RtcNotification { .. }) {
+        return None;
+    }
 
     // Convert selected non-message timeline items into readable room events.
     // These remain distinct from ordinary Matrix message events.
@@ -122,16 +258,6 @@ fn timeline_item_to_json(
             }
             TimelineItemContent::CallInvite => {
                 Some(format!("{sender_name} started a call"))
-            }
-            TimelineItemContent::RtcNotification { call_intent, .. } => {
-                use matrix_sdk::ruma::events::rtc::notification::CallIntent;
-
-                let description = match call_intent {
-                    Some(CallIntent::Audio) => "started a voice call",
-                    Some(CallIntent::Video) => "started a video call",
-                    _ => "started a call",
-                };
-                Some(format!("{sender_name} {description}"))
             }
             _ => None,
         }
@@ -271,6 +397,26 @@ fn timeline_item_to_json(
     }))
 }
 
+/// Reports Matrix SDK undecryptable-event causes without logging message content.
+#[derive(Debug)]
+struct AstroUnableToDecryptLogger;
+
+impl UnableToDecryptHook for AstroUnableToDecryptLogger {
+    fn on_utd(&self, info: UnableToDecryptInfo) {
+        let late_decryption_ms = info.time_to_decrypt.map(|duration| duration.as_millis());
+        eprintln!(
+            "ASTRO E2EE UTD: event_id={}, cause={:?}, late_decryption_ms={:?}, event_local_age_ms={}, own_identity_trusted={}, sender_homeserver={}, own_homeserver={:?}",
+            info.event_id,
+            info.cause,
+            late_decryption_ms,
+            info.event_local_age_millis,
+            info.user_trusts_own_identity,
+            info.sender_homeserver,
+            info.own_homeserver
+        );
+    }
+}
+
 struct SyncTask {
     cancel: tokio::sync::oneshot::Sender<()>,
     thread: std::thread::JoinHandle<()>,
@@ -334,32 +480,271 @@ fn rtc_membership_state_key(room: &Room, user_id: &str, device_id: &str) -> Stri
 }
 
 
-/// Discover the LiveKit authorization service advertised by the homeserver.
-async fn discover_livekit_service_url(client: &Client) -> Result<String, String> {
+#[derive(Clone, Debug)]
+struct RtcLiveKitTransport {
+    // MSC4195 m.livekit transport: WebSocket URL; the homeserver issues the JWT.
+    sfu_url: Option<String>,
+    // Compatibility transport: standalone JWT service URL used with /sfu/get.
+    legacy_service_url: Option<String>,
+}
+
+/// Discover both current MSC4195 and legacy LiveKit transport shapes.
+///
+/// The pinned Matrix SDK predates the m.livekit transport variant. Ruma
+/// therefore deserializes it as a custom transport, whose data map preserves
+/// the url field. Do not use only the typed legacy LiveKit variant here:
+/// that would silently discard the modern SFU URL.
+async fn discover_livekit_transport(client: &Client) -> Result<RtcLiveKitTransport, String> {
+    let access_token = client.access_token()
+        .ok_or_else(|| "Matrix access token is unavailable for RTC transport discovery".to_string())?;
+    let homeserver = client.homeserver();
+
+    // The pinned Matrix SDK's typed discovery predates the stable response
+    // field name and m.livekit transport. Fetch the raw response first so the
+    // modern SFU URL cannot be dropped by an older Ruma deserializer.
+    for path in [
+        "_matrix/client/v1/rtc/transports",
+        "_matrix/client/unstable/org.matrix.msc4143/rtc/transports",
+    ] {
+        let endpoint = homeserver.join(path)
+            .map_err(|error| format!("Could not construct MatrixRTC transport endpoint: {error}"))?;
+        let response = client.http_client()
+            .get(endpoint)
+            .bearer_auth(&access_token)
+            .send().await
+            .map_err(|error| format!("MatrixRTC transport discovery failed: {error}"))?;
+        let status = response.status();
+        let bytes = response.bytes().await
+            .map_err(|error| format!("Could not read MatrixRTC transport response: {error}"))?;
+
+        if status.as_u16() == 404 {
+            continue;
+        }
+        if !status.is_success() {
+            return Err(format!("MatrixRTC transport discovery returned HTTP {status}"));
+        }
+
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("Invalid MatrixRTC transport response: {error}"))?;
+        let entries = value.get("transports")
+            .or_else(|| value.get("rtc_transports"))
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| "MatrixRTC transport response has no transports array".to_string())?;
+
+        // Preserve both generations when the homeserver advertises them.
+        // Membership format is selected from the active call, not inferred
+        // from whichever transport entry happens to appear first.
+        let mut modern_sfu_url = None;
+        let mut legacy_service_url = None;
+        for entry in entries {
+            let transport_type = entry.get("type").and_then(serde_json::Value::as_str).unwrap_or("");
+            let sfu_url = entry.get("url")
+                .and_then(serde_json::Value::as_str)
+                .filter(|url| !url.is_empty())
+                .map(str::to_owned);
+            let service_url = entry.get("livekit_service_url")
+                .and_then(serde_json::Value::as_str)
+                .filter(|url| !url.is_empty())
+                .map(str::to_owned);
+
+            if transport_type == "m.livekit" {
+                modern_sfu_url = sfu_url.or(modern_sfu_url);
+            } else if transport_type == "livekit" {
+                if legacy_service_url.is_none() {
+                    legacy_service_url = service_url;
+                }
+                if modern_sfu_url.is_none() {
+                    modern_sfu_url = sfu_url;
+                }
+            }
+        }
+
+        if modern_sfu_url.is_some() || legacy_service_url.is_some() {
+            return Ok(RtcLiveKitTransport {
+                sfu_url: modern_sfu_url,
+                legacy_service_url,
+            });
+        }
+        return Err("The homeserver did not advertise a supported LiveKit transport".into());
+    }
+
+    // Older homeservers may expose transports only through .well-known. Let
+    // the SDK retain that compatibility path after both Client-Server routes
+    // proved unavailable.
     let transports = client
         .discover_rtc_transports()
         .await
-        .map_err(|error| format!("Could not discover MatrixRTC transports: {error}"))?;
-
+        .map_err(|error| format!("Could not discover fallback MatrixRTC transports: {error}"))?;
     let Some(transports) = transports else {
         return Err("The homeserver did not advertise any MatrixRTC transports".into());
     };
 
-    transports
-        .into_iter()
-        .find_map(|transport| match transport {
-            RtcTransport::LiveKit(info) => Some(info.service_url),
-            _ => None,
+    let mut modern_sfu_url = None;
+    let mut legacy_service_url = None;
+    for transport in transports {
+        let transport_type = transport.transport_type();
+        let data = transport.data();
+        let url = data.get("url")
+            .and_then(serde_json::Value::as_str)
+            .filter(|url| !url.is_empty())
+            .map(str::to_owned);
+        if transport_type == "m.livekit" {
+            modern_sfu_url = url.or(modern_sfu_url);
+        } else if transport_type == "livekit" {
+            if legacy_service_url.is_none() {
+                legacy_service_url = data.get("livekit_service_url")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|url| !url.is_empty())
+                    .map(str::to_owned);
+            }
+            if modern_sfu_url.is_none() {
+                modern_sfu_url = url;
+            }
+        }
+    }
+
+    if modern_sfu_url.is_some() || legacy_service_url.is_some() {
+        Ok(RtcLiveKitTransport {
+            sfu_url: modern_sfu_url,
+            legacy_service_url,
         })
-        .ok_or_else(|| "The homeserver did not advertise a LiveKit transport".into())
+    } else {
+        Err("The homeserver did not advertise a supported LiveKit transport".into())
+    }
+}
+
+async fn fetch_modern_rtc_livekit_token(
+    client: &Client,
+    room: &Room,
+    sfu_url: &str,
+    member_id: &str,
+) -> Result<String, String> {
+    let access_token = client.access_token()
+        .ok_or_else(|| "Matrix access token is unavailable for MSC4195 LiveKit authorization".to_string())?;
+    let body = serde_json::json!({
+        "url": sfu_url,
+        "room_id": room.room_id().as_str(),
+        "slot_id": "m.call#room",
+        "member_id": member_id
+    });
+    let homeserver = client.homeserver();
+    // MSC4195 has both its stable and unstable client-server paths. Try the
+    // stable route first, then fall back only when that route is absent.
+    let endpoint_paths = [
+        "_matrix/client/v1/rtc/livekit/get_token",
+        "_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token",
+    ];
+    let mut last_status = None;
+    for path in endpoint_paths {
+        let endpoint = homeserver.join(path)
+            .map_err(|error| format!("Could not construct MSC4195 token endpoint: {error}"))?;
+        let request_body = serde_json::to_vec(&body)
+            .map_err(|error| format!("Could not encode MSC4195 LiveKit token request: {error}"))?;
+        let response = client.http_client()
+            .post(endpoint)
+            .bearer_auth(&access_token)
+            .header("content-type", "application/json")
+            .body(request_body)
+            .send().await
+            .map_err(|error| format!("MSC4195 LiveKit token request failed: {error}"))?;
+        let status = response.status();
+        let bytes = response.bytes().await
+            .map_err(|error| format!("Could not read MSC4195 LiveKit token response: {error}"))?;
+        if status.is_success() {
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("Invalid MSC4195 LiveKit token response: {error}"))?;
+            return value.get("jwt").and_then(serde_json::Value::as_str)
+                .filter(|jwt| !jwt.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| "MSC4195 LiveKit token response has no JWT".to_string());
+        }
+
+        if status.as_u16() == 404 {
+            last_status = Some(status);
+            continue;
+        }
+
+        let detail = serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+            .and_then(|value| value.get("error").and_then(serde_json::Value::as_str).map(str::to_owned));
+        return Err(match detail {
+            Some(detail) => format!("Homeserver MSC4195 token endpoint returned HTTP {status}: {detail}"),
+            None => format!("Homeserver MSC4195 token endpoint returned HTTP {status}"),
+        });
+    }
+
+    Err(format!(
+        "Homeserver does not expose either MSC4195 token endpoint (last response: HTTP {})",
+        last_status.map(|status| status.as_u16()).unwrap_or(404)
+    ))
+}
+
+async fn fetch_rtc_livekit_credentials(
+    client: &Client,
+    room: &Room,
+    transport: &RtcLiveKitTransport,
+    member_id: Option<&str>,
+) -> Result<(String, String), String> {
+    if let (Some(sfu_url), Some(member_id)) = (transport.sfu_url.as_deref(), member_id) {
+        let jwt = fetch_modern_rtc_livekit_token(client, room, sfu_url, member_id).await?;
+        return Ok((sfu_url.to_owned(), jwt));
+    }
+
+    let service_url = transport.legacy_service_url.as_deref()
+        .ok_or_else(|| "The selected LiveKit transport requires an MSC4195 member ID and SFU URL".to_string())?;
+    let device_id = client.device_id().ok_or_else(|| "Matrix device ID is unavailable".to_string())?.to_string();
+    let openid_token = client.account().request_openid_token().await
+        .map_err(|error| format!("Could not obtain Matrix OpenID token: {error}"))?;
+    let token_type = serde_json::to_value(&openid_token.token_type)
+        .map_err(|error| format!("Could not encode OpenID token type: {error}"))?;
+    let token_type = token_type.as_str().ok_or_else(|| "Matrix returned an invalid OpenID token type".to_string())?;
+    let request_body = serde_json::json!({
+        "room": room.room_id().as_str(), "device_id": device_id,
+        "openid_token": {
+            "access_token": openid_token.access_token, "token_type": token_type,
+            "matrix_server_name": openid_token.matrix_server_name.to_string(),
+            "expires_in": openid_token.expires_in.as_secs()
+        }
+    });
+    let request_bytes = serde_json::to_vec(&request_body).map_err(|error| format!("Could not encode LiveKit token request: {error}"))?;
+    let endpoint = format!("{}/sfu/get", service_url.trim_end_matches('/'));
+    let response = client.http_client().post(&endpoint).header("content-type", "application/json")
+        .body(request_bytes).send().await
+        .map_err(|error| format!("LiveKit authorization request failed: {error}"))?;
+    let status = response.status();
+    let response_bytes = response.bytes().await.map_err(|error| format!("Could not read LiveKit authorization response: {error}"))?;
+    if !status.is_success() { return Err(format!("LiveKit authorization service returned HTTP {status}")); }
+    let value: serde_json::Value = serde_json::from_slice(&response_bytes)
+        .map_err(|error| format!("Invalid LiveKit authorization response: {error}"))?;
+    let url = value.get("url").and_then(serde_json::Value::as_str).filter(|v| !v.is_empty())
+        .ok_or_else(|| "LiveKit authorization response has no URL".to_string())?.to_owned();
+    let jwt = value.get("jwt").and_then(serde_json::Value::as_str).filter(|v| !v.is_empty())
+        .ok_or_else(|| "LiveKit authorization response has no JWT".to_string())?.to_owned();
+    Ok((url, jwt))
+}
+
+fn rtc_random_member_id() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).map_err(|error| format!("Could not generate a secure MatrixRTC member ID: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 pub struct MatrixClientManager {
     client: Option<Client>,
+    utd_hook: Arc<UtdHookManager>,
+    rtc_livekit_audio_sessions: HashMap<String, LiveKitAudioSession>,
+    rtc_pending_screenshare_stops: HashMap<String, Arc<Mutex<Option<Result<(), String>>>>>,
+    rtc_remote_video_frames: Arc<Mutex<VecDeque<RtcRemoteVideoFrame>>>,
+    rtc_remote_video_tasks: HashMap<String, tokio::task::AbortHandle>,
+    rtc_remote_audio_frames: Arc<Mutex<VecDeque<RtcRemoteAudioFrame>>>,
+    rtc_remote_audio_tasks: HashMap<String, tokio::task::AbortHandle>,
     rtc_participant_profiles: HashMap<(String, String), RtcParticipantProfile>,
     rtc_last_snapshots: HashMap<String, serde_json::Value>,
     rtc_local_memberships: HashMap<String, String>,
-    rtc_livekit_services: HashMap<String, String>,
+    rtc_outgoing_call_notifications: HashMap<String, (String, Vec<String>)>,
+    rtc_modern_memberships: HashMap<String, (String, serde_json::Value)>,
+    rtc_e2ee_sessions: HashMap<String, RtcE2eeSession>,
+    rtc_livekit_services: HashMap<String, RtcLiveKitTransport>,
+    rtc_modern_renewals: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     rtc_renewals: Arc<Mutex<HashMap<String, String>>>,
     runtime: std::sync::Arc<Runtime>,
     session_path: PathBuf,
@@ -377,6 +762,27 @@ pub struct MatrixClientManager {
     verification_sas_queue: Arc<Mutex<Vec<(String, SasVerification)>>>,
     active_verifications: HashMap<String, SasVerification>,
     last_verification_states: HashMap<String, String>,
+}
+
+struct LiveKitAudioSession {
+    room: LiveKitRoom,
+    events: tokio::sync::mpsc::UnboundedReceiver<RoomEvent>,
+    _platform_audio: PlatformAudio,
+    microphone: LocalAudioTrack,
+    muted: bool,
+    video_source: Option<NativeVideoSource>,
+    video_track: Option<LocalVideoTrack>,
+    screen_share_source: Option<NativeVideoSource>,
+    screen_share_track: Option<LocalVideoTrack>,
+    screen_share_audio_source: Option<NativeAudioSource>,
+    screen_share_audio_track: Option<LocalAudioTrack>,
+    screen_share_audio_sender: Option<tokio::sync::mpsc::Sender<Vec<i16>>>,
+    screen_share_frames_submitted: u64,
+    screen_share_frames_accepted: u64,
+    screen_share_frames_rejected: u64,
+    screen_share_stats_last_report: Instant,
+    e2ee_key_provider: Option<KeyProvider>,
+    e2ee_installed_keys: HashMap<(String, u8), Vec<u8>>,
 }
 
 fn create_new_store(database_path: &Path) -> Result<(String, PathBuf), String> {
@@ -436,6 +842,21 @@ impl MatrixClientManager {
             Client::builder()
                 .homeserver_url(homeserver)
                 .handle_refresh_tokens()
+                // Chat E2EE trust policy: only share room keys with devices
+                // signed by their owner's cross-signing identity, and only
+                // decrypt messages from cross-signed devices.
+                .with_room_key_recipient_strategy(CollectStrategy::IdentityBasedStrategy)
+                .with_decryption_settings(DecryptionSettings {
+                    sender_device_trust_requirement: TrustRequirement::CrossSigned,
+                })
+                // If an existing server-side backup key is available, retry
+                // a failed Megolm decryption against that backup. Do not
+                // automatically create backups or bootstrap cross-signing.
+                .with_encryption_settings(EncryptionSettings {
+                    auto_enable_cross_signing: false,
+                    backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
+                    auto_enable_backups: false,
+                })
                 .sqlite_store_with_config_and_cache_path(config, Some(database_path))
                 .build()
                 .await
@@ -443,6 +864,20 @@ impl MatrixClientManager {
         })?;
 
         eprintln!("ASTRO DEBUG: Matrix client build completed");
+
+        let utd_hook = runtime.block_on(async {
+            let mut hook = UtdHookManager::new(
+                Arc::new(AstroUnableToDecryptLogger),
+                client.clone(),
+            )
+            .with_max_delay(Duration::from_secs(15));
+
+            if let Err(error) = hook.reload_from_store().await {
+                eprintln!("ASTRO E2EE UTD: could not restore diagnostic history: {error}");
+            }
+
+            Arc::new(hook)
+        });
 
         // Incoming verification requests are collected here and delivered
         // to the UI through Astro's existing polling path.
@@ -510,6 +945,7 @@ impl MatrixClientManager {
 
         let notification_queue = NotificationQueue::default();
         register_notification_handler(&client, notification_queue.clone());
+        register_incoming_call_handler(&client, notification_queue.clone());
 
         Ok(Self {
             timelines: HashMap::new(),
@@ -523,10 +959,21 @@ impl MatrixClientManager {
             active_verifications: HashMap::new(),
             last_verification_states: HashMap::new(),
             client: Some(client),
+            utd_hook,
+            rtc_livekit_audio_sessions: HashMap::new(),
+            rtc_pending_screenshare_stops: HashMap::new(),
+            rtc_remote_video_frames: Arc::new(Mutex::new(VecDeque::new())),
+            rtc_remote_video_tasks: HashMap::new(),
+            rtc_remote_audio_frames: Arc::new(Mutex::new(VecDeque::new())),
+            rtc_remote_audio_tasks: HashMap::new(),
             rtc_participant_profiles: HashMap::new(),
             rtc_last_snapshots: HashMap::new(),
             rtc_local_memberships: HashMap::new(),
+            rtc_outgoing_call_notifications: HashMap::new(),
+            rtc_modern_memberships: HashMap::new(),
+            rtc_e2ee_sessions: HashMap::new(),
             rtc_livekit_services: HashMap::new(),
+            rtc_modern_renewals: Arc::new(Mutex::new(HashMap::new())),
             rtc_renewals: Arc::new(Mutex::new(HashMap::new())),
             runtime: std::sync::Arc::new(runtime),
             session_path,
@@ -734,6 +1181,14 @@ impl MatrixClientManager {
             task.stop();
         }
 
+        let active_rtc_rooms: Vec<String> =
+            self.rtc_livekit_audio_sessions.keys().cloned().collect();
+        for room_id in active_rtc_rooms {
+            if let Err(error) = self.stop_rtc_audio(&room_id) {
+                eprintln!("ASTRO DEBUG: Could not close LiveKit room {room_id} during logout: {error}");
+            }
+        }
+
         let client = self
             .client
             .as_ref()
@@ -769,6 +1224,8 @@ impl MatrixClientManager {
         self.rtc_participant_profiles.clear();
         self.rtc_last_snapshots.clear();
         self.rtc_local_memberships.clear();
+        self.rtc_modern_memberships.clear();
+        self.rtc_e2ee_sessions.clear();
         self.rtc_livekit_services.clear();
         if let Ok(mut renewals) = self.rtc_renewals.lock() {
             renewals.clear();
@@ -798,12 +1255,44 @@ impl MatrixClientManager {
             let joined_rooms = client.joined_rooms();
             let mut room_entries = Vec::with_capacity(joined_rooms.len());
 
+            // Compute authoritative top-level Space activity from every
+            // joined descendant room. A Space room itself often has no
+            // message timestamp, so sorting its own latest-event value is
+            // insufficient.
+            let mut top_level_space_activity: HashMap<String, u64> = HashMap::new();
+            for joined_room in &joined_rooms {
+                let timestamp: u64 = joined_room
+                    .latest_event_timestamp()
+                    .map(|value| value.get().into())
+                    .unwrap_or(0);
+
+                if timestamp == 0 {
+                    continue;
+                }
+
+                let ancestors = space_service
+                    .top_level_ancestors_of(joined_room.room_id())
+                    .await;
+
+                for space_id in ancestors {
+                    let entry = top_level_space_activity
+                        .entry(space_id.to_string())
+                        .or_insert(0);
+                    *entry = (*entry).max(timestamp);
+                }
+            }
+
             for room in joined_rooms {
                 let info = room.clone_info();
                 let room_id = room.room_id().to_string();
 
                 let is_space = info.room_type() == Some(&RoomType::Space);
                 let is_dm = !is_space && room.is_dm();
+                // Use the room's current Matrix encryption state for the chat
+                // header indicator. If state cannot be read, fail closed.
+                let is_encrypted = room.latest_encryption_state().await
+                    .map(|state| state.is_encrypted())
+                    .unwrap_or(false);
 
                 let kind = if is_space {
                     "space"
@@ -853,12 +1342,18 @@ impl MatrixClientManager {
                 room_entries.push(serde_json::json!({
                     "room_id": room_id,
                     "kind": kind,
+                    "is_encrypted": is_encrypted,
                     "name": name,
                     "topic": info.topic(),
                     "avatar_url": avatar_url,
                     "member_count": info.joined_members_count(),
                     "unread_count": room.unread_notification_counts().notification_count,
                     "mention_count": room.unread_notification_counts().highlight_count,
+                    "last_activity": room.latest_event_timestamp().map(|timestamp| timestamp.get()),
+                    "space_last_activity": top_level_space_activity
+                        .get(&room_id)
+                        .copied()
+                        .unwrap_or(0),
                     "parent_space_ids": parents
                 }));
             }
@@ -867,6 +1362,37 @@ impl MatrixClientManager {
                 "rooms": room_entries
             })
             .to_string())
+        })
+    }
+
+    /// Retrieve the current Matrix account's user ID, display name and avatar URI.
+    pub fn account_profile_json(&self) -> Result<String, String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?;
+
+        let user_id = client
+            .user_id()
+            .ok_or_else(|| "Matrix user ID is unavailable".to_string())?
+            .to_string();
+
+        self.runtime.block_on(async {
+            let account = client.account();
+            let display_name = account
+                .get_display_name()
+                .await
+                .map_err(|error| format!("Could not retrieve Matrix display name: {error}"))?;
+            let avatar_url = account
+                .get_avatar_url()
+                .await
+                .map_err(|error| format!("Could not retrieve Matrix avatar: {error}"))?;
+
+            Ok(serde_json::json!({
+                "user_id": user_id,
+                "display_name": display_name,
+                "avatar_url": avatar_url.map(|url| url.to_string())
+            }).to_string())
         })
     }
 
@@ -1078,6 +1604,7 @@ impl MatrixClientManager {
         let runtime = std::sync::Arc::clone(&self.runtime);
         let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
         let renewals = Arc::clone(&self.rtc_renewals);
+        let modern_renewals = Arc::clone(&self.rtc_modern_renewals);
 
         let thread = std::thread::Builder::new()
             .name("astro-matrix-rtc-compat".to_string())
@@ -1161,11 +1688,27 @@ impl MatrixClientManager {
                                 }
                             }
 
+                            let modern_active = modern_renewals.lock().map(|items| items.clone()).unwrap_or_default();
+                            for (room_id, content) in modern_active {
+                                let Some(room) = joined_rooms.iter().find(|room| room.room_id().as_str() == room_id) else {
+                                    if let Ok(mut items) = modern_renewals.lock() { items.remove(&room_id); }
+                                    continue;
+                                };
+                                if let Err(error) = room.send_raw("m.rtc.member", content)
+                                    .with_sticky_duration(Duration::from_secs(60 * 60)).await {
+                                    eprintln!("ASTRO RTC: modern membership renewal failed in {room_id}: {error}");
+                                }
+                            }
                             tokio::select! {
                                 _ = &mut cancel_rx => return,
                                 _ = tokio::time::sleep(Duration::from_secs(30 * 60)) => {}
                             }
                             continue;
+                        }
+
+                        let sticky_enabled = client.supports_sticky_events().await.unwrap_or(false);
+                        if !sticky_enabled {
+                            eprintln!("ASTRO RTC: MSC4354 unavailable; continuing native Sliding Sync for legacy call membership");
                         }
 
                         let builder = match client.sliding_sync("astro-rtc-compat") {
@@ -1181,6 +1724,17 @@ impl MatrixClientManager {
                                 retry_delay_secs = (retry_delay_secs * 2).min(30);
                                 continue;
                             }
+                        };
+
+                        let builder = if sticky_enabled {
+                            builder.with_sticky_events_extension({
+                                let mut sticky_events =
+                                    matrix_sdk::ruma::api::client::sync::sync_events::v5::request::StickyEvents::default();
+                                sticky_events.enabled = Some(true);
+                                sticky_events
+                            })
+                        } else {
+                            builder
                         };
 
                         let sliding_sync = match builder
@@ -1213,12 +1767,10 @@ impl MatrixClientManager {
                             Some({
                                 let mut settings =
                                     matrix_sdk::ruma::api::client::sync::sync_events::v5::request::RoomSubscription::default();
-                                settings.required_state = vec![(
-                                    matrix_sdk::ruma::events::StateEventType::from(
-                                        "org.matrix.msc3401.call.member"
-                                    ),
-                                    "*".to_owned(),
-                                )];
+                                settings.required_state = vec![
+                                    (matrix_sdk::ruma::events::StateEventType::from("org.matrix.msc3401.call.member"), "*".to_owned()),
+                                    (matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room".to_owned()),
+                                ];
                                 settings
                             }),
                             false,
@@ -1300,6 +1852,32 @@ impl MatrixClientManager {
                                             ),
                                         }
                                     }
+
+                                    let modern_active = modern_renewals.lock()
+                                        .map(|items| items.clone())
+                                        .unwrap_or_default();
+                                    for (room_id, content) in modern_active {
+                                        let Some(room) = joined_rooms.iter().find(|room| {
+                                            room.room_id().as_str() == room_id
+                                        }) else {
+                                            if let Ok(mut items) = modern_renewals.lock() {
+                                                items.remove(&room_id);
+                                            }
+                                            continue;
+                                        };
+
+                                        if let Err(error) = room.send_raw("m.rtc.member", content)
+                                            .with_sticky_duration(Duration::from_secs(60 * 60))
+                                            .await {
+                                            eprintln!(
+                                                "ASTRO RTC: modern membership renewal failed in {room_id}: {error}"
+                                            );
+                                        } else {
+                                            eprintln!(
+                                                "ASTRO RTC: renewed modern MatrixRTC membership in {room_id}"
+                                            );
+                                        }
+                                    }
                                 }
 
                                 room_update = room_info_updates.recv() => {
@@ -1316,12 +1894,10 @@ impl MatrixClientManager {
                                                     Some({
                                                         let mut settings =
                                                             matrix_sdk::ruma::api::client::sync::sync_events::v5::request::RoomSubscription::default();
-                                                        settings.required_state = vec![(
-                                                            matrix_sdk::ruma::events::StateEventType::from(
-                                                                "org.matrix.msc3401.call.member"
-                                                            ),
-                                                            "*".to_owned(),
-                                                        )];
+                                                        settings.required_state = vec![
+                                                            (matrix_sdk::ruma::events::StateEventType::from("org.matrix.msc3401.call.member"), "*".to_owned()),
+                                                            (matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room".to_owned()),
+                                                        ];
                                                         settings
                                                     }),
                                                     true,
@@ -1345,12 +1921,10 @@ impl MatrixClientManager {
                                                 Some({
                                                     let mut settings =
                                                         matrix_sdk::ruma::api::client::sync::sync_events::v5::request::RoomSubscription::default();
-                                                    settings.required_state = vec![(
-                                                        matrix_sdk::ruma::events::StateEventType::from(
-                                                            "org.matrix.msc3401.call.member"
-                                                        ),
-                                                        "*".to_owned(),
-                                                    )];
+                                                    settings.required_state = vec![
+                                                        (matrix_sdk::ruma::events::StateEventType::from("org.matrix.msc3401.call.member"), "*".to_owned()),
+                                                        (matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room".to_owned()),
+                                                    ];
                                                     settings
                                                 }),
                                                 true,
@@ -1429,6 +2003,31 @@ impl MatrixClientManager {
             let joined_rooms = client.joined_rooms();
             let mut room_entries = Vec::with_capacity(joined_rooms.len());
 
+            // Aggregate each top-level Space's activity from every joined
+            // descendant room, including rooms nested under child Spaces.
+            let mut top_level_space_activity: HashMap<String, u64> = HashMap::new();
+            for joined_room in &joined_rooms {
+                let timestamp: u64 = joined_room
+                    .latest_event_timestamp()
+                    .map(|value| value.get().into())
+                    .unwrap_or(0);
+
+                if timestamp == 0 {
+                    continue;
+                }
+
+                let ancestors = space_service
+                    .top_level_ancestors_of(joined_room.room_id())
+                    .await;
+
+                for space_id in ancestors {
+                    let entry = top_level_space_activity
+                        .entry(space_id.to_string())
+                        .or_insert(0);
+                    *entry = (*entry).max(timestamp);
+                }
+            }
+
             for room in joined_rooms {
                 let info = room.clone_info();
                 let room_id = room.room_id().to_string();
@@ -1490,6 +2089,11 @@ impl MatrixClientManager {
                     "member_count": info.joined_members_count(),
                     "unread_count": room.unread_notification_counts().notification_count,
                     "mention_count": room.unread_notification_counts().highlight_count,
+                    "last_activity": room.latest_event_timestamp().map(|timestamp| timestamp.get()),
+                    "space_last_activity": top_level_space_activity
+                        .get(&room_id)
+                        .copied()
+                        .unwrap_or(0),
                     "parent_space_ids": parents
                 }));
             }
@@ -1603,6 +2207,12 @@ impl MatrixClientManager {
             let runtime = std::sync::Arc::clone(&self.runtime);
 
             let (json, update_stream) = runtime.block_on(async {
+                // A room can be reopened after a previous member/profile fetch
+                // failed or while membership state was still lazy-loaded.
+                // Refresh member state before serialising this snapshot so
+                // sender_profile() can provide avatar MXC URIs.
+                timeline.fetch_members().await;
+
                 // Take a fresh snapshot and subscription together.
                 let (items, updates) = timeline.subscribe().await;
 
@@ -1651,6 +2261,7 @@ impl MatrixClientManager {
 
         let (timeline, json, update_stream) = self.runtime.block_on(async {
             let timeline = TimelineBuilder::new(&room)
+                .with_unable_to_decrypt_hook(Arc::clone(&self.utd_hook))
                 .build()
                 .await
                 .map_err(|error| format!("Could not build room timeline: {error}"))?;
@@ -1660,6 +2271,14 @@ impl MatrixClientManager {
                 .paginate_backwards(20)
                 .await
                 .map_err(|error| format!("Could not load room history: {error}"))?;
+
+            // Timeline sender profiles are not guaranteed to be available
+            // until the room member list has been synchronised. Without this,
+            // sender_profile() commonly remains Unavailable and Astro serialises
+            // messages without sender_avatar, so QML has no MXC URI to fetch.
+            // Fetch members after pagination so the SDK can also update the
+            // profiles of the events already loaded into this timeline.
+            timeline.fetch_members().await;
 
             // Retain this stream so ongoing Matrix sync changes can be observed.
             let (items, updates) = timeline.subscribe().await;
@@ -1755,6 +2374,10 @@ impl MatrixClientManager {
             eprintln!(
                 "ASTRO REFRESH TRACE: Pagination completed; reached_start={reached_start}"
             );
+
+            // Cache refresh can leave member/profile details unavailable too.
+            // Re-sync room members before serialising the refreshed snapshot.
+            timeline.fetch_members().await;
 
             // Take a fresh snapshot after pagination and establish a new
             // Astro-side subscription for subsequent timeline updates.
@@ -1852,6 +2475,60 @@ impl MatrixClientManager {
 
     /// Drain timeline changes and report changed unread counts.
     pub fn poll_room_timeline_updates_json(&mut self) -> String {
+        // A decline ends an outgoing one-to-one call for the caller. In a
+        // group room it only rejects that invite; other participants remain.
+        let declines: Vec<(String, String, String)> =
+            self.notification_queue.drain_incoming_call_declines();
+        if !declines.is_empty() {
+            let client = self.client.as_ref().cloned();
+            for (room_id, notification_event_id, sender) in declines {
+                let Some((expected_event_id, recipients)) =
+                    self.rtc_outgoing_call_notifications.get(&room_id).cloned()
+                else {
+                    continue;
+                };
+                if expected_event_id != notification_event_id
+                    || !recipients.iter().any(|recipient| recipient == &sender)
+                {
+                    continue;
+                }
+
+                let Some(client) = client.as_ref() else { continue; };
+                let parsed_room_id = match matrix_sdk::ruma::RoomId::parse(&room_id) {
+                    Ok(id) => id,
+                    Err(_) => continue,
+                };
+                let is_one_to_one = self.runtime.block_on(async {
+                    let Some(room) = client.get_room(&parsed_room_id) else {
+                        return false;
+                    };
+                    let is_direct = room.is_direct().await.unwrap_or(false);
+                    let has_two_members = room.human_member_ids(RoomMemberships::JOIN).await
+                        .map(|members| members.len() == 2)
+                        .unwrap_or(false);
+                    is_direct && has_two_members
+                });
+
+                if !is_one_to_one {
+                    eprintln!(
+                        "ASTRO RTC CALL: decline from {sender} in {room_id}; leaving group call active"
+                    );
+                    continue;
+                }
+
+                eprintln!(
+                    "ASTRO RTC CALL: one-to-one call declined by {sender}; ending local call in {room_id}"
+                );
+                if let Err(error) = self.stop_rtc_audio(&room_id) {
+                    eprintln!("ASTRO RTC CALL: could not close LiveKit after decline: {error}");
+                }
+                if let Err(error) = self.leave_rtc_room(&room_id) {
+                    eprintln!("ASTRO RTC CALL: could not withdraw membership after decline: {error}");
+                }
+                self.rtc_outgoing_call_notifications.remove(&room_id);
+            }
+        }
+
         let own_user_id = self
             .client
             .as_ref()
@@ -1972,6 +2649,7 @@ impl MatrixClientManager {
         let mut unread_counts = Vec::new();
         let mut verification_events = Vec::new();
         let notification_events = self.notification_queue.drain_json();
+        let incoming_call_events = self.notification_queue.drain_incoming_calls_json();
 
         // Move newly received requests into the manager so their SDK
         // handles remain available for later accept/cancel operations.
@@ -2101,6 +2779,7 @@ impl MatrixClientManager {
             && unread_counts.is_empty()
             && verification_events.is_empty()
             && notification_events.is_empty()
+            && incoming_call_events.is_empty()
         {
             return serde_json::json!({
                 "updates": []
@@ -2112,20 +2791,130 @@ impl MatrixClientManager {
             "updates": updates,
             "unread_counts": unread_counts,
             "verification_requests": verification_events,
-            "notifications": notification_events
+            "notifications": notification_events,
+            "incoming_calls": incoming_call_events
         })
         .to_string()
     }
 
 
+    /// Decline a specific incoming MatrixRTC ring using MSC4310.
+    pub fn decline_rtc_call(&self, room_id: &str, notification_event_id: &str) -> Result<(), String> {
+        let room_id = room_id.trim();
+        let notification_event_id = notification_event_id.trim();
+        if room_id.is_empty() || notification_event_id.is_empty() {
+            return Err("Room ID and call notification event ID are required".into());
+        }
+        let client = self.client.as_ref()
+            .ok_or_else(|| "No active Matrix session".to_string())?
+            .clone();
+        let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+            .map_err(|error| format!("Invalid room ID: {error}"))?;
+        let parsed_event_id = matrix_sdk::ruma::EventId::parse(notification_event_id)
+            .map_err(|error| format!("Invalid call notification event ID: {error}"))?;
+        self.runtime.block_on(async move {
+            let room = client.get_room(&parsed_room_id)
+                .ok_or_else(|| "The call's Matrix room is no longer available".to_string())?;
+            let content = serde_json::json!({
+                "m.relates_to": {
+                    "rel_type": "m.reference",
+                    "event_id": parsed_event_id.as_str()
+                }
+            });
+            room.send_raw("org.matrix.msc4310.rtc.decline", content).await
+                .map_err(|error| format!("Could not decline the MatrixRTC call: {error}"))?;
+            Ok(())
+        })
+    }
+
     /// Publish Astro's membership-only presence using Element Call compatibility state.
     pub fn join_rtc_room(&mut self, room_id: &str) -> Result<(), String> {
+        self.join_rtc_room_internal(room_id, true)
+    }
+
+    /// Accept an incoming ring without sending another ring notification.
+    pub fn accept_rtc_call(&mut self, room_id: &str) -> Result<(), String> {
+        self.join_rtc_room_internal(room_id, false)
+    }
+
+    fn join_rtc_room_internal(
+        &mut self,
+        room_id: &str,
+        notify_recipients: bool,
+    ) -> Result<(), String> {
         let room_id = room_id.trim();
         if room_id.is_empty() {
             return Err("Room ID is empty".into());
         }
+        // Reuse an existing membership, but repair any missing transport or
+        // E2EE session before reporting a successful join. A previous attempt
+        // can publish membership successfully and then fail while creating the
+        // media-key exchange; returning here would leave encrypted calls
+        // permanently unable to start.
         if self.rtc_local_memberships.contains_key(room_id) {
-            return Err("Astro already has an active membership in this room".into());
+            let has_e2ee_session = self.rtc_e2ee_sessions.contains_key(room_id);
+            let has_transport = self.rtc_livekit_services.contains_key(room_id);
+            if has_e2ee_session && has_transport {
+                eprintln!(
+                    "ASTRO RTC NEGOTIATION: reusing complete membership; room={}, notify_recipients={}",
+                    room_id, notify_recipients
+                );
+                return Ok(());
+            }
+
+            let client = self.client.as_ref()
+                .ok_or_else(|| "No active Matrix session".to_string())?
+                .clone();
+            let lookup_client = client.clone();
+            let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+                .map_err(|error| format!("Invalid room ID: {error}"))?;
+            let existing_transport = self.rtc_livekit_services.get(room_id).cloned();
+            let (room, encrypted, transport) = self.runtime.block_on(async move {
+                let room = lookup_client.get_room(&parsed_room_id)
+                    .ok_or_else(|| "The existing MatrixRTC membership refers to an unavailable room".to_string())?;
+                let encrypted = room.latest_encryption_state().await
+                    .map_err(|error| format!("Could not determine room encryption state: {error}"))?
+                    .is_encrypted();
+                let transport = match existing_transport {
+                    Some(transport) => transport,
+                    None => discover_livekit_transport(&lookup_client).await?,
+                };
+                Ok::<_, String>((room, encrypted, transport))
+            })?;
+            self.rtc_livekit_services.insert(room_id.to_owned(), transport);
+
+            if encrypted && !self.rtc_e2ee_sessions.contains_key(room_id) {
+                let session = if let Some((member_id, _)) = self.rtc_modern_memberships.get(room_id) {
+                    RtcE2eeSession::start(
+                        self.runtime.as_ref(), client.clone(), room, member_id.clone()
+                    )?
+                } else {
+                    let user_id = client.user_id()
+                        .ok_or_else(|| "Matrix user ID is unavailable for legacy RTC E2EE".to_string())?;
+                    let device_id = client.device_id()
+                        .ok_or_else(|| "Matrix device ID is unavailable for legacy RTC E2EE".to_string())?;
+                    RtcE2eeSession::start_legacy(
+                        self.runtime.as_ref(),
+                        client.clone(),
+                        room,
+                        format!("{user_id}:{device_id}"),
+                    )?
+                };
+                eprintln!(
+                    "ASTRO RTC NEGOTIATION: repaired missing E2EE session for existing membership; room={}, membership_format={}",
+                    room_id,
+                    if self.rtc_modern_memberships.contains_key(room_id) { "msc4354_sticky" } else { "legacy_msc3401" }
+                );
+                self.rtc_e2ee_sessions.insert(room_id.to_owned(), session);
+            }
+
+            eprintln!(
+                "ASTRO RTC NEGOTIATION: existing membership repaired; room={}, encrypted={}, had_e2ee_session={}, had_transport={}, has_e2ee_session={}, has_transport={}",
+                room_id, encrypted, has_e2ee_session, has_transport,
+                self.rtc_e2ee_sessions.contains_key(room_id),
+                self.rtc_livekit_services.contains_key(room_id)
+            );
+            return Ok(());
         }
 
         let client = self.client.as_ref()
@@ -2147,12 +2936,137 @@ impl MatrixClientManager {
                 .ok_or_else(|| "Matrix device ID is unavailable".to_string())?
                 .to_string();
 
-            let livekit_service_url =
-                discover_livekit_service_url(&client).await?;
+            let encrypted = room.latest_encryption_state().await
+                .map_err(|error| format!("Could not determine room encryption state: {error}"))?.is_encrypted();
+
+            let livekit_transport = discover_livekit_transport(&client).await?;
+            eprintln!(
+                "ASTRO RTC NEGOTIATION: discovered transport; modern_sfu_url_present={}, legacy_authorization_url_present={}",
+                livekit_transport.sfu_url.is_some(),
+                livekit_transport.legacy_service_url.is_some()
+            );
+
+            // The active call's membership generation takes precedence over
+            // local capability and transport discovery. In particular, older
+            // Element Call/Cinny sessions publish MSC3401 room-state members
+            // even when the homeserver also advertises the newer m.livekit
+            // transport. Selecting MSC4354 solely from local capabilities can
+            // connect to the SFU with an incompatible member/key identity.
+            let sticky_events_supported = client.supports_sticky_events().await.unwrap_or(false);
+            let native_sliding_sync_available = client.available_sliding_sync_versions().await.iter()
+                .any(|version| matches!(version, Version::Native));
+            let sticky_supported = sticky_events_supported && native_sliding_sync_available;
+            let active_legacy_membership = has_active_legacy_membership(&room).await;
+            let active_modern_membership = has_active_modern_membership(&room);
+            let modern_transport_available = livekit_transport.sfu_url.is_some();
+            let legacy_transport_available = livekit_transport.legacy_service_url.is_some();
+
+            if active_modern_membership && (!sticky_supported || !modern_transport_available) {
+                return Err("This call already has MSC4354 sticky members, but Astro cannot use the matching modern MatrixRTC transport".into());
+            }
+            if active_legacy_membership && !active_modern_membership && !legacy_transport_available {
+                return Err("This call uses legacy MSC3401 membership, but the homeserver did not advertise the legacy LiveKit authorization service required to join it".into());
+            }
+
+            let use_modern_membership = if active_modern_membership {
+                true
+            } else if active_legacy_membership {
+                false
+            } else {
+                sticky_supported && modern_transport_available
+            };
+            eprintln!(
+                "ASTRO RTC NEGOTIATION: membership decision; active_legacy_membership={}, active_modern_membership={}, sticky_events_supported={}, native_sliding_sync_available={}, modern_sfu_url_present={}, legacy_authorization_url_present={}, selected_membership_format={}, selection_reason={}",
+                active_legacy_membership,
+                active_modern_membership,
+                sticky_events_supported,
+                native_sliding_sync_available,
+                modern_transport_available,
+                legacy_transport_available,
+                if use_modern_membership { "msc4354_sticky_m_rtc_member" } else { "legacy_msc3401_room_state" },
+                if active_modern_membership { "existing_modern_call_member" }
+                    else if active_legacy_membership { "existing_legacy_call_member" }
+                    else if use_modern_membership { "new_call_modern_capability" }
+                    else { "new_call_legacy_fallback" }
+            );
+
+            if use_modern_membership && !sticky_supported {
+                return Err("The homeserver advertises the MSC4195 LiveKit transport, but Astro cannot use it without MatrixRTC sticky-event support".into());
+            }
+            if !use_modern_membership && !legacy_transport_available {
+                return Err("The homeserver did not advertise the legacy LiveKit authorization service required for MSC3401 membership".into());
+            }
+
+            let mut modern_membership: Option<serde_json::Value> = None;
+            let mut member_id: Option<String> = None;
+
+            if use_modern_membership {
+                let slot = room.get_state_event(
+                    matrix_sdk::ruma::events::StateEventType::from("m.rtc.slot"), "m.call#room"
+                ).await.map_err(|error| format!("Could not check the MatrixRTC room-call slot: {error}"))?;
+                let slot_content = match slot {
+                    Some(matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState::Sync(raw)) =>
+                        serde_json::from_str::<serde_json::Value>(raw.json().get()).ok().and_then(|v| v.get("content").cloned()),
+                    Some(matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState::Stripped(raw)) =>
+                        serde_json::from_str::<serde_json::Value>(raw.json().get()).ok().and_then(|v| v.get("content").cloned()),
+                    None => None,
+                };
+                if let Some(content) = slot_content {
+                    let status = content["status"].as_str().unwrap_or("");
+                    let application = content["application"]["type"].as_str().unwrap_or("");
+                    let encryption_type = content["encryption"]["type"].as_str().unwrap_or("");
+                    eprintln!(
+                        "ASTRO RTC NEGOTIATION: existing room-call slot; status={}, application={}, encryption_type_present={}, encryption_type_m_per_member={}",
+                        status,
+                        application,
+                        !encryption_type.is_empty(),
+                        encryption_type == "m.per_member"
+                    );
+                    if status != "open" { return Err("The MatrixRTC room-call slot exists but is not open; ask an administrator to open it".into()); }
+                    if application != "m.call" { return Err("The MatrixRTC room-call slot has an incompatible application type".into()); }
+                    if encrypted && encryption_type != "m.per_member" { return Err("The encrypted room-call slot does not enable m.per_member encryption".into()); }
+                    if !encrypted && encryption_type == "m.per_member" { return Err("The room-call slot requires per-member encryption, but this room is not encrypted".into()); }
+                } else {
+                    let mut content = serde_json::json!({
+                        "status": "open", "application": { "type": "m.call" }
+                    });
+                    if encrypted { content["encryption"] = serde_json::json!({ "type": "m.per_member" }); }
+                    room.send_state_event_raw("m.rtc.slot", "m.call#room", content)
+                        .await.map_err(|error| format!("Could not create the MatrixRTC room-call slot; Astro may lack permission to send m.rtc.slot state events: {error}"))?;
+                    eprintln!("ASTRO RTC: created m.call#room slot");
+                }
+
+                let id = rtc_random_member_id()?;
+                let (livekit_url, _jwt) = fetch_rtc_livekit_credentials(
+                    &client, &room, &livekit_transport, Some(&id)
+                ).await?;
+                let content = serde_json::json!({
+                    "slot_id": "m.call#room",
+                    "member": { "id": id, "membership": "join" },
+                    "application": { "type": "m.call" },
+                    "transports": {
+                        "published": [{ "type": "m.livekit", "url": livekit_url }],
+                        "can_subscribe": ["m.livekit"]
+                    },
+                    "sticky_key": id
+                });
+                room.send_raw("m.rtc.member", content.clone())
+                    .with_sticky_duration(Duration::from_secs(60 * 60)).await
+                    .map_err(|error| format!("Could not publish modern MatrixRTC membership: {error}"))?;
+                member_id = Some(id);
+                modern_membership = Some(content);
+            } else {
+                eprintln!(
+                    "ASTRO RTC NEGOTIATION: using legacy membership; reason_sticky_or_native_sync_unavailable={}, reason_no_modern_sfu_url={}, reason_legacy_authorization_also_advertised={}",
+                    !sticky_supported,
+                    livekit_transport.sfu_url.is_none(),
+                    livekit_transport.legacy_service_url.is_some()
+                );
+            }
 
             let state_key = rtc_membership_state_key(&room, &user_id, &device_id);
 
-            let content = serde_json::json!({
+            let mut content = serde_json::json!({
                 "application": "m.call",
                 "call_id": "",
                 "scope": "m.room",
@@ -2161,29 +3075,169 @@ impl MatrixClientManager {
                 "focus_active": {
                     "type": "livekit",
                     "focus_selection": "oldest_membership"
-                },
-                "foci_preferred": [{
-                    "type": "livekit",
-                    "livekit_service_url": livekit_service_url.as_str()
-                }]
+                }
             });
+            // Only advertise the standalone JWT service in legacy state
+            // membership. An MSC4195 SFU URL is not a /sfu/get endpoint.
+            if let Some(service_url) = livekit_transport.legacy_service_url.as_deref() {
+                content["foci_preferred"] = serde_json::json!([{
+                    "type": "livekit",
+                    "livekit_service_url": service_url
+                }]);
+            }
 
-            room.send_state_event_raw(
+            let membership_response = room.send_state_event_raw(
                 "org.matrix.msc3401.call.member",
                 &state_key,
                 content
             ).await
                 .map_err(|error| format!("Could not publish MatrixRTC call presence: {error}"))?;
 
-            Ok::<(String, String), String>((state_key, livekit_service_url))
+            // MatrixRTC membership only advertises that this device has joined.
+            // Match the event formats used by Element Call / matrix-js-sdk 39:
+            // MSC4075's then-current event name plus the legacy m.call.notify
+            // event for clients that still consume the compatibility format.
+            let notification_event_id = membership_response.event_id;
+            let recipients = room.human_member_ids(RoomMemberships::JOIN).await
+                .map_err(|error| format!("Could not load joined room members for call notification: {error}"))?
+                .into_iter()
+                .filter(|user_id| user_id != &client.user_id().expect("authenticated Matrix client"))
+                .map(|user_id| user_id.to_string())
+                .collect::<Vec<_>>();
+
+            let mut outgoing_notification: Option<(String, Vec<String>)> = None;
+            if notify_recipients && !recipients.is_empty() {
+                let sender_ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                // Cinny's incoming-call listener currently recognises
+                // org.matrix.msc4075.rtc.notification (not the later stable
+                // m.rtc.notification event name).
+                let notification_content = serde_json::json!({
+                    "sender_ts": sender_ts,
+                    "lifetime": 30_000,
+                    "notification_type": "ring",
+                    "m.call.intent": "audio",
+                    "m.mentions": {
+                        "user_ids": recipients
+                    },
+                    "m.relates_to": {
+                        "rel_type": "m.reference",
+                        "event_id": notification_event_id
+                    }
+                });
+
+                match room.send_raw(
+                    "org.matrix.msc4075.rtc.notification",
+                    notification_content
+                ).await {
+                    Ok(response) => {
+                        outgoing_notification = Some((
+                            response.response.event_id.to_string(),
+                            recipients.iter().map(ToString::to_string).collect()
+                        ));
+                        eprintln!(
+                            "ASTRO RTC CALL: sent MSC4075 incoming-call notification {} to {} other room member(s)",
+                            response.response.event_id,
+                            recipients.len()
+                        );
+                    },
+                    Err(error) => eprintln!(
+                        "ASTRO RTC CALL: failed to send MSC4075 incoming-call notification: {error}"
+                    ),
+                }
+
+                // Keep the legacy event in sync with matrix-js-sdk's
+                // compatibility sender. Older clients expect notify_type
+                // ("ring" / "notify") and call_id rather than the MSC4075
+                // notification_type and membership relation fields.
+                let legacy_content = serde_json::json!({
+                    "application": "m.call",
+                    "m.mentions": {
+                        "user_ids": recipients
+                    },
+                    "notify_type": "ring",
+                    "call_id": ""
+                });
+
+                match room.send_raw("m.call.notify", legacy_content).await {
+                    Ok(response) => eprintln!(
+                        "ASTRO RTC CALL: sent legacy call notification {} to {} other room member(s)",
+                        response.response.event_id,
+                        recipients.len()
+                    ),
+                    Err(error) => eprintln!(
+                        "ASTRO RTC CALL: failed to send legacy call notification: {error}"
+                    ),
+                }
+            } else {
+                eprintln!("ASTRO RTC CALL: no other joined room members to notify");
+            }
+
+            Ok::<(String, Option<String>, Option<serde_json::Value>, bool, Option<(String, Vec<String>)>, RtcLiveKitTransport), String>((state_key, member_id, modern_membership, encrypted, outgoing_notification, livekit_transport))
         });
 
-        let (state_key, livekit_service_url) = result?;
+        let (state_key, member_id, modern_membership, encrypted, outgoing_notification, livekit_transport) = result?;
         self.rtc_local_memberships.insert(room_id.to_owned(), state_key.clone());
+        if let Some(notification) = outgoing_notification {
+            self.rtc_outgoing_call_notifications.insert(room_id.to_owned(), notification);
+        }
+        if let (Some(member_id), Some(modern_membership)) = (member_id, modern_membership) {
+            self.rtc_modern_memberships.insert(room_id.to_owned(), (member_id.clone(), modern_membership.clone()));
+            if let Ok(mut renewals) = self.rtc_modern_renewals.lock() {
+                renewals.insert(room_id.to_owned(), modern_membership);
+            }
+        }
         self.rtc_livekit_services.insert(
             room_id.to_owned(),
-            livekit_service_url,
+            livekit_transport,
         );
+
+        if encrypted {
+            let client = self.client.as_ref()
+                .ok_or_else(|| "No active Matrix session".to_string())?
+                .clone();
+            let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+                .map_err(|error| format!("Invalid room ID for MatrixRTC E2EE: {error}"))?;
+            let room = self.runtime.block_on(async {
+                client.get_room(&parsed_room_id)
+                    .ok_or_else(|| "Matrix room disappeared before E2EE key exchange could start".to_string())
+            })?;
+
+            let session = if let Some((member_id, _)) = self.rtc_modern_memberships.get(room_id) {
+                RtcE2eeSession::start(
+                    self.runtime.as_ref(),
+                    client,
+                    room,
+                    member_id.clone(),
+                )?
+            } else {
+                // Legacy MatrixRTC identifies the LiveKit participant as
+                // `$user_id:$device_id` unless a custom membershipID is set.
+                // Astro does not set a custom membershipID in its state event.
+                let user_id = client.user_id()
+                    .ok_or_else(|| "Matrix user ID is unavailable for legacy RTC E2EE".to_string())?;
+                let device_id = client.device_id()
+                    .ok_or_else(|| "Matrix device ID is unavailable for legacy RTC E2EE".to_string())?;
+                let legacy_member_id = format!("{user_id}:{device_id}");
+                RtcE2eeSession::start_legacy(
+                    self.runtime.as_ref(),
+                    client,
+                    room,
+                    legacy_member_id,
+                )?
+            };
+            let key_identity = session.local_livekit_identity().to_owned();
+            self.rtc_e2ee_sessions.insert(room_id.to_owned(), session);
+            eprintln!(
+                "ASTRO RTC E2EE NEGOTIATION: key exchange started; room={}, membership_format={}, local_livekit_identity={}",
+                room_id,
+                if self.rtc_modern_memberships.contains_key(room_id) { "msc4354_sticky" } else { "legacy_msc3401" },
+                key_identity
+            );
+        }
 
         if let Ok(mut renewals) = self.rtc_renewals.lock() {
             renewals.insert(room_id.to_owned(), state_key);
@@ -2192,10 +3246,11 @@ impl MatrixClientManager {
         Ok(())
     }
 
-    /// Obtain legacy LiveKit credentials for an active MatrixRTC membership.
+    /// Obtain LiveKit credentials for an active MatrixRTC membership.
     ///
-    /// Returns JSON containing the LiveKit WebSocket URL and JWT.
-    pub fn rtc_livekit_credentials_json(
+    /// Uses the MSC4195 homeserver endpoint for modern transports and the
+    /// standalone /sfu/get service for legacy transports.
+    fn rtc_livekit_credentials_json(
         &mut self,
         room_id: &str,
     ) -> Result<String, String> {
@@ -2208,10 +3263,13 @@ impl MatrixClientManager {
             return Err("Astro has no active MatrixRTC membership in this room".into());
         }
 
-        let service_url = self.rtc_livekit_services
+        let transport = self.rtc_livekit_services
             .get(room_id)
             .cloned()
-            .ok_or_else(|| "No LiveKit service was selected for this room".to_string())?;
+            .ok_or_else(|| "No LiveKit transport was selected for this room".to_string())?;
+        let member_id = self.rtc_modern_memberships
+            .get(room_id)
+            .map(|(member_id, _)| member_id.clone());
 
         let client = self.client.as_ref()
             .ok_or_else(|| "No active Matrix session".to_string())?
@@ -2224,76 +3282,1446 @@ impl MatrixClientManager {
             let room = client.joined_rooms().into_iter()
                 .find(|room| room.room_id() == &parsed_room_id)
                 .ok_or_else(|| "You are no longer joined to this room".to_string())?;
+            let (livekit_url, jwt) = fetch_rtc_livekit_credentials(
+                &client, &room, &transport, member_id.as_deref()
+            ).await?;
+            Ok(serde_json::json!({ "url": livekit_url, "jwt": jwt }).to_string())
+        })
+    }
 
-            let device_id = client.device_id()
-                .ok_or_else(|| "Matrix device ID is unavailable".to_string())?
-                .to_string();
+    /// Connect to LiveKit and publish Astro's microphone.
+    ///
+    /// The session is owned by MatrixClientManager, not by a QML page.
+    pub fn start_rtc_audio(&mut self, room_id: &str) -> Result<(), String> {
+        let room_id = room_id.trim().to_owned();
 
-            let openid_token = client.account()
-                .request_openid_token()
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        if self.rtc_livekit_audio_sessions.contains_key(&room_id) {
+            return Err("An audio call is already active in this room".into());
+        }
+
+        eprintln!(
+            "ASTRO RTC NEGOTIATION: starting LiveKit; room={}, has_membership={}, has_modern_membership={}, has_transport={}, has_e2ee_session={}",
+            room_id,
+            self.rtc_local_memberships.contains_key(&room_id),
+            self.rtc_modern_memberships.contains_key(&room_id),
+            self.rtc_livekit_services.contains_key(&room_id),
+            self.rtc_e2ee_sessions.contains_key(&room_id)
+        );
+        if !self.rtc_e2ee_sessions.contains_key(&room_id) {
+            let client = self.client.as_ref()
+                .ok_or_else(|| "No active Matrix session".to_string())?
+                .clone();
+            let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id.as_str())
+                .map_err(|error| format!("Invalid room ID: {error}"))?;
+            let encrypted = self.runtime.block_on(async {
+                let room = client.get_room(&parsed_room_id)
+                    .ok_or_else(|| "Matrix room is unavailable while checking call encryption".to_string())?;
+                room.latest_encryption_state().await
+                    .map(|state| state.is_encrypted())
+                    .map_err(|error| format!("Could not determine room encryption state: {error}"))
+            })?;
+            if encrypted {
+                return Err("This Matrix room is encrypted, but Astro has no active MatrixRTC key exchange; refusing to connect without LiveKit E2EE".into());
+            }
+        }
+
+        // If this Matrix room is encrypted, wait for the MatrixRTC key grace
+        // period and refuse to connect without a usable local key. This prevents
+        // accidentally publishing media into an encrypted call without E2EE.
+        let e2ee_material = if let Some(e2ee_session) = self.rtc_e2ee_sessions.get(&room_id) {
+            let local_identity = e2ee_session.local_livekit_identity().to_owned();
+            let runtime = Arc::clone(&self.runtime);
+            let keys = runtime.block_on(async {
+                // Membership changes can rotate the local MatrixRTC key while
+                // an incoming call is being accepted. Each successful key
+                // distribution restarts the protocol's five-second activation
+                // grace, so an eight-second connection deadline is too short
+                // when the first membership snapshot is still settling.
+                let activation_wait_started = std::time::Instant::now();
+                for _ in 0..200 {
+                    let snapshot = e2ee_session.livekit_key_snapshot();
+                    if let Some((_, index, _)) = snapshot.iter()
+                        .find(|(identity, _, _)| identity == &local_identity)
+                    {
+                        eprintln!(
+                            "ASTRO RTC E2EE: local media key index {} became active after {} ms",
+                            index,
+                            activation_wait_started.elapsed().as_millis()
+                        );
+                        return Ok(snapshot);
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                let snapshot = e2ee_session.livekit_key_snapshot();
+                eprintln!(
+                    "ASTRO RTC E2EE: local media key activation timed out after {} ms; active_key_count={}, expected_local_identity_present={}",
+                    activation_wait_started.elapsed().as_millis(),
+                    snapshot.len(),
+                    snapshot.iter().any(|(identity, _, _)| identity == &local_identity)
+                );
+                Err("MatrixRTC local media key did not become active within 20 seconds; refusing an unencrypted LiveKit connection".to_string())
+            })?;
+            eprintln!(
+                "ASTRO RTC E2EE NEGOTIATION: active key snapshot; local_identity={}, keys={}",
+                local_identity,
+                keys.iter().map(|(identity, index, _)| format!("{identity}#{index}")).collect::<Vec<_>>().join(",")
+            );
+            Some((local_identity, keys))
+        } else {
+            eprintln!("ASTRO RTC E2EE NEGOTIATION: no media E2EE session; room encryption check determines whether connection is refused");
+            None
+        };
+
+        let mut e2ee_key_provider = None;
+        let mut e2ee_installed_keys = HashMap::new();
+        let mut expected_local_e2ee_identity: Option<String> = None;
+        if let Some((local_identity, keys)) = e2ee_material {
+            expected_local_e2ee_identity = Some(local_identity.clone());
+            let mut key_options = KeyProviderOptions::default();
+            key_options.key_ring_size = 256;
+            key_options.key_derivation_algorithm = KeyDerivationAlgorithm::HKDF;
+            // MSC4195 requires a 128-bit derived AES key. LiveKit's AES-GCM
+            // frame cryptor uses 128-bit keys with this HKDF provider.
+            let provider = KeyProvider::new(key_options);
+            let mut keys = keys;
+            // KeyProvider::set_key updates its default send index. Install
+            // remote keys first and the local sender key last.
+            keys.sort_by_key(|(identity, _, _)| identity == &local_identity);
+
+            for (identity, index, key) in keys {
+                eprintln!(
+                    "ASTRO RTC E2EE: installing key for LiveKit participant {}; index={}",
+                    identity, index
+                );
+                let participant_identity = ParticipantIdentity::from(identity.clone());
+                if !provider.set_key(&participant_identity, i32::from(index), key.clone()) {
+                    return Err(format!(
+                        "LiveKit rejected MatrixRTC key index {index} for participant {identity}"
+                    ));
+                }
+                e2ee_installed_keys.insert((identity, index), key);
+            }
+
+            if !e2ee_installed_keys.keys().any(|(identity, _)| identity == &local_identity) {
+                return Err("No active local MatrixRTC key is installed in LiveKit".into());
+            }
+            eprintln!(
+                "ASTRO RTC E2EE: configured LiveKit HKDF key provider with {} participant key(s)",
+                e2ee_installed_keys.len()
+            );
+            e2ee_key_provider = Some(provider);
+        }
+
+        // Retrieve credentials internally. The JWT never reaches QML.
+        let credentials_json = self.rtc_livekit_credentials_json(&room_id)?;
+
+        let credentials: serde_json::Value =
+            serde_json::from_str(&credentials_json)
+                .map_err(|error| format!("Invalid LiveKit credentials: {error}"))?;
+
+        let livekit_url = credentials
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "LiveKit credentials contain no URL".to_string())?
+            .to_owned();
+
+        let jwt = credentials
+            .get("jwt")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "LiveKit credentials contain no JWT".to_string())?
+            .to_owned();
+
+        let platform_audio = PlatformAudio::new()
+            .map_err(|error| format!("Could not initialise platform audio: {error}"))?;
+
+        let microphone = LocalAudioTrack::create_audio_track(
+            "microphone",
+            platform_audio.rtc_source(),
+        );
+
+        let runtime = Arc::clone(&self.runtime);
+
+        let audio_session = runtime.block_on(async move {
+            let mut room_options = RoomOptions::default();
+            if let Some(provider) = e2ee_key_provider.clone() {
+                room_options.encryption = Some(E2eeOptions {
+                    encryption_type: EncryptionType::Gcm,
+                    key_provider: provider,
+                });
+            }
+
+            let (room, events) = LiveKitRoom::connect(
+                &livekit_url,
+                &jwt,
+                room_options,
+            )
+            .await
+            .map_err(|error| format!("Could not connect to LiveKit: {error}"))?;
+
+            if let Some(expected_identity) = expected_local_e2ee_identity.as_deref() {
+                let actual_identity = room.local_participant().identity().to_string();
+                if actual_identity != expected_identity {
+                    let _ = room.close().await;
+                    return Err(format!(
+                        "LiveKit assigned participant identity '{actual_identity}', but MatrixRTC requires '{expected_identity}' for E2EE"
+                    ));
+                }
+            }
+
+            let publish_options = TrackPublishOptions {
+                source: TrackSource::Microphone,
+                ..Default::default()
+            };
+
+            if let Err(error) = room
+                .local_participant()
+                .publish_track(
+                    LocalTrack::Audio(microphone.clone()),
+                    publish_options,
+                )
                 .await
-                .map_err(|error| format!("Could not obtain Matrix OpenID token: {error}"))?;
+            {
+                let _ = room.close().await;
+                return Err(format!("Could not publish microphone: {error}"));
+            }
 
-            let token_type = serde_json::to_value(&openid_token.token_type)
-                .map_err(|error| format!("Could not encode OpenID token type: {error}"))?;
+            Ok::<LiveKitAudioSession, String>(LiveKitAudioSession {
+                room,
+                events,
+                _platform_audio: platform_audio,
+                microphone,
+                muted: false,
+                video_source: None,
+                video_track: None,
+                screen_share_source: None,
+                screen_share_track: None,
+                screen_share_audio_source: None,
+                screen_share_audio_track: None,
+                screen_share_audio_sender: None,
+                screen_share_frames_submitted: 0,
+                screen_share_frames_accepted: 0,
+                screen_share_frames_rejected: 0,
+                screen_share_stats_last_report: Instant::now(),
+                e2ee_key_provider,
+                e2ee_installed_keys,
+            })
+        })?;
 
-            let token_type = token_type.as_str()
-                .ok_or_else(|| "Matrix returned an invalid OpenID token type".to_string())?;
+        self.rtc_livekit_audio_sessions.insert(room_id, audio_session);
 
-            let request_body = serde_json::json!({
-                "room": room.room_id().as_str(),
-                "device_id": device_id,
-                "openid_token": {
-                    "access_token": openid_token.access_token,
-                    "token_type": token_type,
-                    "matrix_server_name": openid_token.matrix_server_name.to_string(),
-                    "expires_in": openid_token.expires_in.as_secs()
+        Ok(())
+    }
+
+    // ASTRO_RTC_VIDEO_STAGE1
+    /// Publish a camera video track into an existing LiveKit audio session.
+    /// Camera frames are supplied separately by the native video capture path.
+    pub fn start_rtc_video(
+        &mut self,
+        room_id: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        if width < 2 || height < 2 || width % 2 != 0 || height % 2 != 0 {
+            return Err("Camera dimensions must be positive even numbers".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get_mut(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+
+        if session.video_track.is_some() {
+            return Err("Camera video is already active in this room".into());
+        }
+
+        let (source, track) = {
+            let _runtime_guard = runtime.enter();
+
+            let source = NativeVideoSource::new(
+                VideoResolution { width, height },
+                false,
+            );
+
+            let track = LocalVideoTrack::create_video_track(
+                "camera",
+                RtcVideoSource::Native(source.clone()),
+            );
+
+            (source, track)
+        };
+
+        let options = TrackPublishOptions {
+            source: TrackSource::Camera,
+            ..Default::default()
+        };
+
+        runtime.block_on(async {
+            session
+                .room
+                .local_participant()
+                .publish_track(LocalTrack::Video(track.clone()), options)
+                .await
+                .map_err(|error| {
+                    format!("Could not publish LiveKit camera track: {error}")
+                })
+        })?;
+
+        session.video_source = Some(source);
+        session.video_track = Some(track);
+
+        Ok(())
+    }
+
+    pub fn start_rtc_screenshare(
+        &mut self,
+        room_id: &str,
+        width: u32,
+        height: u32,
+        include_device_audio: bool,
+    ) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        if width < 2 || height < 2 || width % 2 != 0 || height % 2 != 0 {
+            return Err("Screen-share dimensions must be positive even numbers".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get_mut(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+
+        if session.screen_share_track.is_some() {
+            return Err("Screen sharing is already active in this room".into());
+        }
+
+        let (source, track) = {
+            let _runtime_guard = runtime.enter();
+
+            let source = NativeVideoSource::new(
+                VideoResolution { width, height },
+                true,
+            );
+
+            let track = LocalVideoTrack::create_video_track(
+                "screen_share",
+                RtcVideoSource::Native(source.clone()),
+            );
+
+            (source, track)
+        };
+
+        let options = TrackPublishOptions {
+            source: TrackSource::Screenshare,
+            ..Default::default()
+        };
+
+        runtime.block_on(async {
+            session
+                .room
+                .local_participant()
+                .publish_track(LocalTrack::Video(track.clone()), options)
+                .await
+                .map_err(|error| {
+                    format!("Could not publish LiveKit screen-share track: {error}")
+                })
+        })?;
+
+        session.screen_share_source = Some(source);
+        session.screen_share_track = Some(track.clone());
+
+        if include_device_audio {
+            let (audio_source, audio_track) = {
+                let _runtime_guard = runtime.enter();
+                let source = NativeAudioSource::new(
+                    AudioSourceOptions::default(),
+                    48_000,
+                    2,
+                    100,
+                );
+                let track = LocalAudioTrack::create_audio_track(
+                    "screen_share_audio",
+                    RtcAudioSource::Native(source.clone()),
+                );
+                (source, track)
+            };
+
+            let audio_options = TrackPublishOptions {
+                source: TrackSource::ScreenshareAudio,
+                ..Default::default()
+            };
+
+            if let Err(error) = runtime.block_on(async {
+                session
+                    .room
+                    .local_participant()
+                    .publish_track(LocalTrack::Audio(audio_track.clone()), audio_options)
+                    .await
+                    .map_err(|error| {
+                        format!("Could not publish LiveKit screen-share audio track: {error}")
+                    })
+            }) {
+                let video_sid = LocalTrack::Video(track.clone()).sid();
+                let _ = runtime.block_on(async {
+                    session.room.local_participant().unpublish_track(&video_sid).await
+                });
+                session.screen_share_source = None;
+                session.screen_share_track = None;
+                return Err(error);
+            }
+
+            // Keep LiveKit's async audio submission off the Qt capture thread.
+            // A small bounded queue limits latency and drops stale samples rather
+            // than allowing audio backpressure to stall screen capture.
+            let (audio_sender, mut audio_receiver) =
+                tokio::sync::mpsc::channel::<Vec<i16>>(5);
+            let audio_source_for_task = audio_source.clone();
+            runtime.spawn(async move {
+                while let Some(samples) = audio_receiver.recv().await {
+                    let frame = AudioFrame {
+                        data: std::borrow::Cow::Owned(samples),
+                        sample_rate: 48_000,
+                        num_channels: 2,
+                        samples_per_channel: 480,
+                    };
+                    if let Err(error) = audio_source_for_task.capture_frame(&frame).await {
+                        eprintln!("ASTRO_SCREEN_SHARE_AUDIO: LiveKit submission failed: {error}");
+                    }
                 }
             });
 
-            let request_bytes = serde_json::to_vec(&request_body)
-                .map_err(|error| format!("Could not encode LiveKit token request: {error}"))?;
+            session.screen_share_audio_source = Some(audio_source);
+            session.screen_share_audio_track = Some(audio_track);
+            session.screen_share_audio_sender = Some(audio_sender);
+        }
 
-            let endpoint = format!("{}/sfu/get", service_url.trim_end_matches('/'));
+        Ok(())
+    }
 
-            let response = client.http_client()
-                .post(&endpoint)
-                .header("content-type", "application/json")
-                .body(request_bytes)
-                .send()
+
+    // ASTRO_RTC_VIDEO_STAGE2
+    /// Submit one tightly packed I420 frame to the active camera source.
+    ///
+    /// Layout: Y plane, followed by U plane, followed by V plane.
+    /// Width and height must be even.
+    pub fn push_rtc_video_frame(
+        &mut self,
+        room_id: &str,
+        width: u32,
+        height: u32,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+
+        let frame_pixel_count = u64::from(width) * u64::from(height);
+        if width < 2 || height < 2
+            || width > 1920 || height > 1920
+            || frame_pixel_count > 1920_u64 * 1920_u64
+            || width % 2 != 0 || height % 2 != 0
+        {
+            return Err("Video frame dimensions must be even, no larger than 1920 pixels per side, and within a 1920x1920 pixel budget".into());
+        }
+
+        let y_size = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or_else(|| "Video frame dimensions overflow".to_string())?;
+        let chroma_size = y_size / 4;
+        let expected_size = y_size
+            .checked_add(chroma_size.checked_mul(2)
+                .ok_or_else(|| "Video frame size overflow".to_string())?)
+            .ok_or_else(|| "Video frame size overflow".to_string())?;
+
+        if bytes.len() != expected_size {
+            return Err(format!(
+                "Invalid I420 frame size: expected {expected_size} bytes, received {}",
+                bytes.len()
+            ));
+        }
+
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+
+        let source = session
+            .video_source
+            .as_ref()
+            .ok_or_else(|| "Camera video is not active in this room".to_string())?;
+
+        let mut buffer = I420Buffer::new(width, height);
+        let (plane_y, plane_u, plane_v) = buffer.data_mut();
+
+        if plane_y.len() < y_size
+            || plane_u.len() < chroma_size
+            || plane_v.len() < chroma_size
+        {
+            return Err("LiveKit allocated an unexpectedly small I420 buffer".into());
+        }
+
+        plane_y[..y_size].copy_from_slice(&bytes[..y_size]);
+        plane_u[..chroma_size].copy_from_slice(
+            &bytes[y_size..y_size + chroma_size]
+        );
+        plane_v[..chroma_size].copy_from_slice(
+            &bytes[y_size + chroma_size..expected_size]
+        );
+
+        let frame = VideoFrame::new(VideoRotation::VideoRotation0, buffer);
+
+        let source_resolution = source.video_resolution();
+        if source_resolution.width != width || source_resolution.height != height {
+            return Err(format!(
+                "Camera frame size {}x{} does not match LiveKit source size {}x{}",
+                width, height, source_resolution.width, source_resolution.height
+            ));
+        }
+
+        let captured = {
+            let _runtime_guard = runtime.enter();
+            source.capture_frame(&frame)
+        };
+
+        // Like the screen-share source below, LiveKit may return false
+        // when its video adapter drops a frame during frame-rate or
+        // resolution adaptation. This is not a malformed I420 buffer:
+        // dimensions, packed plane sizes and source resolution were
+        // validated above. A dropped frame must not be surfaced as a
+        // camera-capture failure.
+        let _frame_forwarded = captured;
+
+        Ok(())
+    }
+
+    pub fn push_rtc_screenshare_i420_buffer(
+        &mut self,
+        room_id: &str,
+        buffer: I420Buffer,
+    ) -> Result<(), String> {
+        let room_id = room_id.trim();
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+        let width = buffer.width();
+        let height = buffer.height();
+        if width < 2 || height < 2
+            || width > 1920 || height > 1920
+            || width % 2 != 0 || height % 2 != 0
+            || (width as u64).checked_mul(height as u64)
+                .is_none_or(|pixels| pixels > 2_073_600)
+        {
+            return Err("Screen-share frame dimensions must be even, no larger than 1920 pixels per side, and within a 1080p pixel budget".into());
+        }
+
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get_mut(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+        let source = session
+            .screen_share_source
+            .as_ref()
+            .ok_or_else(|| "Screen-share video is not active in this room".to_string())?;
+
+        let source_resolution = source.video_resolution();
+        if source_resolution.width != width || source_resolution.height != height {
+            return Err(format!(
+                "Screen-share frame size {}x{} does not match LiveKit source size {}x{}",
+                width, height, source_resolution.width, source_resolution.height
+            ));
+        }
+
+        // The I420 allocation is transferred from the C++ capture stage.
+        // capture_frame may retain it asynchronously, so never recycle or
+        // mutate this buffer after handing it to LiveKit.
+        let frame = VideoFrame::new(VideoRotation::VideoRotation0, buffer);
+        let captured = {
+            let _runtime_guard = runtime.enter();
+            source.capture_frame(&frame)
+        };
+
+        session.screen_share_frames_submitted =
+            session.screen_share_frames_submitted.saturating_add(1);
+        if captured {
+            session.screen_share_frames_accepted =
+                session.screen_share_frames_accepted.saturating_add(1);
+        } else {
+            session.screen_share_frames_rejected =
+                session.screen_share_frames_rejected.saturating_add(1);
+        }
+
+        if session.screen_share_stats_last_report.elapsed() >= Duration::from_secs(5) {
+            session.screen_share_stats_last_report = Instant::now();
+            eprintln!(
+                "ASTRO_SCREEN_SHARE_RTC: submitted={} accepted={} rejected={} stats=disabled",
+                session.screen_share_frames_submitted,
+                session.screen_share_frames_accepted,
+                session.screen_share_frames_rejected
+            );
+        }
+
+        Ok(())
+    }
+
+
+    /// Unpublish the camera track without stopping the microphone.
+    pub fn stop_rtc_video(&mut self, room_id: &str) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get_mut(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+
+        let Some(track) = session.video_track.as_ref() else {
+            return Ok(());
+        };
+
+        let track_sid = LocalTrack::Video(track.clone()).sid();
+
+        runtime.block_on(async {
+            session
+                .room
+                .local_participant()
+                .unpublish_track(&track_sid)
                 .await
-                .map_err(|error| format!("LiveKit authorization request failed: {error}"))?;
+                .map_err(|error| {
+                    format!("Could not unpublish LiveKit camera track: {error}")
+                })
+        })?;
 
-            let status = response.status();
-            let response_bytes = response.bytes()
-                .await
-                .map_err(|error| format!("Could not read LiveKit authorization response: {error}"))?;
+        session.video_track = None;
+        session.video_source = None;
 
-            if !status.is_success() {
-                return Err(format!(
-                    "LiveKit authorization service returned HTTP {status}"
-                ));
+        Ok(())
+    }
+
+    pub fn push_rtc_screenshare_audio_frame(
+        &mut self,
+        room_id: &str,
+        pcm: &[i16],
+    ) -> Result<(), String> {
+        let room_id = room_id.trim();
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+        if pcm.len() != 960 {
+            return Err(format!(
+                "Invalid screen-share audio frame: expected 960 samples, received {}",
+                pcm.len()
+            ));
+        }
+
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+        let sender = session
+            .screen_share_audio_sender
+            .as_ref()
+            .ok_or_else(|| "Screen-share audio is not active in this room".to_string())?;
+
+        // Never wait for LiveKit on the Qt audio callback. If the bounded
+        // queue is full, discard this 10 ms frame to keep capture responsive.
+        match sender.try_send(pcm.to_vec()) {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err("Screen-share audio sender has stopped".into())
+            }
+        }
+    }
+
+
+    /// Begin unpublishing screen-share tracks without blocking the Qt worker.
+    /// Returns true while LiveKit teardown is running on the existing Tokio runtime.
+    pub fn stop_rtc_screenshare(&mut self, room_id: &str) -> Result<bool, String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        if self.rtc_pending_screenshare_stops.contains_key(room_id) {
+            return Ok(true);
+        }
+
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get_mut(room_id)
+            .ok_or_else(|| "No active LiveKit call in this room".to_string())?;
+
+        let video_track = session.screen_share_track.clone();
+        let audio_track = session.screen_share_audio_track.clone();
+        if video_track.is_none() && audio_track.is_none() {
+            session.screen_share_audio_sender = None;
+            session.screen_share_source = None;
+            session.screen_share_track = None;
+            session.screen_share_audio_source = None;
+            session.screen_share_audio_track = None;
+            return Ok(false);
+        }
+
+        let participant = session.room.local_participant();
+        session.screen_share_audio_sender = None;
+        session.screen_share_track = None;
+        session.screen_share_source = None;
+        session.screen_share_audio_track = None;
+        session.screen_share_audio_source = None;
+
+        let completion = Arc::new(Mutex::new(None));
+        let task_completion = Arc::clone(&completion);
+        self.runtime.spawn(async move {
+            // LiveKit signalling can stall during shutdown on a weak or
+            // disconnected mobile network. Bound the whole unpublish phase so
+            // the Qt Stop action always receives a completion instead of
+            // remaining pending forever.
+            let unpublish = async {
+                let mut failures = Vec::new();
+
+                if let Some(track) = video_track {
+                    let track_sid = LocalTrack::Video(track).sid();
+                    if let Err(error) = participant.unpublish_track(&track_sid).await {
+                        failures.push(format!(
+                            "Could not unpublish LiveKit screen share track: {error}"
+                        ));
+                    }
+                }
+
+                if let Some(track) = audio_track {
+                    let track_sid = LocalTrack::Audio(track).sid();
+                    if let Err(error) = participant.unpublish_track(&track_sid).await {
+                        failures.push(format!(
+                            "Could not unpublish LiveKit screen-share audio track: {error}"
+                        ));
+                    }
+                }
+
+                if failures.is_empty() {
+                    Ok(())
+                } else {
+                    Err(failures.join("; "))
+                }
+            };
+
+            let result = match tokio::time::timeout(
+                Duration::from_secs(12),
+                unpublish,
+            ).await {
+                Ok(result) => result,
+                Err(_) => Err(
+                    "Timed out after 12 seconds while unpublishing the LiveKit screen share".into()
+                ),
+            };
+
+            *task_completion.lock().unwrap() = Some(result);
+        });
+
+        self.rtc_pending_screenshare_stops
+            .insert(room_id.to_owned(), completion);
+
+        Ok(true)
+    }
+
+    /// Poll an asynchronous screen-share teardown. None means it is still running.
+    pub fn poll_rtc_screenshare_stop(
+        &mut self,
+        room_id: &str,
+    ) -> Result<Option<Result<(), String>>, String> {
+        let completion = self
+            .rtc_pending_screenshare_stops
+            .get(room_id)
+            .cloned()
+            .ok_or_else(|| "No pending screen-share teardown for this room".to_string())?;
+
+        let result = completion.lock().unwrap().take();
+        if result.is_some() {
+            self.rtc_pending_screenshare_stops.remove(room_id);
+        }
+
+        Ok(result)
+    }
+
+
+    /// Disconnect the LiveKit audio session for a room.
+    pub fn stop_rtc_audio(&mut self, room_id: &str) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+
+        {
+            let Some(session) = self.rtc_livekit_audio_sessions.get(room_id) else {
+                return Ok(());
+            };
+
+            runtime.block_on(async {
+                session.room.close()
+                    .await
+                    .map_err(|error| format!("Could not close LiveKit room: {error}"))
+            })?;
+        }
+
+        self.rtc_livekit_audio_sessions.remove(room_id);
+
+        let room_prefix = format!("{room_id}\u{1f}");
+        let task_keys: Vec<String> = self.rtc_remote_video_tasks
+            .keys()
+            .chain(self.rtc_remote_audio_tasks.keys())
+            .filter(|key| key.starts_with(&room_prefix))
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        for key in task_keys {
+            if let Some(task) = self.rtc_remote_video_tasks.remove(&key) {
+                task.abort();
+            }
+            if let Some(task) = self.rtc_remote_audio_tasks.remove(&key) {
+                task.abort();
+            }
+        }
+        if let Ok(mut frames) = self.rtc_remote_video_frames.lock() {
+            frames.retain(|frame| !frame.key.starts_with(&room_prefix));
+        }
+        if let Ok(mut frames) = self.rtc_remote_audio_frames.lock() {
+            frames.retain(|frame| !frame.key.starts_with(&room_prefix));
+        }
+
+        Ok(())
+    }
+
+    /// Set the microphone mute state for a room's LiveKit session.
+    pub fn set_rtc_audio_muted(
+        &mut self,
+        room_id: &str,
+        muted: bool,
+    ) -> Result<(), String> {
+        let room_id = room_id.trim();
+
+        if room_id.is_empty() {
+            return Err("Room ID is empty".into());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+
+        let session = self
+            .rtc_livekit_audio_sessions
+            .get_mut(room_id)
+            .ok_or_else(|| "No active audio call in this room".to_string())?;
+
+        if session.muted == muted {
+            return Ok(());
+        }
+
+        {
+            let _runtime_guard = runtime.enter();
+
+            if muted {
+                session.microphone.mute();
+            } else {
+                session.microphone.unmute();
+            }
+        }
+
+        session.muted = muted;
+        Ok(())
+    }
+
+    /// Drain queued LiveKit events for the active audio sessions.
+    ///
+    /// This is intended to be called by StorageWorker's existing polling timer.
+    pub fn poll_rtc_audio_events_json(&mut self) -> String {
+        let mut updates = Vec::new();
+        let runtime = Arc::clone(&self.runtime);
+        let frame_queue = Arc::clone(&self.rtc_remote_video_frames);
+        let audio_frame_queue = Arc::clone(&self.rtc_remote_audio_frames);
+        let mut tasks_to_add = Vec::new();
+        let mut audio_tasks_to_add = Vec::new();
+        let mut cancelled_keys = HashSet::new();
+        let mut cancelled_prefixes = HashSet::new();
+
+        // Feed MatrixRTC rotations and newly received participant keys into
+        // the already-connected LiveKit frame-cryptor key providers.
+        let e2ee_snapshots: HashMap<String, Vec<(String, u8, Vec<u8>)>> =
+            self.rtc_e2ee_sessions.iter()
+                .map(|(room_id, e2ee)| (room_id.clone(), e2ee.livekit_key_snapshot()))
+                .collect();
+
+        for (room_id, session) in self.rtc_livekit_audio_sessions.iter_mut() {
+            if let (Some(provider), Some(keys)) =
+                (session.e2ee_key_provider.as_ref(), e2ee_snapshots.get(room_id))
+            {
+                let local_identity = session.room.local_participant().identity().to_string();
+                let mut local_key = None;
+                let mut remote_key_attempted = false;
+
+                // Remote keys may be installed at any time, but always restore
+                // the local key index last because LiveKit tracks one latest
+                // sending index on the KeyProvider.
+                for (identity, index, key) in keys {
+                    if identity == &local_identity {
+                        local_key = Some((*index, key.clone()));
+                        continue;
+                    }
+
+                    let cache_key = (identity.clone(), *index);
+                    if session.e2ee_installed_keys.get(&cache_key) == Some(key) {
+                        continue;
+                    }
+
+                    let participant_identity = ParticipantIdentity::from(identity.clone());
+                    remote_key_attempted = true;
+                    if provider.set_key(&participant_identity, i32::from(*index), key.clone()) {
+                        session.e2ee_installed_keys.insert(cache_key, key.clone());
+                        eprintln!(
+                            "ASTRO RTC E2EE NEGOTIATION: provider accepted remote key; room={}, identity={}, index={}",
+                            room_id, identity, index
+                        );
+                    } else {
+                        eprintln!(
+                            "ASTRO RTC E2EE NEGOTIATION: provider rejected remote key; room={}, identity={}, index={}",
+                            room_id, identity, index
+                        );
+                    }
+                }
+
+                let mut active_local_key_index = None;
+                if let Some((index, key)) = local_key {
+                    let cache_key = (local_identity.clone(), index);
+                    let local_key_changed = session.e2ee_installed_keys.get(&cache_key) != Some(&key);
+                    if remote_key_attempted || local_key_changed {
+                        let participant_identity = ParticipantIdentity::from(local_identity.clone());
+                        if provider.set_key(&participant_identity, i32::from(index), key.clone()) {
+                            session.e2ee_installed_keys.insert(cache_key.clone(), key.clone());
+                        } else {
+                            eprintln!(
+                                "ASTRO RTC E2EE: LiveKit rejected local sender key index {}",
+                                index
+                            );
+                        }
+                    }
+
+                    // livekit-rust-sdk 0.9.7 stores a newly supplied local key
+                    // in the provider, but does not advance existing sender
+                    // FrameCryptors to that key index. Element Call's JS SDK
+                    // does advance its sender cryptors when a key is set.
+                    // Keep every local audio/video sender on the same index
+                    // that MatrixRTC has distributed, including tracks
+                    // published after a rotation.
+                    if session.e2ee_installed_keys.get(&cache_key) == Some(&key) {
+                        active_local_key_index = Some(index);
+                    }
+                }
+
+                if let Some(index) = active_local_key_index {
+                    let expected_index = i32::from(index);
+                    for ((identity, track_sid), cryptor) in
+                        session.room.e2ee_manager().frame_cryptors()
+                    {
+                        if identity.to_string() != local_identity {
+                            continue;
+                        }
+
+                        let current_index = cryptor.key_index();
+                        if current_index != expected_index {
+                            cryptor.set_key_index(expected_index);
+                            eprintln!(
+                                "ASTRO RTC E2EE: synchronized local LiveKit frame cryptor index; room={}, track={}, previous_index={}, key_index={}",
+                                room_id, track_sid, current_index, expected_index
+                            );
+                        }
+                    }
+                }
+            }
+            // Bound work per room so a large event burst cannot monopolise the worker.
+            for _ in 0..256 {
+                let event = match session.events.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                };
+
+                let update = match event {
+                    RoomEvent::ParticipantConnected(participant) => {
+                        let participant_identity = participant.identity().to_string();
+                        let matching_installed_keys = session.e2ee_installed_keys.keys()
+                            .filter(|(identity, _)| identity == &participant_identity)
+                            .map(|(_, index)| index.to_string())
+                            .collect::<Vec<_>>();
+                        eprintln!(
+                            "ASTRO RTC E2EE NEGOTIATION: remote participant connected; room={}, identity={}, installed_key_indexes={}",
+                            room_id,
+                            participant_identity,
+                            if matching_installed_keys.is_empty() { "<none>".to_owned() } else { matching_installed_keys.join(",") }
+                        );
+                        tracing::info!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            participant_sid = %participant.sid(),
+                            name = %participant.name(),
+                            "LiveKit remote participant connected"
+                        );
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "participant_connected",
+                            "identity": participant.identity().to_string(),
+                            "name": participant.name(),
+                            "metadata": participant.metadata(),
+                            "speaking": participant.is_speaking(),
+                            "audio_level": participant.audio_level()
+                        }))
+                    }
+                    RoomEvent::ParticipantActive(participant) => {
+                        tracing::info!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            participant_sid = %participant.sid(),
+                            "LiveKit remote participant became active"
+                        );
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "participant_active",
+                            "identity": participant.identity().to_string(),
+                            "name": participant.name(),
+                            "metadata": participant.metadata(),
+                            "speaking": participant.is_speaking(),
+                            "audio_level": participant.audio_level()
+                        }))
+                    }
+                    RoomEvent::ParticipantDisconnected(participant) => {
+                        let prefix = format!("{room_id}\u{1f}{}\u{1f}", participant.identity());
+                        cancelled_prefixes.insert(prefix);
+                        tracing::info!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            participant_sid = %participant.sid(),
+                            "LiveKit participant disconnected"
+                        );
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "participant_disconnected",
+                            "identity": participant.identity().to_string(),
+                            "name": participant.name()
+                        }))
+                    }
+                    RoomEvent::Connected { participants_with_tracks } => {
+                        let participant_count = participants_with_tracks.len();
+                        let track_count: usize = participants_with_tracks
+                            .iter()
+                            .map(|(_, publications)| publications.len())
+                            .sum();
+                        tracing::info!(
+                            room_id = %room_id,
+                            participants = participant_count,
+                            published_tracks = track_count,
+                            "LiveKit room connected with existing remote publications"
+                        );
+                        for (participant, publications) in &participants_with_tracks {
+                            tracing::info!(
+                                room_id = %room_id,
+                                participant = %participant.identity(),
+                                participant_sid = %participant.sid(),
+                                "LiveKit remote participant was already present when Astro connected"
+                            );
+                            for publication in publications {
+                                tracing::info!(
+                                    room_id = %room_id,
+                                    participant = %participant.identity(),
+                                    participant_sid = %participant.sid(),
+                                    track_sid = %publication.sid(),
+                                    track_kind = ?publication.kind(),
+                                    track_source = ?publication.source(),
+                                    muted = publication.is_muted(),
+                                    subscribed = publication.is_subscribed(),
+                                    "LiveKit existing remote track publication"
+                                );
+                            }
+                        }
+                        // ParticipantConnected is not guaranteed to be delivered
+                        // for peers that were already in the room when this client
+                        // finished connecting. Surface the existing participant to
+                        // QML as an answer event as well, otherwise outgoing
+                        // ringback can continue until the no-answer timer fires.
+                        participants_with_tracks.first().map(|(participant, _)| {
+                            serde_json::json!({
+                                "room_id": room_id,
+                                "type": "participant_connected",
+                                "identity": participant.identity().to_string(),
+                                "name": participant.name(),
+                                "metadata": participant.metadata(),
+                                "speaking": participant.is_speaking(),
+                                "audio_level": participant.audio_level()
+                            })
+                        })
+                    }
+                    RoomEvent::E2eeStateChanged { participant, state } => {
+                        tracing::warn!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            state = ?state,
+                            "LiveKit frame-cryptor E2EE state changed"
+                        );
+                        None
+                    }
+                    RoomEvent::TrackPublished { participant, publication } => {
+                        tracing::info!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            participant_sid = %participant.sid(),
+                            track_sid = %publication.sid(),
+                            track_kind = ?publication.kind(),
+                            track_source = ?publication.source(),
+                            muted = publication.is_muted(),
+                            subscribed = publication.is_subscribed(),
+                            "LiveKit remote track published"
+                        );
+                        None
+                    }
+                    RoomEvent::TrackSubscriptionFailed { participant, track_sid, error } => {
+                        tracing::error!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            participant_sid = %participant.sid(),
+                            track_sid = %track_sid,
+                            error = ?error,
+                            "LiveKit remote track subscription failed"
+                        );
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "track_subscription_failed",
+                            "identity": participant.identity().to_string(),
+                            "track_sid": track_sid.to_string(),
+                            "error": format!("{error:?}")
+                        }))
+                    }
+                    RoomEvent::TrackSubscribed { participant, track, .. } => {
+                        tracing::info!(
+                            room_id = %room_id,
+                            participant = %participant.identity(),
+                            participant_sid = %participant.sid(),
+                            track_sid = %track.sid(),
+                            track_kind = ?track.kind(),
+                            track_source = ?track.source(),
+                            muted = track.is_muted(),
+                            "LiveKit remote track subscription succeeded"
+                        );
+                        if let RemoteTrack::Audio(audio_track) = &track {
+                            let identity = participant.identity().to_string();
+                            let track_sid = audio_track.sid().to_string();
+                            let key = format!("{room_id}\u{1f}{identity}\u{1f}{track_sid}");
+                            tracing::info!(
+                                room_id = %room_id,
+                                participant = %identity,
+                                track_sid = %track_sid,
+                                source = ?audio_track.source(),
+                                muted = audio_track.is_muted(),
+                                "LiveKit remote audio track subscribed"
+                            );
+                            let task_key = key.clone();
+                            let task_room_id = room_id.clone();
+                            let task_identity = identity.clone();
+                            let mut stream = NativeAudioStream::new(audio_track.rtc_track(), 48_000, 2);
+                            let task_audio_queue = Arc::clone(&audio_frame_queue);
+                            let task = runtime.spawn(async move {
+                                let mut logged_first_frame = false;
+                                while let Some(frame) = stream.next().await {
+                                    if frame.data.is_empty()
+                                        || frame.num_channels == 0
+                                        || frame.sample_rate == 0
+                                    {
+                                        continue;
+                                    }
+                                    let mut pcm = Vec::with_capacity(frame.data.len() * 2);
+                                    for sample in frame.data.iter() {
+                                        pcm.extend_from_slice(&sample.to_le_bytes());
+                                    }
+                                    if !logged_first_frame {
+                                        tracing::info!(
+                                            room_id = %task_room_id,
+                                            participant = %task_identity,
+                                            sample_rate = frame.sample_rate,
+                                            channels = frame.num_channels,
+                                            samples = frame.samples_per_channel,
+                                            "First decoded LiveKit remote audio frame received"
+                                        );
+                                        logged_first_frame = true;
+                                    }
+                                    if let Ok(mut frames) = task_audio_queue.lock() {
+                                        if frames.len() >= RTC_AUDIO_FRAME_QUEUE_LIMIT {
+                                            frames.pop_front();
+                                        }
+                                        frames.push_back(RtcRemoteAudioFrame {
+                                            key: task_key.clone(),
+                                            room_id: task_room_id.clone(),
+                                            identity: task_identity.clone(),
+                                            sample_rate: frame.sample_rate,
+                                            channels: frame.num_channels,
+                                            data: pcm,
+                                        });
+                                    }
+                                }
+                                tracing::info!(
+                                    room_id = %task_room_id,
+                                    participant = %task_identity,
+                                    "LiveKit remote audio stream ended"
+                                );
+                            });
+                            audio_tasks_to_add.push((key, task.abort_handle()));
+                        }
+                        if let RemoteTrack::Video(video_track) = track {
+                            let track_source = match video_track.source() {
+                                TrackSource::Camera => Some("camera"),
+                                TrackSource::Screenshare => Some("screenshare"),
+                                _ => None,
+                            };
+                            if let Some(track_source) = track_source {
+                                let identity = participant.identity().to_string();
+                                let track_sid = video_track.sid().to_string();
+                                tracing::info!(
+                                    room_id = %room_id,
+                                    participant = %identity,
+                                    track_sid = %track_sid,
+                                    source = track_source,
+                                    "LiveKit remote video track subscribed"
+                                );
+                                let key = format!("{room_id}\u{1f}{identity}\u{1f}{track_sid}");
+                                let task_key = key.clone();
+                                let task_room_id = room_id.clone();
+                                let task_identity = identity.clone();
+                                let task_source = track_source.to_string();
+                                let mut stream = NativeVideoStream::new(video_track.rtc_track());
+                                let task_frame_queue = Arc::clone(&frame_queue);
+                                let task = runtime.spawn(async move {
+                                    let mut logged_first_frame = false;
+                                    let mut logged_pack_failure = false;
+                                    while let Some(frame) = stream.next().await {
+                                        let width = frame.buffer.width();
+                                        let height = frame.buffer.height();
+                                        let data = match pack_remote_video_frame(frame.buffer.as_ref()) {
+                                            Some(data) => data,
+                                            None => {
+                                                if !logged_pack_failure {
+                                                    tracing::warn!(
+                                                        room_id = %task_room_id,
+                                                        participant = %task_identity,
+                                                        width,
+                                                        height,
+                                                        "Could not pack decoded LiveKit remote video frame as I420"
+                                                    );
+                                                    logged_pack_failure = true;
+                                                }
+                                                continue;
+                                            }
+                                        };
+
+                                        if !logged_first_frame {
+                                            tracing::info!(
+                                                room_id = %task_room_id,
+                                                participant = %task_identity,
+                                                width,
+                                                height,
+                                                "First decoded LiveKit camera frame received"
+                                            );
+                                            logged_first_frame = true;
+                                        }
+
+                                        let next_frame = RtcRemoteVideoFrame {
+                                            key: task_key.clone(),
+                                            room_id: task_room_id.clone(),
+                                            identity: task_identity.clone(),
+                                            source: task_source.clone(),
+                                            width,
+                                            height,
+                                            data,
+                                        };
+
+                                        if let Ok(mut frames) = task_frame_queue.lock() {
+                                            if let Some(existing) = frames.iter_mut()
+                                                .find(|queued| queued.key == task_key)
+                                            {
+                                                *existing = next_frame;
+                                            } else {
+                                                if frames.len() >= RTC_VIDEO_FRAME_QUEUE_LIMIT {
+                                                    frames.pop_front();
+                                                }
+                                                frames.push_back(next_frame);
+                                            }
+                                        }
+                                    }
+                                });
+                                tasks_to_add.push((key, task.abort_handle()));
+                            }
+                        }
+
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "track_subscribed",
+                            "identity": participant.identity().to_string(),
+                            "name": participant.name()
+                        }))
+                    }
+                    RoomEvent::TrackUnsubscribed { participant, track, .. } => {
+                        let is_audio = matches!(&track, RemoteTrack::Audio(_));
+                        let track_source = match &track {
+                            RemoteTrack::Video(video_track) => match video_track.source() {
+                                TrackSource::Camera => Some("camera"),
+                                TrackSource::Screenshare => Some("screenshare"),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        let is_camera = track_source == Some("camera");
+                        let is_screenshare = track_source == Some("screenshare");
+                        let key = match &track {
+                            RemoteTrack::Audio(audio_track) => Some(format!(
+                                "{room_id}\u{1f}{}\u{1f}{}",
+                                participant.identity(), audio_track.sid()
+                            )),
+                            RemoteTrack::Video(video_track) => Some(format!(
+                                "{room_id}\u{1f}{}\u{1f}{}",
+                                participant.identity(), video_track.sid()
+                            )),
+                        };
+                        if let Some(key) = key { cancelled_keys.insert(key); }
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "track_unsubscribed",
+                            "is_camera": is_camera,
+                            "is_screenshare": is_screenshare,
+                            "is_audio": is_audio,
+                            "identity": participant.identity().to_string(),
+                            "name": participant.name()
+                        }))
+                    }
+                    RoomEvent::ConnectionStateChanged(state) => {
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "connection_state_changed",
+                            "state": format!("{state:?}")
+                        }))
+                    }
+                    RoomEvent::Reconnecting => {
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "reconnecting"
+                        }))
+                    }
+                    RoomEvent::Reconnected => {
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "reconnected"
+                        }))
+                    }
+                    RoomEvent::Disconnected { reason } => {
+                        cancelled_prefixes.insert(format!("{room_id}\u{1f}"));
+                        Some(serde_json::json!({
+                            "room_id": room_id,
+                            "type": "disconnected",
+                            "reason": format!("{reason:?}")
+                        }))
+                    }
+                    _ => None,
+                };
+
+                if let Some(update) = update {
+                    updates.push(update);
+                }
+            }
+        }
+
+        for (key, task) in tasks_to_add {
+            if let Some(previous) = self.rtc_remote_video_tasks.insert(key, task) {
+                previous.abort();
+            }
+        }
+        for (key, task) in audio_tasks_to_add {
+            if let Some(previous) = self.rtc_remote_audio_tasks.insert(key, task) {
+                previous.abort();
+            }
+        }
+
+        if !cancelled_keys.is_empty() || !cancelled_prefixes.is_empty() {
+            let task_keys: Vec<String> = self.rtc_remote_video_tasks.keys()
+                .chain(self.rtc_remote_audio_tasks.keys())
+                .filter(|key| {
+                    cancelled_keys.contains(*key)
+                        || cancelled_prefixes.iter().any(|prefix| key.starts_with(prefix))
+                })
+                .cloned()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+
+            for key in &task_keys {
+                if let Some(task) = self.rtc_remote_video_tasks.remove(key) {
+                    task.abort();
+                }
+                if let Some(task) = self.rtc_remote_audio_tasks.remove(key) {
+                    task.abort();
+                }
             }
 
-            let response_json: serde_json::Value =
-                serde_json::from_slice(&response_bytes)
-                    .map_err(|error| format!("Invalid LiveKit authorization response: {error}"))?;
+            if let Ok(mut frames) = self.rtc_remote_audio_frames.lock() {
+                frames.retain(|frame| {
+                    !cancelled_keys.contains(&frame.key)
+                        && !cancelled_prefixes.iter().any(|prefix| frame.key.starts_with(prefix))
+                });
+            }
 
-            let livekit_url = response_json.get("url")
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| "LiveKit authorization response has no URL".to_string())?;
+            if let Ok(mut frames) = self.rtc_remote_video_frames.lock() {
+                frames.retain(|frame| {
+                    !cancelled_keys.contains(&frame.key)
+                        && !cancelled_prefixes.iter().any(|prefix| frame.key.starts_with(prefix))
+                });
+            }
+        }
 
-            let jwt = response_json.get("jwt")
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| "LiveKit authorization response has no JWT".to_string())?;
+        serde_json::json!({ "events": updates }).to_string()
+    }
 
-            Ok(serde_json::json!({
-                "url": livekit_url,
-                "jwt": jwt
-            }).to_string())
-        })
+    pub fn take_rtc_audio_frame(
+        &mut self,
+    ) -> Option<(String, String, u32, u32, Vec<u8>)> {
+        let frame = self.rtc_remote_audio_frames.lock().ok()?.pop_front()?;
+        Some((frame.room_id, frame.identity, frame.sample_rate, frame.channels, frame.data))
+    }
+
+    pub fn take_rtc_video_frame(
+        &mut self,
+    ) -> Option<(String, String, String, u32, u32, Vec<u8>)> {
+        let frame = self.rtc_remote_video_frames.lock().ok()?.pop_front()?;
+        Some((frame.room_id, frame.identity, frame.source, frame.width, frame.height, frame.data))
     }
 
     /// Withdraw Astro's own compatibility-mode MatrixRTC membership.
@@ -2311,6 +4739,7 @@ impl MatrixClientManager {
             .map_err(|error| format!("Invalid room ID: {error}"))?;
 
         let remembered_key = self.rtc_local_memberships.get(room_id).cloned();
+        let remembered_modern = self.rtc_modern_memberships.get(room_id).cloned();
 
         let state_key = self.runtime.block_on(async move {
             let room = client.joined_rooms().into_iter()
@@ -2331,20 +4760,29 @@ impl MatrixClientManager {
             };
 
             room.send_state_event_raw(
-                "org.matrix.msc3401.call.member",
-                &key,
-                serde_json::json!({})
-            ).await
-                .map_err(|error| format!("Could not withdraw MatrixRTC call presence: {error}"))?;
-
+                "org.matrix.msc3401.call.member", &key, serde_json::json!({})
+            ).await.map_err(|error| format!("Could not withdraw MatrixRTC call presence: {error}"))?;
+            if let Some((_member_id, mut modern_content)) = remembered_modern {
+                modern_content["member"]["membership"] = serde_json::json!("leave");
+                room.send_raw("m.rtc.member", modern_content)
+                    .with_sticky_duration(Duration::from_secs(60 * 60)).await
+                    .map_err(|error| format!("Could not publish MatrixRTC leave membership: {error}"))?;
+            }
             Ok::<String, String>(key)
         })?;
 
         self.rtc_local_memberships.remove(room_id);
+        self.rtc_outgoing_call_notifications.remove(room_id);
+        self.rtc_modern_memberships.remove(room_id);
+        self.rtc_e2ee_sessions.remove(room_id);
+        if let Ok(mut renewals) = self.rtc_modern_renewals.lock() { renewals.remove(room_id); }
         self.rtc_livekit_services.remove(room_id);
         if let Ok(mut renewals) = self.rtc_renewals.lock() {
             renewals.remove(room_id);
         }
+
+        // Force the next membership poll to publish the cleared state to QML.
+        self.rtc_last_snapshots.remove(room_id);
 
         let _ = state_key;
         Ok(())
@@ -2457,16 +4895,53 @@ impl MatrixClientManager {
                         if let Ok(user_id) =
                             matrix_sdk::ruma::UserId::parse(sender)
                         {
-                            if let Ok(Some(profile)) =
-                                self.runtime.block_on(room.get_member_no_sync(&user_id))
-                            {
-                                self.rtc_participant_profiles.insert(
-                                    cache_key.clone(),
-                                    RtcParticipantProfile {
-                                        display_name: profile.display_name().map(str::to_owned),
-                                        avatar_url: profile.avatar_url().map(ToString::to_string),
-                                    },
-                                );
+                            // MatrixRTC can advertise a participant before this
+                            // client's lazy-loaded room-member cache contains their
+                            // m.room.member event. get_member() ensures that member
+                            // state is fetched when needed; get_member_no_sync()
+                            // silently returns None in that situation.
+                            let profile_result = self.runtime.block_on(
+                                room.get_member(&user_id)
+                            );
+
+                            match profile_result {
+                                Ok(Some(profile)) => {
+                                    let display_name =
+                                        profile.display_name().map(str::to_owned);
+                                    let avatar_url =
+                                        profile.avatar_url().map(ToString::to_string);
+
+                                    eprintln!(
+                                        "ASTRO RTC PROFILE: room={} user={} member_found=true display_name={} avatar={}",
+                                        room_id,
+                                        sender,
+                                        display_name.is_some(),
+                                        avatar_url.is_some()
+                                    );
+
+                                    self.rtc_participant_profiles.insert(
+                                        cache_key.clone(),
+                                        RtcParticipantProfile {
+                                            display_name,
+                                            avatar_url,
+                                        },
+                                    );
+                                }
+                                Ok(None) => {
+                                    eprintln!(
+                                        "ASTRO RTC PROFILE: room={} user={} member_found=false",
+                                        room_id,
+                                        sender
+                                    );
+                                }
+                                Err(error) => {
+                                    eprintln!(
+                                        "ASTRO RTC PROFILE: room={} user={} lookup_failed={}",
+                                        room_id,
+                                        sender,
+                                        error
+                                    );
+                                }
                             }
                         }
                     }
@@ -2481,7 +4956,85 @@ impl MatrixClientManager {
                         "avatar_url": profile.and_then(|p| p.avatar_url.clone())
                     }));
                 }
+            }   //Congrats you found Devabu's secret comment :); 24.11.26
+
+            // MSC4354 modern MatrixRTC memberships are message-like sticky
+            // events, not m.room state events. The SDK maintains their live
+            // map from the all-room Sliding Sync subscription above, including
+            // replaying still-live memberships when the connection starts.
+            let mut modern_memberships = Vec::new();
+            let mut modern_senders = HashSet::new();
+
+            for sticky_event in room.sticky_events().live() {
+                if sticky_event.key.event_type.to_string() != "m.rtc.member" {
+                    continue;
+                }
+
+                let Ok(raw_event) =
+                    serde_json::from_str::<serde_json::Value>(sticky_event.raw().json().get())
+                else {
+                    continue;
+                };
+
+                let sender = sticky_event.key.sender.to_string();
+                let content = &raw_event["content"];
+                let member = &content["member"];
+                let application = content["application"]["type"].as_str().unwrap_or("");
+                let membership = member["membership"].as_str().unwrap_or("");
+                let slot_id = content["slot_id"].as_str().unwrap_or("");
+                let member_id = member["id"].as_str().unwrap_or("");
+
+                if application != "m.call"
+                    || membership != "join"
+                    || slot_id != "m.call#room"
+                    || member_id.is_empty()
+                {
+                    continue;
+                }
+
+                let cache_key = (room_id.clone(), sender.clone());
+
+                if !self.rtc_participant_profiles.contains_key(&cache_key) {
+                    if let Ok(user_id) = matrix_sdk::ruma::UserId::parse(&sender) {
+                        match self.runtime.block_on(room.get_member(&user_id)) {
+                            Ok(Some(profile)) => {
+                                self.rtc_participant_profiles.insert(
+                                    cache_key.clone(),
+                                    RtcParticipantProfile {
+                                        display_name: profile.display_name().map(str::to_owned),
+                                        avatar_url: profile.avatar_url().map(ToString::to_string),
+                                    },
+                                );
+                            }
+                            Ok(None) => {}
+                            Err(error) => eprintln!(
+                                "ASTRO RTC PROFILE: room={} user={} modern_lookup_failed={}",
+                                room_id, sender, error
+                            ),
+                        }
+                    }
+                }
+
+                let profile = self.rtc_participant_profiles.get(&cache_key);
+                modern_senders.insert(sender.clone());
+                modern_memberships.push(serde_json::json!({
+                    "sender": sender,
+                    "member_id": member_id,
+                    "slot_id": slot_id,
+                    "display_name": profile.and_then(|p| p.display_name.clone()),
+                    "avatar_url": profile.and_then(|p| p.avatar_url.clone())
+                }));
             }
+
+            // Astro can publish both formats for compatibility. Prefer the
+            // modern entry for a sender when present, otherwise retain their
+            // legacy memberships. This avoids showing every Astro participant
+            // twice while still supporting rooms with mixed client versions.
+            memberships.retain(|item| {
+                !item["sender"].as_str()
+                    .is_some_and(|sender| modern_senders.contains(sender))
+            });
+            memberships.extend(modern_memberships);
 
             memberships.sort_by(|a, b| {
                 a["sender"].as_str().cmp(&b["sender"].as_str())
@@ -2493,12 +5046,17 @@ impl MatrixClientManager {
             let slot_available = true;
 
             let local_member_id = self.rtc_local_memberships.get(&room_id);
+            let modern_member_id = self.rtc_modern_memberships
+                .get(&room_id)
+                .map(|(member_id, _)| member_id);
 
-            let joined_by_me = local_member_id.is_some_and(|local_id| {
-                memberships.iter().any(|item| {
-                    item["sender"].as_str() == own_user_id.as_deref()
-                        && item["member_id"].as_str() == Some(local_id.as_str())
-                })
+            let joined_by_me = memberships.iter().any(|item| {
+                item["sender"].as_str() == own_user_id.as_deref()
+                    && (local_member_id.is_some_and(|local_id| {
+                        item["member_id"].as_str() == Some(local_id.as_str())
+                    }) || modern_member_id.is_some_and(|member_id| {
+                        item["member_id"].as_str() == Some(member_id.as_str())
+                    }))
             });
 
             let snapshot = serde_json::json!({
@@ -3303,7 +5861,7 @@ impl MatrixClientManager {
             .ok_or_else(|| "No active Matrix session".to_string())?;
 
         let pusher = PusherInit {
-            ids: PusherIds::new(push_token.to_owned(), "astro.madabu".to_owned()),
+            ids: PusherIds::new(push_token.to_owned(), "astro.madabu_astro".to_owned()),
             app_display_name: "Astro".to_owned(),
             kind: {
                 let mut http_data = HttpPusherData::new(
@@ -3323,11 +5881,133 @@ impl MatrixClientManager {
         };
 
         self.runtime.block_on(async {
+            // Remove the previous Astro pusher ID used before the Ubuntu
+            // PushClient app ID was aligned with the package hook ID.
+            let legacy_ids = PusherIds::new(
+                push_token.to_owned(),
+                "astro.madabu".to_owned(),
+            );
+            if let Err(error) = client.pusher().delete(legacy_ids).await {
+                eprintln!("ASTRO PUSH: legacy pusher cleanup was not needed or failed: {}", error);
+            }
+
             client
                 .pusher()
                 .set(pusher.into(), false)
                 .await
-                .map_err(|error| format!("Could not register Matrix push pusher: {error}"))
+                .map_err(|error| format!("Could not register Matrix push pusher: {error}"))?;
+
+            // Matrix does not currently provide a default push rule for
+            // MSC4075 call notifications on every homeserver. Install
+            // recipient-specific rules so the homeserver forwards ring
+            // events to the registered Ubuntu Push gateway.
+            let own_user_id = client
+                .user_id()
+                .ok_or_else(|| "No authenticated Matrix user for call push rules".to_owned())?
+                .to_string();
+            let notification_settings = client.notification_settings().await;
+
+            for (rule_id, event_type, legacy_format, room_mention) in [
+                ("astro_rtc_ring_msc4075_v3", "org.matrix.msc4075.rtc.notification", false, false),
+                ("astro_rtc_ring_stable_v3", "m.rtc.notification", false, false),
+                ("astro_rtc_ring_legacy_v3", "m.call.notify", true, false),
+                ("astro_rtc_ring_legacy_unstable_v3", "org.matrix.msc4075.call.notify", true, false),
+                ("astro_rtc_ring_msc4075_room_v3", "org.matrix.msc4075.rtc.notification", false, true),
+                ("astro_rtc_ring_stable_room_v3", "m.rtc.notification", false, true),
+                ("astro_rtc_ring_legacy_room_v3", "m.call.notify", true, true),
+                ("astro_rtc_ring_legacy_unstable_room_v3", "org.matrix.msc4075.call.notify", true, true),
+            ] {
+                let mut conditions = vec![
+                    PushCondition::EventMatch(EventMatchConditionData::new(
+                        "type".to_owned(),
+                        event_type.to_owned(),
+                    )),
+                ];
+
+                if room_mention {
+                    conditions.push(PushCondition::EventPropertyIs(
+                        EventPropertyIsConditionData::new(
+                            r"content.m\.mentions.room".to_owned(),
+                            true.into(),
+                        ),
+                    ));
+                } else {
+                    conditions.push(PushCondition::EventPropertyContains(
+                        EventPropertyContainsConditionData::new(
+                            r"content.m\.mentions.user_ids".to_owned(),
+                            own_user_id.clone().into(),
+                        ),
+                    ));
+                }
+
+                if legacy_format {
+                    if event_type == "m.call.notify" {
+                        conditions.push(PushCondition::EventPropertyIs(
+                            EventPropertyIsConditionData::new(
+                                "content.application".to_owned(),
+                                "m.call".into(),
+                            ),
+                        ));
+                    }
+                    conditions.push(PushCondition::EventPropertyIs(
+                        EventPropertyIsConditionData::new(
+                            "content.notify_type".to_owned(),
+                            "ring".into(),
+                        ),
+                    ));
+                }
+
+                let actions = vec![
+                    PushAction::Notify,
+                    PushAction::SetTweak(Tweak::Sound("ring".to_owned().into())),
+                ];
+
+                match notification_settings
+                    .is_push_rule_enabled(RuleKind::Override, rule_id)
+                    .await
+                {
+                    Ok(true) => {
+                        eprintln!("ASTRO PUSH: {} push rule already enabled", rule_id);
+                        continue;
+                    }
+                    Ok(false) => {
+                        match notification_settings
+                            .set_push_rule_enabled(RuleKind::Override, rule_id, true)
+                            .await
+                        {
+                            Ok(()) => {
+                                eprintln!("ASTRO PUSH: re-enabled {} push rule", rule_id);
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "ASTRO PUSH: could not re-enable {} push rule: {}",
+                                    rule_id, error
+                                );
+                            }
+                        }
+                        continue;
+                    }
+                    Err(_) => {}
+                }
+
+                if let Err(error) = notification_settings
+                    .create_custom_conditional_push_rule(
+                        rule_id.to_owned(),
+                        RuleKind::Override,
+                        actions,
+                        conditions,
+                    )
+                    .await
+                {
+                    eprintln!(
+                        "ASTRO PUSH: could not install {} push rule: {}",
+                        rule_id, error
+                    );
+                } else {
+                    eprintln!("ASTRO PUSH: installed {} push rule", rule_id);
+                }
+            }
+            Ok(())
         })
     }
 
@@ -3343,7 +6023,7 @@ impl MatrixClientManager {
 
         let pusher_ids = PusherIds::new(
             push_token.to_owned(),
-            "astro.madabu".to_owned(),
+            "astro.madabu_astro".to_owned(),
         );
 
         self.runtime.block_on(async {
@@ -3351,7 +6031,17 @@ impl MatrixClientManager {
                 .pusher()
                 .delete(pusher_ids)
                 .await
-                .map_err(|error| format!("Could not unregister Matrix push pusher: {error}"))
+                .map_err(|error| format!("Could not unregister Matrix push pusher: {error}"))?;
+
+            let legacy_ids = PusherIds::new(
+                push_token.to_owned(),
+                "astro.madabu".to_owned(),
+            );
+            if let Err(error) = client.pusher().delete(legacy_ids).await {
+                eprintln!("ASTRO PUSH: legacy pusher cleanup failed: {}", error);
+            }
+
+            Ok(())
         })
     }
 

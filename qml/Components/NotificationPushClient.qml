@@ -7,6 +7,11 @@ Item {
     signal notificationReceived(string payload)
     signal pushTokenAvailable(string token)
 
+    function clearPersistent(tags) {
+        if (tags && tags.length > 0)
+            pushClient.clearPersistent(tags)
+    }
+
     PushClient {
         id: pushClient
         appId: "astro.madabu_astro"

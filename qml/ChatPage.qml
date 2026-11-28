@@ -1,5 +1,6 @@
 
 import QtQuick 2.7
+import Qt.labs.settings 1.0
 import Lomiri.Components 1.3
 import QtQuick.Layouts 1.3
 import QtGraphicalEffects 1.0
@@ -25,10 +26,15 @@ Item {
     property string selectedRoom: "Welcome to Astro"
     property string selectedPreview: "Your Matrix client starts here."
     property string selectedRoomAvatarUrl: ""
+    property string selectedRoomKind: ""
+    property bool selectedRoomEncrypted: false
 
     // MatrixRTC membership snapshots, indexed by room ID.
     property var rtcMembershipsByRoom: ({})
     property var rtcCallStatesByRoom: ({})
+
+    // LiveKit audio state and participants, indexed by room ID.
+    property var rtcAudioStatesByRoom: ({})
 
     // Notification navigation request passed to RoomView.
     property string pendingNotificationEventId: ""
@@ -37,6 +43,45 @@ Item {
 
     property bool roomsLoading: false
     property bool moreMenuVisible: false
+    property bool sortMenuVisible: false
+
+    // Keep the room ordering choice across app restarts. Qt.labs.settings
+    // stores this in the application's private settings location.
+    Settings {
+        id: roomNavigationSettings
+        category: "RoomNavigation"
+        property string sortMode: "name"
+    }
+
+    function savedRoomSortMode() {
+        return roomNavigationSettings.sortMode === "recent"
+                ? "recent" : "name"
+    }
+
+    function rtcParticipantDisplayName(name, identity) {
+        var displayName = String(name || "").trim()
+        var matrixIdentity = String(identity || "").trim()
+
+        if (displayName && displayName.charAt(0) !== "@")
+            return displayName
+
+        var source = displayName.charAt(0) === "@"
+                ? displayName : matrixIdentity
+
+        if (source.charAt(0) === "@") {
+            var separator = source.indexOf(":")
+            var localpart = separator > 1
+                    ? source.substring(1, separator)
+                    : source.substring(1)
+
+            if (localpart.length > 0) {
+                return localpart.charAt(0).toUpperCase() +
+                       localpart.substring(1)
+            }
+        }
+
+        return displayName || matrixIdentity || "Participant"
+    }
 
     // Dismiss the search keyboard without clearing the search.
     function dismissSearchKeyboard() {
@@ -102,6 +147,20 @@ function roomNameForId(id) {
     return id
 }
 
+function roomIsEncrypted(id) {
+    if (!id)
+        return false
+
+    for (var i = 0; i < roomModel.count; i++) {
+        var room = roomModel.get(i)
+        if (room.roomId === id)
+            return room.isEncrypted === true
+    }
+
+    // Fail closed when the room is not in the current room model.
+    return false
+}
+
 function openNotification(roomId, eventId) {
     if (!roomId)
         return
@@ -118,6 +177,8 @@ function openNotification(roomId, eventId) {
         root.selectedRoom = room.name
         root.selectedPreview = room.preview
         root.selectedRoomAvatarUrl = room.avatarUrl || ""
+        root.selectedRoomKind = room.kind || "room"
+        root.selectedRoomEncrypted = room.isEncrypted === true
         found = true
         break
     }
@@ -128,6 +189,8 @@ function openNotification(roomId, eventId) {
         root.selectedRoom = roomId
         root.selectedPreview = ""
         root.selectedRoomAvatarUrl = ""
+        root.selectedRoomKind = "room"
+        root.selectedRoomEncrypted = false
     }
 
     root.showConversation = true
@@ -217,11 +280,14 @@ function loadRooms(json, finished) {
                 colour: colour,
                 roomId: roomId,
                 kind: kind,
+                isEncrypted: room.is_encrypted === true,
                 unreadCount: Number(room.unread_count || 0),
                 mentionCount: Number(room.mention_count || 0),
                 parentSpaceIds: JSON.stringify(
                     room.parent_space_ids || []
-                )
+                ),
+                lastActivity: Number(room.last_activity || 0),
+                spaceLastActivity: Number(room.space_last_activity || 0)
             })
 
             if (root.backend &&
@@ -409,6 +475,162 @@ function loadRooms(json, finished) {
             }
         }
 
+        onMatrixRtcAudioEventsUpdated: {
+            try {
+                var result = JSON.parse(json)
+                var events = result.events || []
+                var updatedStates = ({})
+
+                for (var roomId in root.rtcAudioStatesByRoom) {
+                    var previous = root.rtcAudioStatesByRoom[roomId]
+                    updatedStates[roomId] = {
+                        active: previous.active === true,
+                        reconnecting: previous.reconnecting === true,
+                        connectionState: previous.connectionState || "",
+                        participants: (previous.participants || []).slice(0),
+                        lastError: previous.lastError || ""
+                    }
+                }
+
+                for (var i = 0; i < events.length; i++) {
+                    var event = events[i]
+                    var eventRoomId = event.room_id
+
+                    if (!eventRoomId)
+                        continue
+
+                    if (!updatedStates[eventRoomId]) {
+                        updatedStates[eventRoomId] = {
+                            active: false,
+                            reconnecting: false,
+                            connectionState: "",
+                            participants: [],
+                            lastError: ""
+                        }
+                    }
+
+                    var state = updatedStates[eventRoomId]
+                    var participants = state.participants
+                    var participantIndex = -1
+
+                    for (var p = 0; p < participants.length; p++) {
+                        if (participants[p].identity === event.identity) {
+                            participantIndex = p
+                            break
+                        }
+                    }
+
+                    if (event.type === "participant_connected" ||
+                            event.type === "participant_active") {
+                        var participant = {
+                            identity: event.identity || "",
+                            name: root.rtcParticipantDisplayName(
+                                event.name, event.identity
+                            ),
+                            speaking: event.speaking === true,
+                            audioLevel: Number(event.audio_level || 0),
+                            hasTrack: participantIndex >= 0 &&
+                                      participants[participantIndex].hasTrack === true
+                        }
+
+                        if (participantIndex >= 0)
+                            participants[participantIndex] = participant
+                        else
+                            participants.push(participant)
+
+                    } else if (event.type === "participant_disconnected") {
+                        if (participantIndex >= 0)
+                            participants.splice(participantIndex, 1)
+
+                    } else if (event.type === "track_subscribed") {
+                        if (participantIndex >= 0) {
+                            participants[participantIndex].hasTrack = true
+                        } else if (event.identity) {
+                            // A camera subscription is itself authoritative evidence
+                            // of a participant. Do not depend on event ordering.
+                            participants.push({
+                                identity: event.identity,
+                                name: root.rtcParticipantDisplayName(
+                                    event.name, event.identity
+                                ),
+                                speaking: false,
+                                audioLevel: 0,
+                                hasTrack: true
+                            })
+                        }
+
+                    } else if (event.type === "track_unsubscribed") {
+                        if (participantIndex >= 0) {
+                            participants[participantIndex].hasTrack = false
+                        }
+
+                    } else if (event.type === "reconnecting") {
+                        state.reconnecting = true
+
+                    } else if (event.type === "reconnected") {
+                        state.reconnecting = false
+                        state.active = true
+
+                    } else if (event.type === "connection_state_changed") {
+                        state.connectionState = event.state || ""
+                        var connectionState =
+                            String(event.state || "").toLowerCase()
+
+                        if (connectionState.indexOf("connected") >= 0) {
+                            state.active = true
+                            state.reconnecting = false
+                        } else if (connectionState.indexOf("disconnected") >= 0) {
+                            state.active = false
+                            state.reconnecting = false
+                        }
+
+                    } else if (event.type === "disconnected") {
+                        state.active = false
+                        state.reconnecting = false
+                        state.connectionState = "Disconnected"
+                        state.participants = []
+                    }
+                }
+
+                if (events.length > 0)
+                    root.rtcAudioStatesByRoom = updatedStates
+
+            } catch (error) {
+                console.warn(
+                    "ASTRO: Could not process LiveKit audio events:",
+                    error
+                )
+            }
+        }
+
+        onMatrixRtcAudioActionFinished: {
+            var updatedStates = ({})
+
+            for (var existingRoomId in root.rtcAudioStatesByRoom) {
+                var previous = root.rtcAudioStatesByRoom[existingRoomId]
+                updatedStates[existingRoomId] = {
+                    active: previous.active === true,
+                    reconnecting: previous.reconnecting === true,
+                    connectionState: previous.connectionState || "",
+                    participants: (previous.participants || []).slice(0),
+                    lastError: previous.lastError || ""
+                }
+            }
+
+            if (!updatedStates[roomId]) {
+                updatedStates[roomId] = {
+                    active: false,
+                    reconnecting: false,
+                    connectionState: "",
+                    participants: [],
+                    lastError: ""
+                }
+            }
+
+            updatedStates[roomId].lastError = error || ""
+            root.rtcAudioStatesByRoom = updatedStates
+        }
+
     }
 
     // =========================================================
@@ -456,6 +678,100 @@ function loadRooms(json, finished) {
                     Item {
                         width: parent.width
                         height: units.gu(8)
+                        // Keep the heading and its dropdown above the search/navigation controls.
+                        z: 20
+
+                        // Room ordering selector sits beside the existing overflow menu.
+                        Rectangle {
+                            id: roomSortButton
+
+                            anchors {
+                                right: moreButton.left
+                                rightMargin: units.gu(0.5)
+                                verticalCenter: parent.verticalCenter
+                            }
+
+                            width: units.gu(8)
+                            height: units.gu(5)
+                            radius: units.gu(1)
+                            color: root.sortMenuVisible ? "#40566a" : "transparent"
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: roomNavigator.sortMode === "recent" ? "Recent ▾" : "A–Z ▾"
+                                color: "#b4c4d1"
+                                font.pixelSize: units.gu(1.35)
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: {
+                                    root.moreMenuVisible = false
+                                    root.sortMenuVisible = !root.sortMenuVisible
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            id: roomSortMenu
+
+                            anchors {
+                                top: parent.bottom
+                                right: parent.right
+                            }
+
+                            width: units.gu(19)
+                            height: units.gu(10)
+                            radius: units.gu(1)
+                            color: "#263744"
+                            border.color: "#526575"
+                            border.width: units.dp(1)
+                            visible: root.sortMenuVisible
+                            z: 30
+
+                            Column {
+                                anchors.fill: parent
+                                anchors.margins: units.gu(0.5)
+                                spacing: units.gu(0.5)
+
+                                Repeater {
+                                    model: [
+                                        { label: "A–Z", value: "name" },
+                                        { label: "Recent", value: "recent" }
+                                    ]
+
+                                    delegate: Rectangle {
+                                        width: parent.width
+                                        height: units.gu(4)
+                                        radius: units.gu(0.5)
+                                        color: roomNavigator.sortMode === modelData.value
+                                               ? "#40566a" : "#344b5c"
+
+                                        Text {
+                                            anchors {
+                                                left: parent.left
+                                                leftMargin: units.gu(1.5)
+                                                verticalCenter: parent.verticalCenter
+                                            }
+                                            text: modelData.label
+                                            color: "white"
+                                            font.pixelSize: units.gu(1.5)
+                                        }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            onClicked: {
+                                                // Update both the live view and
+                                                // the persisted preference.
+                                                roomNavigator.sortMode = modelData.value
+                                                roomNavigationSettings.sortMode = modelData.value
+                                                root.sortMenuVisible = false
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         Text {
                             anchors {
@@ -501,6 +817,7 @@ function loadRooms(json, finished) {
                                 anchors.fill: parent
 
                                 onClicked: {
+                                    root.sortMenuVisible = false
                                     root.moreMenuVisible =
                                         !root.moreMenuVisible
                                 }
@@ -846,6 +1163,9 @@ function loadRooms(json, finished) {
 
                         roomsModel: roomModel
                         selectedRoom: root.selectedRoom
+                        sortMode: root.savedRoomSortMode()
+                        rtcMembershipsByRoom: root.rtcMembershipsByRoom
+                        rtcCallStatesByRoom: root.rtcCallStatesByRoom
 
                         onRoomSelected: {
                             root.dismissSearchKeyboard()
@@ -854,11 +1174,16 @@ function loadRooms(json, finished) {
                             root.selectedRoom = name
                             root.selectedPreview = preview
                             root.selectedRoomAvatarUrl = ""
+                            root.selectedRoomKind = "room"
 
                             for (var i = 0; i < roomModel.count; i++) {
                                 if (roomModel.get(i).roomId === roomId) {
                                     root.selectedRoomAvatarUrl =
                                         roomModel.get(i).avatarUrl
+                                    root.selectedRoomKind =
+                                        roomModel.get(i).kind || "room"
+                                    root.selectedRoomEncrypted =
+                                        roomModel.get(i).isEncrypted === true
                                     break
                                 }
                             }
@@ -924,10 +1249,13 @@ function loadRooms(json, finished) {
                 roomId: root.selectedRoomId
                 roomName: root.selectedRoom
                 avatarUrl: root.selectedRoomAvatarUrl
+                isEncrypted: root.selectedRoomEncrypted
                 rtcMemberships:
                     root.rtcMembershipsByRoom[root.selectedRoomId] || []
                 rtcCallState:
                     root.rtcCallStatesByRoom[root.selectedRoomId] || ({})
+                rtcAudioState:
+                    root.rtcAudioStatesByRoom[root.selectedRoomId] || ({})
 
                 avatarFallbackColour: {
                        for (var i = 0; i < roomModel.count; i++) {
@@ -943,7 +1271,22 @@ function loadRooms(json, finished) {
                 targetRequestSerial: root.notificationRequestSerial
 
                 onBackRequested: {
+                    roomView.collapseRtcParticipants()
                     root.showConversation = false
+                }
+
+                onCallRequested: {
+                    if (!root.mainRoot)
+                        return
+
+                    root.mainRoot.openCallPage(roomId, roomName, false)
+                }
+
+                onJoinCallRequested: {
+                    if (!root.mainRoot)
+                        return
+
+                    root.mainRoot.openCallPage(roomId, roomName, true)
                 }
             }
         }

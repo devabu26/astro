@@ -2,6 +2,7 @@
     "policy_groups": [
         "networking",
         "audio",
+        "camera",
         "video",
         "push-notification-client",
         "content_exchange",

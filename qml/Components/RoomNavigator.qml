@@ -8,9 +8,13 @@ Item {
 
     property var roomsModel
     property string selectedRoom: ""
+    // Active MatrixRTC memberships indexed by room ID.
+    property var rtcMembershipsByRoom: ({})
+    property var rtcCallStatesByRoom: ({})
 
     // Navigation controls supplied by ChatPage.
     property string filterMode: "all"
+    property string sortMode: "name"
     property string searchText: ""
 
     property var expandedSpaceIds: []
@@ -73,6 +77,80 @@ Item {
         return false
     }
 
+    // A room is in an ongoing call while at least one unexpired
+    // MatrixRTC membership is present in its current state snapshot.
+    function roomHasOngoingCall(roomId) {
+        var memberships = root.rtcMembershipsByRoom[String(roomId)] || []
+        // The local joined state is authoritative for our own call
+        // presence. Membership snapshots can briefly lag behind it,
+        // especially while a parent Space is collapsed.
+        return roomCallJoinedByMe(roomId) ||
+               (Array.isArray(memberships) && memberships.length > 0)
+    }
+
+    // True only when the logged-in Matrix user has joined this room's call.
+    function roomCallJoinedByMe(roomId) {
+        var state = root.rtcCallStatesByRoom[String(roomId)] || ({})
+        return state.joinedByMe === true
+    }
+
+    // A Space inherits the joined-by-me state from any descendant room.
+    function spaceHasCallJoinedByMe(spaceId, ancestors) {
+        var visited = ancestors ? ancestors.slice() : []
+        var id = String(spaceId)
+
+        if (visited.indexOf(id) !== -1 || !root.roomsModel)
+            return false
+
+        visited.push(id)
+
+        for (var i = 0; i < root.roomsModel.count; i++) {
+            var child = root.roomsModel.get(i)
+
+            if (!hasParent(child, id))
+                continue
+
+            if (child.kind === "space") {
+                if (spaceHasCallJoinedByMe(child.roomId, visited))
+                    return true
+            } else if (child.kind === "room" || child.kind === "dm") {
+                if (roomCallJoinedByMe(child.roomId))
+                    return true
+            }
+        }
+
+        return false
+    }
+
+    // A Space shows the same indicator when any descendant room,
+    // including rooms nested in child Spaces, has an active call.
+    function spaceHasOngoingCall(spaceId, ancestors) {
+        var visited = ancestors ? ancestors.slice() : []
+        var id = String(spaceId)
+
+        if (visited.indexOf(id) !== -1 || !root.roomsModel)
+            return false
+
+        visited.push(id)
+
+        for (var i = 0; i < root.roomsModel.count; i++) {
+            var child = root.roomsModel.get(i)
+
+            if (!hasParent(child, id))
+                continue
+
+            if (child.kind === "space") {
+                if (spaceHasOngoingCall(child.roomId, visited))
+                    return true
+            } else if (child.kind === "room" || child.kind === "dm") {
+                if (roomHasOngoingCall(child.roomId))
+                    return true
+            }
+        }
+
+        return false
+    }
+
     function hasJoinedParent(room) {
         if (!root.roomsModel)
             return false
@@ -95,6 +173,103 @@ Item {
 
     function isExpanded(spaceId) {
         return expandedSpaceIds.indexOf(spaceId) !== -1
+    }
+
+    // A Space usually has no message timeline of its own, so its
+    // latest_event_timestamp can be empty even while its child rooms are
+    // active. For ordering, derive a Space's activity from the newest
+    // descendant room (including rooms nested in child Spaces).
+    function latestActivityForSpace(spaceId, ancestors) {
+        var visited = ancestors ? ancestors.slice() : []
+
+        if (visited.indexOf(String(spaceId)) !== -1)
+            return 0
+
+        visited.push(String(spaceId))
+
+        var latest = 0
+
+        if (!root.roomsModel)
+            return latest
+
+        for (var i = 0; i < root.roomsModel.count; i++) {
+            var child = root.roomsModel.get(i)
+
+            if (!hasParent(child, spaceId))
+                continue
+
+            if (child.kind === "space") {
+                latest = Math.max(
+                    latest,
+                    latestActivityForSpace(child.roomId, visited)
+                )
+            } else {
+                latest = Math.max(
+                    latest,
+                    Number(child.lastActivity || 0)
+                )
+            }
+        }
+
+        return latest
+    }
+
+    function activityForRoom(room) {
+        if (room.kind === "space") {
+            // Prefer the timestamp computed by Matrix SpaceService from
+            // every descendant room. Fall back to the local graph walk for
+            // spaces the SDK graph has not indexed yet.
+            var aggregate = Number(room.spaceLastActivity || 0)
+            if (aggregate > 0)
+                return aggregate
+
+            return latestActivityForSpace(room.roomId, [])
+        }
+
+        return Number(room.lastActivity || 0)
+    }
+
+    // Return room-model indexes in the selected order. Recent uses the
+    // Matrix SDK's latest-event timestamp; Spaces inherit the newest
+    // activity timestamp of any descendant room.
+    function sortedRoomIndexes(kind) {
+        var indexes = []
+
+        if (!root.roomsModel)
+            return indexes
+
+        for (var i = 0; i < root.roomsModel.count; i++) {
+            var room = root.roomsModel.get(i)
+
+            if (!kind || room.kind === kind)
+                indexes.push(i)
+        }
+
+        indexes.sort(function(leftIndex, rightIndex) {
+            var left = root.roomsModel.get(leftIndex)
+            var right = root.roomsModel.get(rightIndex)
+            var leftName = String(left.name || "").toLowerCase()
+            var rightName = String(right.name || "").toLowerCase()
+
+            if (root.sortMode === "recent") {
+                var leftTime = activityForRoom(left)
+                var rightTime = activityForRoom(right)
+
+                if (leftTime !== rightTime)
+                    return rightTime - leftTime
+            }
+
+            if (leftName < rightName)
+                return -1
+            if (leftName > rightName)
+                return 1
+
+            return String(left.roomId || "").localeCompare(
+                String(right.roomId || "")
+            )
+        })
+
+        return indexes
     }
 
     function findNavigationRow(roomId, rowType) {
@@ -219,6 +394,7 @@ Item {
             kind: room.kind,
             unreadCount: Number(room.unreadCount || 0),
             mentionCount: Number(room.mentionCount || 0),
+            lastActivity: Number(room.lastActivity || 0),
             depth: depth,
             expanded: false
         })
@@ -360,16 +536,19 @@ Item {
 
         // Add child Spaces and ordinary rooms.
 
-        for (var i = 0; i < root.roomsModel.count; i++) {
-            var child = root.roomsModel.get(i)
+        var childIndexes = sortedRoomIndexes()
+
+        for (var childPosition = 0; childPosition < childIndexes.length; childPosition++) {
+            var childIndex = childIndexes[childPosition]
+            var child = root.roomsModel.get(childIndex)
 
             if (!hasParent(child, spaceId))
                 continue
 
             if (child.kind === "space") {
-                appendSpace(i, depth + 1, nextAncestors)
+                appendSpace(childIndex, depth + 1, nextAncestors)
             } else if (child.kind === "room") {
-                appendRoom(i, depth + 1, "room")
+                appendRoom(childIndex, depth + 1, "room")
             }
         }
     }
@@ -400,7 +579,10 @@ Item {
 
             var resultCount = 0
 
-            for (i = 0; i < root.roomsModel.count; i++) {
+            var searchIndexes = sortedRoomIndexes()
+
+            for (var searchPosition = 0; searchPosition < searchIndexes.length; searchPosition++) {
+                i = searchIndexes[searchPosition]
                 room = root.roomsModel.get(i)
 
                 if (!roomMatchesSearch(room))
@@ -459,10 +641,11 @@ Item {
                 return
             }
 
-            for (i = 0; i < root.roomsModel.count; i++) {
+            var spaceIndexes = sortedRoomIndexes("space")
+            for (var spacePosition = 0; spacePosition < spaceIndexes.length; spacePosition++) {
+                i = spaceIndexes[spacePosition]
                 room = root.roomsModel.get(i)
-
-                if (room.kind === "space" && !hasJoinedParent(room))
+                if (!hasJoinedParent(room))
                     appendSpace(i, 0, [])
             }
 
@@ -481,11 +664,10 @@ Item {
                 return
             }
 
-            for (i = 0; i < root.roomsModel.count; i++) {
-                room = root.roomsModel.get(i)
-
-                if (room.kind === "dm")
-                    appendRoom(i, 0, "dm")
+            var directIndexes = sortedRoomIndexes("dm")
+            for (var directPosition = 0; directPosition < directIndexes.length; directPosition++) {
+                i = directIndexes[directPosition]
+                appendRoom(i, 0, "dm")
             }
 
             return
@@ -506,11 +688,10 @@ Item {
                 return
             }
 
-            for (i = 0; i < root.roomsModel.count; i++) {
-                room = root.roomsModel.get(i)
-
-                if (room.kind === "room")
-                    appendRoom(i, 0, "room")
+            var roomIndexes = sortedRoomIndexes("room")
+            for (var roomPosition = 0; roomPosition < roomIndexes.length; roomPosition++) {
+                i = roomIndexes[roomPosition]
+                appendRoom(i, 0, "room")
             }
 
             return
@@ -525,10 +706,11 @@ Item {
         if (spaceCount > 0) {
             appendSection("SPACES")
 
-            for (i = 0; i < root.roomsModel.count; i++) {
+            var topSpaceIndexes = sortedRoomIndexes("space")
+            for (var topSpacePosition = 0; topSpacePosition < topSpaceIndexes.length; topSpacePosition++) {
+                i = topSpaceIndexes[topSpacePosition]
                 room = root.roomsModel.get(i)
-
-                if (room.kind === "space" && !hasJoinedParent(room))
+                if (!hasJoinedParent(room))
                     appendSpace(i, 0, [])
             }
         }
@@ -536,10 +718,11 @@ Item {
         if (standaloneCount > 0) {
             appendSection("ROOMS")
 
-            for (i = 0; i < root.roomsModel.count; i++) {
+            var standaloneIndexes = sortedRoomIndexes("room")
+            for (var standalonePosition = 0; standalonePosition < standaloneIndexes.length; standalonePosition++) {
+                i = standaloneIndexes[standalonePosition]
                 room = root.roomsModel.get(i)
-
-                if (room.kind === "room" && !hasJoinedParent(room))
+                if (!hasJoinedParent(room))
                     appendRoom(i, 0, "room")
             }
         }
@@ -547,17 +730,17 @@ Item {
         if (dmCount > 0) {
             appendSection("DIRECT MESSAGES")
 
-            for (i = 0; i < root.roomsModel.count; i++) {
-                room = root.roomsModel.get(i)
-
-                if (room.kind === "dm")
-                    appendRoom(i, 0, "dm")
+            var allDirectIndexes = sortedRoomIndexes("dm")
+            for (var allDirectPosition = 0; allDirectPosition < allDirectIndexes.length; allDirectPosition++) {
+                i = allDirectIndexes[allDirectPosition]
+                appendRoom(i, 0, "dm")
             }
         }
     }
 
     onRoomsModelChanged: rebuild()
     onFilterModeChanged: rebuild()
+    onSortModeChanged: rebuild()
     onSearchTextChanged: rebuild()
 
     Component.onCompleted: rebuild()
@@ -586,6 +769,14 @@ Item {
             property string entryColour: model.colour || "#526575"
             property string entryKind: model.kind || ""
             property string entryRoomId: model.roomId || ""
+            property bool entryHasOngoingCall:
+                entryRowType === "space"
+                ? root.spaceHasOngoingCall(entryRoomId, [])
+                : root.roomHasOngoingCall(entryRoomId)
+            property bool entryCallJoinedByMe:
+                entryRowType === "space"
+                ? root.spaceHasCallJoinedByMe(entryRoomId, [])
+                : root.roomCallJoinedByMe(entryRoomId)
             property int entryUnreadCount: Number(model.unreadCount || 0)
             property int entryMentionCount: Number(model.mentionCount || 0)
             property int entryDepth: model.depth === undefined ? 0 : model.depth
@@ -876,18 +1067,70 @@ Item {
                             elide: Text.ElideRight
                         }
 
-                        Text {
+                        Row {
                             width: parent.width
+                            spacing: units.gu(0.6)
 
-                            text: entryPreview
-                            color: "#9aabba"
+                            // Keep the indicator's layout footprint fixed.
+                            // The red glow is drawn with lightweight QML
+                            // rectangles instead of DropShadow, which creates
+                            // an off-screen effect layer for every delegate.
+                            Item {
+                                width: units.gu(0.9)
+                                height: width
+                                anchors.verticalCenter: parent.verticalCenter
+                                visible: entryHasOngoingCall || entryCallJoinedByMe
 
-                            font.pixelSize:
-                                entryDepth === 0
-                                ? units.gu(1.5)
-                                : units.gu(1.25)
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: entryCallJoinedByMe
+                                           ? units.gu(1.8) : 0
+                                    height: width
+                                    radius: width / 2
+                                    color: "#ff354f"
+                                    opacity: 0.16
+                                    visible: entryCallJoinedByMe
+                                }
 
-                            elide: Text.ElideRight
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: entryCallJoinedByMe
+                                           ? units.gu(1.35) : 0
+                                    height: width
+                                    radius: width / 2
+                                    color: "#ff354f"
+                                    opacity: 0.28
+                                    visible: entryCallJoinedByMe
+                                }
+
+                                Rectangle {
+                                    id: activeCallIndicator
+
+                                    anchors.centerIn: parent
+                                    width: units.gu(0.9)
+                                    height: width
+                                    radius: width / 2
+                                    color: entryCallJoinedByMe
+                                           ? "#ff354f" : "#35c759"
+                                }
+                            }
+
+                            Text {
+                                width: parent.width -
+                                       (entryHasOngoingCall
+                                        ? units.gu(1.5)
+                                        : 0)
+
+                                text: entryPreview
+                                color: "#9aabba"
+
+                                font.pixelSize:
+                                    entryDepth === 0
+                                    ? units.gu(1.5)
+                                    : units.gu(1.25)
+
+                                elide: Text.ElideRight
+                            }
                         }
                     }
                 }

@@ -1,5 +1,6 @@
 
 import QtQuick 2.7
+import QtMultimedia 5.12
 import Qt.labs.settings 1.0
 import Lomiri.Components 1.3
 import Astro.Backend 1.0
@@ -26,13 +27,47 @@ MainView {
     property bool applicationWasBackgrounded: false
     property bool matrixRoomsReady: false
     property bool showingSettings: false
+    property bool showingCallPage: false
+    property bool incomingCall: false
+    property string callRoomId: ""
+    property string callRoomName: ""
     property string pendingNotificationRoomId: ""
     property string pendingNotificationEventId: ""
+    property string lastNotificationUrl: ""
+    property double lastNotificationUrlAt: 0
+    property bool pendingIncomingCallPush: false
+    property string pendingIncomingCallSender: ""
+    property string pendingIncomingCallIntent: "unknown"
+    property double pendingIncomingCallExpiry: 0
 
+    function openCallPage(roomId, roomName, startImmediately) {
+        if (!roomId)
+            return
+
+        root.callRoomId = roomId
+        root.callRoomName = roomName || ""
+        root.showingCallPage = true
+
+        if (startImmediately) {
+            // Let CallPage receive its room, audio and membership bindings
+            // before asking it to join and start the LiveKit audio session.
+            Qt.callLater(function() {
+                if (root.showingCallPage && root.callRoomId === roomId)
+                    callPage.startCall()
+            })
+        }
+    }
     Connections {
         target: Qt.application
 
         onStateChanged: {
+            console.info(
+                "ASTRO_BACKGROUND_CAMERA: application state changed",
+                Qt.application.state,
+                "callVisible:", root.showingCallPage,
+                "authenticated:", root.matrixAuthenticated
+            )
+
             if (Qt.application.state === Qt.ApplicationActive) {
                 if (root.matrixAuthenticated
                     && root.applicationWasBackgrounded) {
@@ -40,8 +75,9 @@ MainView {
                 }
 
                 root.applicationWasBackgrounded = false
-            } else if (root.matrixAuthenticated) {
-                root.applicationWasBackgrounded = true
+            } else {
+                if (root.matrixAuthenticated)
+                    root.applicationWasBackgrounded = true
             }
         }
     }
@@ -60,9 +96,6 @@ MainView {
     }
 
     function handlePushNotification(payload) {
-        if (!notificationPreferences.bannerNotificationsEnabled)
-            return
-
         try {
             var envelope = JSON.parse(payload)
             var data = envelope.message || envelope
@@ -72,6 +105,49 @@ MainView {
 
             var notification = envelope.notification || {}
             var card = notification.card || {}
+
+            if (data.kind === "incoming_call") {
+                var callRoomId = data.room_id || envelope.room_id || ""
+                var callEventId = data.event_id || envelope.event_id || ""
+                var callExpiry = Number(data.expires_at_ms) || 0
+
+                if (!callRoomId || !callEventId)
+                    return
+
+                if (callExpiry > 0 && callExpiry <= Date.now()) {
+                    notificationPushClient.clearPersistent([
+                        data.tag || ("astro-call-" + callEventId)
+                    ])
+                    return
+                }
+
+                if (Qt.application.state === Qt.ApplicationActive) {
+                    if (root.matrixAuthenticated && root.matrixRoomsReady) {
+                        incomingCallBanner.showIncomingCall(
+                            data.sender || "Someone",
+                            callRoomId,
+                            callEventId,
+                            data.call_intent || "unknown",
+                            callExpiry
+                        )
+                        notificationPushClient.clearPersistent([
+                            data.tag || ("astro-call-" + callEventId)
+                        ])
+                    } else {
+                        pendingNotificationRoomId = callRoomId
+                        pendingNotificationEventId = callEventId
+                        pendingIncomingCallPush = true
+                        pendingIncomingCallSender = data.sender || "Someone"
+                        pendingIncomingCallIntent = data.call_intent || "unknown"
+                        pendingIncomingCallExpiry = callExpiry
+                        root.openPendingNotificationIfReady()
+                    }
+                }
+                return
+            }
+
+            if (!notificationPreferences.bannerNotificationsEnabled)
+                return
 
             notificationBanner.showNotification(
                 card.summary || data.sender || "New message",
@@ -89,10 +165,27 @@ MainView {
     }
 
     function handleNotificationUrl(argument) {
-        var url = String(argument)
+        console.warn("ASTRO PUSH TAP: argument:", String(argument))
+        console.warn("ASTRO PUSH TAP: argument type:", typeof argument)
 
-        if (url.indexOf("astro://open") !== 0)
+        var url = String(argument).trim()
+
+        // Lomiri can deliver the same URI through the desktop launch
+        // arguments and UriHandler during a cold start. Ignore only the
+        // immediate duplicate; a later deliberate tap must still work.
+        var now = new Date().getTime()
+        if (url === root.lastNotificationUrl
+            && now - root.lastNotificationUrlAt < 1500) {
+            console.warn("ASTRO PUSH TAP: ignoring duplicate launch URI")
             return
+        }
+        root.lastNotificationUrl = url
+        root.lastNotificationUrlAt = now
+
+        if (url.indexOf("astro://open") !== 0) {
+            console.warn("ASTRO PUSH TAP: URL prefix not recognised")
+            return
+        }
 
         var queryStart = url.indexOf("?")
         if (queryStart < 0)
@@ -121,6 +214,13 @@ MainView {
         pendingNotificationRoomId = values.room_id
         pendingNotificationEventId = values.event_id || ""
 
+        if (values.kind === "call") {
+            pendingIncomingCallPush = true
+            pendingIncomingCallSender = values.sender || "Someone"
+            pendingIncomingCallIntent = values.call_intent || "unknown"
+            pendingIncomingCallExpiry = Number(values.expires_at_ms) || 0
+        }
+
         root.openPendingNotificationIfReady()
     }
 
@@ -139,10 +239,44 @@ MainView {
 
         var roomId = pendingNotificationRoomId
         var eventId = pendingNotificationEventId
+        var isIncomingCall = pendingIncomingCallPush
+        var callSender = pendingIncomingCallSender
+        var callIntent = pendingIncomingCallIntent
+        var callExpiry = pendingIncomingCallExpiry
 
         pendingNotificationRoomId = ""
         pendingNotificationEventId = ""
+        pendingIncomingCallPush = false
+        pendingIncomingCallSender = ""
+        pendingIncomingCallIntent = "unknown"
+        pendingIncomingCallExpiry = 0
 
+        console.warn("ASTRO PUSH TAP: opening room:", roomId)
+        console.warn("ASTRO PUSH TAP: event:", eventId)
+
+        root.showingSettings = false
+        if (isIncomingCall) {
+            if (callExpiry > 0 && callExpiry <= Date.now()) {
+                notificationPushClient.clearPersistent([
+                    "astro-call-" + eventId
+                ])
+                return
+            }
+            incomingCallBanner.showIncomingCall(
+                callSender,
+                roomId,
+                eventId,
+                callIntent,
+                callExpiry
+            )
+            notificationPushClient.clearPersistent([
+                "astro-call-" + eventId
+            ])
+            return
+        }
+
+        // Do not tear down or hide an active call just because a
+        // message notification was tapped.
         chatPage.openNotification(roomId, eventId)
     }
 
@@ -175,6 +309,8 @@ MainView {
 
     // Register Astro with the Ubuntu Touch push service.
     NotificationPushClient {
+        id: notificationPushClient
+
         onPushTokenAvailable: {
             astroBackend.setPushToken(token)
         }
@@ -273,6 +409,9 @@ MainView {
             root.matrixAuthenticated = false
             root.matrixRoomsReady = false
             root.showingSettings = false
+            root.showingCallPage = false
+            root.callRoomId = ""
+            root.callRoomName = ""
 
             verificationDialog.closeDialog()
             chatPage.stopRoomLoading()
@@ -291,6 +430,9 @@ MainView {
             root.matrixAuthenticated = false
             root.matrixRoomsReady = false
             root.showingSettings = false
+            root.showingCallPage = false
+            root.callRoomId = ""
+            root.callRoomName = ""
             root.existingStorage = false
 
             verificationDialog.closeDialog()
@@ -341,6 +483,33 @@ MainView {
                     error
                 )
                 return
+            }
+
+            // Incoming MatrixRTC rings are separate from ordinary message
+            // notifications. Only surface them while Astro is foregrounded.
+            var incomingCalls = data.incoming_calls || []
+            if (Qt.application.state === Qt.ApplicationActive) {
+                for (var callIndex = 0; callIndex < incomingCalls.length; callIndex++) {
+                    var incomingCall = incomingCalls[callIndex]
+
+                    // Do not cover an active call with a duplicate ring
+                    // generated when another participant joins the room.
+                    if (root.showingCallPage
+                        && root.callRoomId === incomingCall.room_id) {
+                        continue
+                    }
+
+                    incomingCallBanner.showIncomingCall(
+                        incomingCall.sender,
+                        incomingCall.room_id,
+                        incomingCall.event_id,
+                        incomingCall.call_intent,
+                        incomingCall.expires_at_ms
+                    )
+                    notificationPushClient.clearPersistent([
+                        "astro-call-" + incomingCall.event_id
+                    ])
+                }
             }
 
             var events = data.verification_requests || []
@@ -493,7 +662,47 @@ MainView {
 
             visible: astroBackend.storageReady &&
                      root.matrixAuthenticated &&
-                     !root.showingSettings
+                     !root.showingSettings &&
+                     !root.showingCallPage
+            z: root.showingCallPage ? 0 : 1
+        }
+
+        // =====================================================
+        // Dedicated voice call page
+        // =====================================================
+
+        CallPage {
+            id: callPage
+
+            anchors.fill: parent
+
+            backend: astroBackend
+            roomId: root.callRoomId
+            roomName: root.callRoomName
+            roomEncrypted: chatPage.roomIsEncrypted(root.callRoomId)
+            directCall: chatPage.selectedRoomKind === "dm"
+            incomingCall: root.incomingCall
+            audioState: chatPage.rtcAudioStatesByRoom[root.callRoomId] || ({})
+            membershipState: chatPage.rtcCallStatesByRoom[root.callRoomId] || ({})
+            memberships: chatPage.rtcMembershipsByRoom[root.callRoomId] || []
+
+            // Keep CallPage instantiated so its call state and signal
+            // connections survive while ChatPage is shown. Camera frames now
+            // arrive through the native C++ callback and are submitted
+            // directly to RtcCameraVideoSurface; no QML VideoOutput or
+            // grabToImage() rendering is required to keep publishing.
+            // Hide the page when it is not the active interface to avoid
+            // drawing its call controls and video tiles underneath ChatPage.
+            visible: astroBackend.storageReady &&
+                     root.matrixAuthenticated &&
+                     root.showingCallPage
+            enabled: root.showingCallPage
+            z: root.showingCallPage ? 1 : 0
+
+            onBackRequested: {
+                root.showingCallPage = false
+                root.incomingCall = false
+            }
         }
     }
 
@@ -501,11 +710,78 @@ MainView {
     // Matrix device verification dialog
     // =========================================================
 
+    SoundEffect {
+        id: incomingCallAlert
+        source: astroBackend.rtcRingbackToneUrl()
+        loops: SoundEffect.Infinite
+        volume: 1.0
+        property bool alertRequested: false
+
+        onStatusChanged: {
+            if (alertRequested && status === SoundEffect.Ready) {
+                play()
+                alertRequested = false
+            }
+        }
+    }
+
+    IncomingCallBanner {
+        id: incomingCallBanner
+        anchors.top: parent.top
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.topMargin: units.gu(2)
+        width: parent.width - units.gu(4)
+        z: 2100
+
+        onAlertRequested: {
+            incomingCallAlert.alertRequested = true
+            if (incomingCallAlert.status === SoundEffect.Ready) {
+                incomingCallAlert.play()
+                incomingCallAlert.alertRequested = false
+            }
+        }
+
+        onVisibleChanged: {
+            if (!visible) {
+                incomingCallAlert.alertRequested = false
+                incomingCallAlert.stop()
+            }
+        }
+
+        onDismissRequested: {
+            notificationPushClient.clearPersistent(["astro-call-" + eventId])
+        }
+
+        onCallExpired: {
+            notificationPushClient.clearPersistent(["astro-call-" + eventId])
+        }
+
+        onAcceptRequested: {
+            incomingCallAlert.stop()
+            notificationPushClient.clearPersistent(["astro-call-" + eventId])
+            root.showingSettings = false
+            root.incomingCall = true
+            root.openCallPage(
+                roomId,
+                chatPage.roomNameForId(roomId),
+                true
+            )
+        }
+
+        onDeclineRequested: {
+            incomingCallAlert.stop()
+            notificationPushClient.clearPersistent(["astro-call-" + eventId])
+            astroBackend.declineRtcCall(roomId, eventId)
+        }
+    }
+
     NotificationBanner {
         id: notificationBanner
         anchors.top: parent.top
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.topMargin: units.gu(2)
+        anchors.topMargin: incomingCallBanner.visible
+            ? incomingCallBanner.height + units.gu(3)
+            : units.gu(2)
         width: parent.width - units.gu(4)
         z: 2000
 

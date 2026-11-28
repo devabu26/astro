@@ -1,10 +1,15 @@
 
 
 #include "Backend.h"
+#include "NativeAalCamera.h"
 #include "StorageWorker/StorageWorker.h"
 #include "notifications/NotificationManager.h"
 
 #include <QCoreApplication>
+#include <QGuiApplication>
+#include <QOpenGLContext>
+#include <QOffscreenSurface>
+#include <QSurfaceFormat>
 #include <QStandardPaths>
 #include <QDir>
 #include <QFileInfo>
@@ -45,6 +50,54 @@ Backend::Backend(QObject *parent)
 
     m_notificationManager = new NotificationManager(this);
 
+    m_nativeRtcCamera = new NativeAalCamera(this);
+    connect(
+        m_nativeRtcCamera,
+        &NativeAalCamera::frameReceived,
+        this,
+        [this](const QString &roomId, const QImage &image) {
+            if (roomId == m_rtcCameraRoomId)
+                processRtcCameraImage(roomId, image);
+        },
+        Qt::QueuedConnection
+    );
+
+    if (qGuiApp) {
+        m_applicationState = static_cast<int>(qGuiApp->applicationState());
+        m_applicationActive =
+            qGuiApp->applicationState() == Qt::ApplicationActive;
+
+        qInfo() << "ASTRO_APP_LIFECYCLE: initial state"
+                << m_applicationState
+                << "active:" << m_applicationActive
+                << "applicationId:" << QCoreApplication::applicationName();
+
+        connect(
+            qGuiApp,
+            &QGuiApplication::applicationStateChanged,
+            this,
+            [this](Qt::ApplicationState state) {
+                const bool active = state == Qt::ApplicationActive;
+                const int stateValue = static_cast<int>(state);
+                if (m_applicationState == stateValue)
+                    return;
+
+                const int previousState = m_applicationState;
+                m_applicationState = stateValue;
+                qInfo() << "ASTRO_APP_LIFECYCLE: state transition"
+                        << previousState << "->" << stateValue
+                        << "active:" << active
+                        << "thread:" << QThread::currentThreadId();
+
+                emit applicationStateChanged(stateValue);
+                if (m_applicationActive != active) {
+                    m_applicationActive = active;
+                    emit applicationActiveChanged(active);
+                }
+            }
+        );
+    }
+
     // ---------------------------------------------------------
     // Create the dedicated storage thread and worker.
     // ---------------------------------------------------------
@@ -52,6 +105,44 @@ Backend::Backend(QObject *parent)
     m_storageThread = new QThread(this);
     m_storageWorker = new StorageWorker();
 
+    // QtUbuntu's camera backend supplies GLTextureHandle frames. Give the
+    // camera worker its own context, created on the GUI thread and shared
+    // with Qt Quick where a global share context is available.
+    QOpenGLContext *cameraContext = new QOpenGLContext(m_storageWorker);
+    QOpenGLContext *shareContext = QOpenGLContext::globalShareContext();
+    if (shareContext)
+        cameraContext->setShareContext(shareContext);
+
+    cameraContext->setScreen(QGuiApplication::primaryScreen());
+    cameraContext->setFormat(
+        shareContext ? shareContext->format() : QSurfaceFormat::defaultFormat()
+    );
+
+    if (cameraContext->create()) {
+        QOffscreenSurface *cameraSurface = new QOffscreenSurface(
+            QGuiApplication::primaryScreen(), this
+        );
+        cameraSurface->setFormat(cameraContext->format());
+        cameraSurface->create();
+
+        if (cameraSurface->isValid()) {
+            m_storageWorker->setRtcCameraOpenGLContext(
+                cameraContext, cameraSurface
+            );
+            qInfo() << "RTC camera OpenGL context initialised;"
+                    << "shared:" << (shareContext != nullptr);
+        } else {
+            qWarning() << "RTC camera offscreen OpenGL surface unavailable";
+            delete cameraSurface;
+            delete cameraContext;
+        }
+    } else {
+        qWarning() << "RTC camera OpenGL context could not be created";
+        delete cameraContext;
+    }
+
+    // Moving the worker also moves its child OpenGL context. The offscreen
+    // surface remains GUI-thread-owned, as required by Qt.
     m_storageWorker->moveToThread(m_storageThread);
 
     connect(
@@ -134,6 +225,14 @@ Backend::Backend(QObject *parent)
         &Backend::requestFetchMatrixRooms,
         m_storageWorker,
         &StorageWorker::fetchMatrixRooms,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestFetchMatrixAccountProfile,
+        m_storageWorker,
+        &StorageWorker::fetchMatrixAccountProfile,
         Qt::QueuedConnection
     );
 
@@ -225,12 +324,60 @@ Backend::Backend(QObject *parent)
        &Backend::matrixRtcActionFinished
    );
 
+   // Forward LiveKit audio events and action results separately from MatrixRTC.
    connect(
        m_storageWorker,
-       &StorageWorker::matrixRtcCredentialsReady,
+       &StorageWorker::matrixRtcAudioEventsUpdated,
        this,
-       &Backend::matrixRtcCredentialsReady
+       &Backend::matrixRtcAudioEventsUpdated
    );
+
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixRtcAudioActionFinished,
+       this,
+       &Backend::matrixRtcAudioActionFinished
+   );
+
+   connect(
+        m_storageWorker,
+        &StorageWorker::matrixRtcVideoActionFinished,
+        this,
+        &Backend::matrixRtcVideoActionFinished
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixRtcBackgroundCameraActionFinished,
+        this,
+        &Backend::matrixRtcBackgroundCameraActionFinished
+    );
+
+   connect(
+        m_storageWorker,
+        &StorageWorker::matrixRtcScreenShareActionFinished,
+        this,
+        [this](const QString &roomId, const QString &error) {
+            qInfo() << "ASTRO_SCREEN_SHARE_DIAG: backend completion received"
+                    << "room:" << roomId
+                    << "error:" << error;
+            emit matrixRtcScreenShareActionFinished(roomId, error);
+        }
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixRtcRemoteVideoFrame,
+        this,
+        &Backend::matrixRtcRemoteVideoFrame
+    );
+
+    connect(
+        m_storageWorker,
+        &StorageWorker::matrixRtcLocalVideoFrame,
+        this,
+        &Backend::matrixRtcLocalVideoFrame
+    );
 
    connect(
        m_storageWorker,
@@ -296,11 +443,27 @@ Backend::Backend(QObject *parent)
 
     connect(
         this,
+        &Backend::requestAcceptRtcCall,
+        m_storageWorker,
+        &StorageWorker::acceptRtcCall,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestDeclineRtcCall,
+        m_storageWorker,
+        &StorageWorker::declineRtcCall,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
         &Backend::requestJoinRtcRoom,
-       m_storageWorker,
-       &StorageWorker::joinRtcRoom,
-       Qt::QueuedConnection
-   );
+        m_storageWorker,
+        &StorageWorker::joinRtcRoom,
+        Qt::QueuedConnection
+    );
 
    connect(
        this,
@@ -312,9 +475,82 @@ Backend::Backend(QObject *parent)
 
    connect(
        this,
-       &Backend::requestRtcLiveKitCredentialsWorker,
+       &Backend::requestStartRtcAudio,
        m_storageWorker,
-       &StorageWorker::requestRtcLiveKitCredentials,
+       &StorageWorker::startRtcAudio,
+       Qt::QueuedConnection
+   );
+
+    // ASTRO_RTC_VIDEO_STAGE3
+    connect(
+        this,
+        &Backend::requestStartRtcVideo,
+        m_storageWorker,
+        &StorageWorker::startRtcVideo,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestStopRtcVideo,
+        m_storageWorker,
+        &StorageWorker::stopRtcVideo,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestStartRtcBackgroundCamera,
+        m_storageWorker,
+        &StorageWorker::startRtcBackgroundCamera,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestStopRtcBackgroundCamera,
+        m_storageWorker,
+        &StorageWorker::stopRtcBackgroundCamera,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestStartRtcScreenShare,
+        m_storageWorker,
+        &StorageWorker::startRtcScreenShare,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestStopRtcScreenShare,
+        m_storageWorker,
+        &StorageWorker::stopRtcScreenShare,
+        Qt::QueuedConnection
+    );
+
+    connect(
+        this,
+        &Backend::requestSwitchRtcCamera,
+        m_storageWorker,
+        &StorageWorker::switchRtcCamera,
+        Qt::QueuedConnection
+    );
+
+   connect(
+       this,
+       &Backend::requestStopRtcAudio,
+       m_storageWorker,
+       &StorageWorker::stopRtcAudio,
+       Qt::QueuedConnection
+   );
+
+   connect(
+       this,
+       &Backend::requestSetRtcAudioMuted,
+       m_storageWorker,
+       &StorageWorker::setRtcAudioMuted,
        Qt::QueuedConnection
    );
 
@@ -757,6 +993,16 @@ Backend::Backend(QObject *parent)
                    QStringLiteral("Matrix sync resume failed: ") + error
                );
            }
+       },
+       Qt::QueuedConnection
+   );
+
+   connect(
+       m_storageWorker,
+       &StorageWorker::matrixAccountProfileUpdated,
+       this,
+       [this](const QString &json, const QString &error) {
+           emit matrixAccountProfileRetrieved(json, error);
        },
        Qt::QueuedConnection
    );

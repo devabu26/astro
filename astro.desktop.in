@@ -1,6 +1,6 @@
 [Desktop Entry]
-_Name=astro
-Exec=qmlscene qml/Main.qml %U
+_Name=Astro
+Exec=env QSG_RENDER_LOOP=basic qmlscene %U qml/Main.qml
 Icon=assets/logo.svg
 Terminal=false
 Type=Application

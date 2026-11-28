@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include <QThread>
 #include <QDebug>
 
 // =============================================================
@@ -24,12 +25,96 @@ StorageWorker::StorageWorker(QObject *parent)
         this,
         &StorageWorker::pollRoomTimelineUpdates
     );
+
+    // Remote video is polled independently so timeline polling does not
+    // cap incoming video refresh to its slower interval.
+    m_rtcVideoPollTimer = new QTimer(this);
+    m_rtcVideoPollTimer->setInterval(33);
+    connect(
+        m_rtcVideoPollTimer,
+        &QTimer::timeout,
+        this,
+        &StorageWorker::pollRtcRemoteVideoFrames
+    );
+
+    // Drain decoded remote audio at the WebRTC 10 ms frame cadence.
+    m_rtcAudioPollTimer = new QTimer(this);
+    m_rtcAudioPollTimer->setInterval(10);
+    connect(
+        m_rtcAudioPollTimer,
+        &QTimer::timeout,
+        this,
+        &StorageWorker::pollRtcRemoteAudioFrames
+    );
+
+    // Diagnose native background camera stalls without changing capture cadence.
+    m_rtcBackgroundCameraWatchdogTimer = new QTimer(this);
+    m_rtcBackgroundCameraWatchdogTimer->setInterval(5000);
+    connect(
+        m_rtcBackgroundCameraWatchdogTimer,
+        &QTimer::timeout,
+        this,
+        [this]() {
+            const int frameCount = m_rtcNativeGlFrameCount.loadAcquire();
+            const int newFrames = frameCount - m_rtcNativeGlWatchdogPreviousCount;
+            ++m_rtcNativeGlWatchdogTicks;
+            m_rtcNativeGlWatchdogPreviousCount = frameCount;
+
+            qInfo() << "ASTRO_BACKGROUND_CAMERA: native capture watchdog"
+                    << "tick:" << m_rtcNativeGlWatchdogTicks
+                    << "newGlFrames:" << newFrames
+                    << "totalGlFrames:" << frameCount
+                    << "camera:" << m_rtcCamera
+                    << "status:" << (m_rtcCamera
+                        ? static_cast<int>(m_rtcCamera->status()) : -1)
+                    << "state:" << (m_rtcCamera
+                        ? static_cast<int>(m_rtcCamera->state()) : -1)
+                    << "error:" << (m_rtcCamera
+                        ? static_cast<int>(m_rtcCamera->error()) : -1)
+                    << "errorString:" << (m_rtcCamera
+                        ? m_rtcCamera->errorString() : QString())
+                    << "workerThread:" << QThread::currentThreadId();
+
+            if (newFrames == 0) {
+                qWarning() << "ASTRO_BACKGROUND_CAMERA: watchdog detected no new native GL frames"
+                           << "intervalMs:"
+                           << m_rtcBackgroundCameraWatchdogTimer->interval()
+                           << "cameraActive:" << (m_rtcCamera &&
+                               m_rtcCamera->status() == QCamera::ActiveStatus);
+            }
+        }
+    );
+
+    // Poll asynchronous LiveKit screen-share unpublishing without blocking
+    // the worker's event loop on network signalling.
+    m_rtcScreenShareStopPollTimer = new QTimer(this);
+    m_rtcScreenShareStopPollTimer->setInterval(50);
+    connect(
+        m_rtcScreenShareStopPollTimer,
+        &QTimer::timeout,
+        this,
+        &StorageWorker::pollRtcScreenShareStop
+    );
 }
 
 StorageWorker::~StorageWorker()
 {
+    if (m_rtcScreenShareStopPollTimer)
+        m_rtcScreenShareStopPollTimer->stop();
+    stopRtcScreenShareCapture();
     if (m_timelinePollTimer) {
         m_timelinePollTimer->stop();
+    }
+    if (m_rtcVideoPollTimer) {
+        m_rtcVideoPollTimer->stop();
+    }
+    if (m_rtcAudioPollTimer) {
+        m_rtcAudioPollTimer->stop();
+    }
+    if (m_rtcRemoteAudioOutput) {
+        m_rtcRemoteAudioOutput->stop();
+        m_rtcRemoteAudioOutput = nullptr;
+        m_rtcRemoteAudioDevice = nullptr;
     }
 
     // Clear retained credentials before releasing the worker.
@@ -177,9 +262,25 @@ void StorageWorker::openStorage(const QString &passphrase)
 
 void StorageWorker::closeStorage()
 {
+    stopRtcScreenShareCapture();
+    stopRtcCamera();
     if (m_timelinePollTimer) {
         m_timelinePollTimer->stop();
     }
+    if (m_rtcVideoPollTimer) {
+        m_rtcVideoPollTimer->stop();
+    }
+    if (m_rtcAudioPollTimer) {
+        m_rtcAudioPollTimer->stop();
+    }
+    if (m_rtcRemoteAudioOutput) {
+        m_rtcRemoteAudioOutput->stop();
+        m_rtcRemoteAudioOutput->deleteLater();
+        m_rtcRemoteAudioOutput = nullptr;
+        m_rtcRemoteAudioDevice = nullptr;
+    }
+    m_rtcRemoteAudioPending.clear();
+    m_loggedFirstRemoteRtcAudioFrame = false;
 
     // Clear the retained passphrase before closing the session.
     m_storagePassphrase.fill('\0');
@@ -433,6 +534,9 @@ void StorageWorker::logoutMatrix()
     if (error) {
         astro_string_free(error);
     }
+
+    // Stop screen capture before releasing the LiveKit client.
+    stopRtcScreenShareCapture();
 
     // Stop polling before releasing the logged-out client.
     if (m_timelinePollTimer) {

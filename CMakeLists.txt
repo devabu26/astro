@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.0.0)
-project(astro VERSION 1.1.0 LANGUAGES C CXX)
+project(astro VERSION 1.1.1 LANGUAGES C CXX)
 
 # Automatically create moc files
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(MIR1CLIENT REQUIRED mir1client)
+pkg_check_modules(GIO REQUIRED gio-2.0)
+link_directories(${MIR1CLIENT_LIBRARY_DIRS} ${GIO_LIBRARY_DIRS})
 set(CMAKE_AUTOMOC ON)
 
 execute_process(
@@ -85,7 +89,7 @@ add_custom_target(${PROJECT_NAME}_FILES ALL SOURCES ${PROJECT_SRC_FILES})
 
 
 # Astro C++ QML backend
-find_package(Qt5 5.12 REQUIRED COMPONENTS Core Gui Qml DBus)
+find_package(Qt5 5.12 REQUIRED COMPONENTS Core Gui Qml Quick DBus Multimedia)
 add_library(AstroBackend MODULE
     backend/QMLBackend/Backend.cpp
     backend/QMLBackend/BackendConnections.cpp
@@ -93,6 +97,12 @@ add_library(AstroBackend MODULE
     backend/QMLBackend/BackendStorage.cpp
     backend/QMLBackend/BackendMatrix.cpp
     backend/QMLBackend/BackendMedia.cpp
+    backend/QMLBackend/RtcVideoItem.cpp
+    backend/QMLBackend/RtcVideoItem.h
+    backend/QMLBackend/RtcCameraVideoFilter.cpp
+    backend/QMLBackend/NativeAalCamera.cpp
+    backend/QMLBackend/NativeAalCamera.h
+    backend/QMLBackend/RtcCameraVideoFilter.h
     backend/QMLBackend/Backend.h
     backend/notifications/NotificationManager.cpp
     backend/notifications/NotificationManager.h
@@ -108,6 +118,8 @@ add_library(AstroBackend MODULE
 )
 
 target_include_directories(AstroBackend PRIVATE
+    ${MIR1CLIENT_INCLUDE_DIRS}
+    ${GIO_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/backend
     ${CMAKE_CURRENT_SOURCE_DIR}/backend/QMLBackend
 )
@@ -116,8 +128,12 @@ target_link_libraries(AstroBackend
     PRIVATE
         Qt5::Core
         Qt5::Qml
+        Qt5::Quick
         Qt5::DBus
         Qt5::Gui
+        Qt5::Multimedia
+        ${MIR1CLIENT_LIBRARIES}
+        ${GIO_LIBRARIES}
 )
 
 install(
@@ -154,6 +170,8 @@ add_custom_command(
         "CARGO_TARGET_DIR=${RUST_TARGET_DIR}"
         "CARGO_HOME=${CMAKE_CURRENT_BINARY_DIR}/cargo-home"
         "HOST_CC=x86_64-linux-gnu-gcc"
+        "CXX=/usr/bin/clang++-23"
+        "CXX_x86_64_unknown_linux_gnu=/usr/bin/clang++-23"
         "CXX_aarch64_unknown_linux_gnu=/usr/local/bin/astro-clang++-arm64"
         "${CARGO_EXECUTABLE}" build
         --manifest-path "${CMAKE_SOURCE_DIR}/backend/astro-core/Cargo.toml"

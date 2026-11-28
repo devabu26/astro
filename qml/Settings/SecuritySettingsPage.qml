@@ -274,11 +274,69 @@ Item {
                         Column {
                             width: parent.width
                             spacing: units.gu(1)
+
                             Text {
-                                text: "LOCAL SECURITY"
+                                text: "BACKGROUND ACTIVITY"
                                 color: root.accentColor
                                 font.pixelSize: units.gu(1.4)
                                 font.bold: true
+                            }
+
+                            Rectangle {
+                                width: parent.width
+                                height: backgroundActivityInfo.height +
+                                        units.gu(3)
+                                radius: units.gu(1.5)
+                                color: root.panelColor
+
+                                Column {
+                                    id: backgroundActivityInfo
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.margins: units.gu(2)
+                                    spacing: units.gu(1)
+
+                                    Text {
+                                        width: parent.width
+                                        text: "Allow Astro to run in the background"
+                                        color: root.primaryText
+                                        font.pixelSize: units.gu(1.8)
+                                        font.bold: true
+                                        wrapMode: Text.WordWrap
+                                    }
+
+                                    Text {
+                                        width: parent.width
+                                        text: "Prevent Ubuntu Touch from suspending Astro when you switch apps or turn off the screen. This may increase battery and data usage."
+                                        color: root.secondaryText
+                                        font.pixelSize: units.gu(1.35)
+                                        wrapMode: Text.WordWrap
+                                    }
+
+                                    Text {
+                                        width: parent.width
+                                        text: "Background permission is managed by Ubuntu Touch. Check its current state in UT Tweak Tool."
+                                        color: root.secondaryText
+                                        font.pixelSize: units.gu(1.4)
+                                        wrapMode: Text.WordWrap
+                                    }
+
+                                    Text {
+                                        id: utTweaksLink
+                                        text: "Open UT Tweak Tool"
+                                        color: "#8ecbff"
+                                        font.pixelSize: units.gu(1.45)
+                                        font.underline: true
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            onClicked: Qt.openUrlExternally(
+                                                "https://open-store.io/app/ut-tweak-tool.sverzegnassi"
+                                            )
+                                        }
+                                    }
+                                }
                             }
 
                             Rectangle {
@@ -332,6 +390,22 @@ Item {
                                 color: root.accentColor
                                 font.pixelSize: units.gu(1.4)
                                 font.bold: true
+                            }
+
+                            Text {
+                                width: parent.width
+                                text: "CHAT ENCRYPTION TRUST"
+                                color: root.primaryText
+                                font.pixelSize: units.gu(1.8)
+                                font.bold: true
+                            }
+
+                            Text {
+                                width: parent.width
+                                text: "Astro shares encrypted-room keys only with devices signed by their owner's cross-signing identity. Incoming encrypted messages are accepted only from cross-signed devices. Messages from unsigned devices, and older sessions without cross-signing trust data, may remain undecrypted. Your own Astro device must also be cross-signed before it can send encrypted-room messages."
+                                color: root.secondaryText
+                                font.pixelSize: units.gu(1.4)
+                                wrapMode: Text.WordWrap
                             }
 
                             Text {

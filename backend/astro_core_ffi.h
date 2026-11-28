@@ -8,6 +8,7 @@ extern "C" {
 
 typedef struct AstroStorageManager AstroStorageManager;
 typedef struct AstroMatrixClient AstroMatrixClient;
+typedef struct AstroRtcI420Frame AstroRtcI420Frame;
 
 typedef void (*AstroAttachmentProgressCallback)(
     void *context,
@@ -170,6 +171,11 @@ int32_t astro_matrix_mismatch_verification(
     char **error_out
 );
 
+char *astro_matrix_get_account_profile_json(
+    AstroMatrixClient *handle,
+    char **error_out
+);
+
 char *astro_matrix_get_devices_json(
     AstroMatrixClient *handle,
     char **error_out
@@ -214,13 +220,128 @@ char *astro_matrix_poll_room_timeline_updates_json(
     char **error_out
 );
 
+int32_t astro_matrix_decline_rtc_call(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    const char *notification_event_id,
+    char **error_out
+);
+int32_t astro_matrix_accept_rtc_call(AstroMatrixClient *handle, const char *room_id, char **error_out);
 int32_t astro_matrix_join_rtc_room(AstroMatrixClient *handle, const char *room_id, char **error_out);
 int32_t astro_matrix_leave_rtc_room(AstroMatrixClient *handle, const char *room_id, char **error_out);
-char *astro_matrix_rtc_livekit_credentials_json(
+int32_t astro_matrix_start_rtc_audio(
     AstroMatrixClient *handle,
     const char *room_id,
     char **error_out
 );
+/* ASTRO_RTC_VIDEO_STAGE1 */
+int32_t astro_matrix_start_rtc_video(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    uint32_t width,
+    uint32_t height,
+    char **error_out
+);
+/* ASTRO_RTC_VIDEO_STAGE2 */
+int32_t astro_matrix_push_rtc_video_frame(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    uint32_t width,
+    uint32_t height,
+    const uint8_t *frame_data,
+    uint64_t frame_data_len,
+    char **error_out
+);
+int32_t astro_matrix_stop_rtc_video(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    char **error_out
+);
+int32_t astro_matrix_start_rtc_screenshare(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    uint32_t width,
+    uint32_t height,
+    int32_t include_device_audio,
+    char **error_out
+);
+int32_t astro_matrix_push_rtc_screenshare_audio_frame(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    const int16_t *pcm_data,
+    uint64_t pcm_samples,
+    char **error_out
+);
+int32_t astro_matrix_create_rtc_screenshare_frame(
+    uint32_t width, uint32_t height,
+    AstroRtcI420Frame **frame_out,
+    uint8_t **plane_y_out, uint32_t *stride_y_out,
+    uint8_t **plane_u_out, uint32_t *stride_u_out,
+    uint8_t **plane_v_out, uint32_t *stride_v_out,
+    char **error_out
+);
+void astro_matrix_free_rtc_screenshare_frame(AstroRtcI420Frame *frame);
+int32_t astro_matrix_submit_rtc_screenshare_frame(
+    AstroMatrixClient *handle, const char *room_id,
+    AstroRtcI420Frame *frame, char **error_out
+);
+int32_t astro_matrix_stop_rtc_screenshare(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    char **error_out
+);
+/* Returns 1 while teardown is pending, 0 when complete, -1 on error. */
+int32_t astro_matrix_poll_rtc_screenshare_stop(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    char **error_out
+);
+int32_t astro_matrix_stop_rtc_audio(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    char **error_out
+);
+int32_t astro_matrix_set_rtc_audio_muted(
+    AstroMatrixClient *handle,
+    const char *room_id,
+    int32_t muted,
+    char **error_out
+);
+char *astro_matrix_poll_rtc_audio_events_json(
+    AstroMatrixClient *handle,
+    char **error_out
+);
+
+typedef struct AstroRtcAudioFrame {
+    char *room_id;
+    char *identity;
+    uint32_t sample_rate;
+    uint32_t channels;
+    uint8_t *data;
+    uintptr_t len;
+} AstroRtcAudioFrame;
+
+AstroRtcAudioFrame *astro_matrix_take_rtc_audio_frame(
+    AstroMatrixClient *handle,
+    char **error_out
+);
+void astro_matrix_rtc_audio_frame_free(AstroRtcAudioFrame *frame);
+
+typedef struct AstroRtcVideoFrame {
+    char *room_id;
+    char *identity;
+    char *source;
+    uint32_t width;
+    uint32_t height;
+    uint8_t *data;
+    uintptr_t len;
+} AstroRtcVideoFrame;
+
+AstroRtcVideoFrame *astro_matrix_take_rtc_video_frame(
+    AstroMatrixClient *handle,
+    char **error_out
+);
+void astro_matrix_rtc_video_frame_free(AstroRtcVideoFrame *frame);
 char *astro_matrix_poll_rtc_memberships_json(
     AstroMatrixClient *handle,
     char **error_out

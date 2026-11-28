@@ -2,8 +2,15 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
+#include <QByteArray>
+#include <QPointer>
+
 
 class QThread;
+class NativeAalCamera;
+class QVideoFrame;
+class QImage;
 class StorageWorker;
 class NotificationManager;
 
@@ -16,6 +23,12 @@ class Backend : public QObject
         READ storageReady
         NOTIFY storageReadyChanged
     )
+    Q_PROPERTY(
+        int applicationState
+        READ applicationState
+        NOTIFY applicationStateChanged
+    )
+    Q_PROPERTY(QObject *rtcCamera READ rtcCamera NOTIFY rtcCameraChanged)
 
 public:
     explicit Backend(QObject *parent = nullptr);
@@ -26,6 +39,12 @@ public:
     // ---------------------------------------------------------
 
     Q_INVOKABLE QString status() const;
+    Q_INVOKABLE QString rtcRingbackToneUrl() const;
+    Q_INVOKABLE QString rtcConnectionToneUrl() const;
+    Q_INVOKABLE QString rtcHangupToneUrl() const;
+    Q_INVOKABLE int rtcCameraResolutionWidth() const;
+    Q_INVOKABLE int rtcCameraResolutionHeight() const;
+    Q_INVOKABLE void setRtcCameraResolution(int width, int height);
     Q_INVOKABLE QString prepareDataDirectory() const;
     Q_INVOKABLE bool hasExistingStorage() const;
     Q_INVOKABLE QString secretServiceStatus() const;
@@ -33,6 +52,8 @@ public:
     Q_INVOKABLE void testSecretService();
 
     bool storageReady() const;
+    int applicationState() const;
+    QObject *rtcCamera() const;
 
     // ---------------------------------------------------------
     // Encrypted storage operations
@@ -56,6 +77,7 @@ public:
     );
 
     Q_INVOKABLE void logoutMatrix();
+    Q_INVOKABLE void refreshMatrixAccountProfile();
     Q_INVOKABLE void setPushToken(const QString &token);
     Q_INVOKABLE void setPushPrivacyLevel(const QString &privacyLevel);
     Q_INVOKABLE void setPushNotificationsEnabled(bool enabled);
@@ -111,9 +133,33 @@ public:
     Q_INVOKABLE void requestOlderRoomTimeline(const QString &roomId);
     Q_INVOKABLE void markRoomAsRead(const QString &roomId);
     Q_INVOKABLE void sendRoomMessage(const QString &roomId, const QString &message);
+    Q_INVOKABLE void declineRtcCall(const QString &roomId, const QString &eventId);
+    Q_INVOKABLE void acceptRtcCall(const QString &roomId);
     Q_INVOKABLE void joinRtcRoom(const QString &roomId);
     Q_INVOKABLE void leaveRtcRoom(const QString &roomId);
-    Q_INVOKABLE void requestRtcLiveKitCredentials(const QString &roomId);
+    Q_INVOKABLE void startRtcAudio(const QString &roomId);
+    Q_INVOKABLE void stopRtcAudio(const QString &roomId);
+    Q_INVOKABLE void setRtcAudioMuted(const QString &roomId, bool muted);
+
+    Q_INVOKABLE void startRtcVideo(
+        const QString &roomId,
+        int width,
+        int height
+    );
+    Q_INVOKABLE void stopRtcVideo(const QString &roomId);
+    Q_INVOKABLE QStringList rtcCameraResolutions();
+    Q_INVOKABLE void startRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
+    Q_INVOKABLE void stopRtcScreenShare(const QString &roomId);
+    Q_INVOKABLE void switchRtcCamera(const QString &roomId);
+    Q_INVOKABLE void startRtcBackgroundCamera(
+        const QString &roomId,
+        const QString &deviceId
+    );
+    Q_INVOKABLE void stopRtcBackgroundCamera(const QString &roomId);
+
+    // Legacy Qt Quick filter entry point retained for the existing build target.
+    void processRtcCameraFrame(const QString &roomId, const QVideoFrame &frame);
+    Q_INVOKABLE void processRtcCameraImage(const QString &roomId, const QImage &image);
 
     Q_INVOKABLE void sendRoomAttachment(
         const QString &requestKey,
@@ -159,6 +205,7 @@ signals:
     // ---------------------------------------------------------
 
     void storageReadyChanged();
+    void rtcCameraChanged();
     void storageStatusChanged(const QString &status);
     void secretServiceTestFinished(const QString &result);
     void dataDeleted();
@@ -188,6 +235,7 @@ signals:
     // Matrix room and Space signals
     // ---------------------------------------------------------
 
+    void matrixAccountProfileRetrieved(const QString &json, const QString &error);
     void matrixDevicesRetrieved(const QString &json, const QString &error);
     void matrixRoomsRetrieved(const QString &json, bool finished);
 
@@ -243,10 +291,40 @@ signals:
     // MatrixRTC membership snapshots, separate from timeline notifications.
     void matrixRtcMembershipsUpdated(const QString &json);
     void matrixRtcActionFinished(const QString &roomId, const QString &error);
-    void matrixRtcCredentialsReady(
+
+    // LiveKit audio/camera events and actions are separate from MatrixRTC presence.
+    void matrixRtcAudioEventsUpdated(const QString &json);
+    void matrixRtcAudioActionFinished(const QString &roomId, const QString &error);
+
+    void matrixRtcVideoActionFinished(
         const QString &roomId,
-        const QString &credentialsJson,
         const QString &error
+    );
+    void matrixRtcBackgroundCameraActionFinished(
+        const QString &roomId,
+        bool running,
+        const QString &deviceId,
+        const QString &error
+    );
+    void applicationActiveChanged(bool active);
+    void applicationStateChanged(int state);
+    void matrixRtcScreenShareActionFinished(
+        const QString &roomId,
+        const QString &error
+    );
+    void matrixRtcRemoteVideoFrame(
+        const QString &roomId,
+        const QString &identity,
+        const QString &source,
+        int width,
+        int height,
+        const QByteArray &i420
+    );
+    void matrixRtcLocalVideoFrame(
+        const QString &roomId,
+        int width,
+        int height,
+        const QByteArray &i420
     );
 
     void notificationReceived(
@@ -357,6 +435,7 @@ signals:
     void requestSetPushNotificationsEnabled(bool enabled);
 
     // Matrix room requests.
+    void requestFetchMatrixAccountProfile();
     void requestFetchMatrixDevices();
     void requestStartDeviceVerification(const QString &deviceId);
     void requestRenameMatrixDevice(const QString &deviceId, const QString &displayName);
@@ -369,9 +448,25 @@ signals:
     void requestPaginateRoomTimeline(const QString &roomId);
     void requestMarkRoomAsRead(const QString &roomId);
     void requestSendRoomMessage(const QString &roomId, const QString &message);
+    void requestDeclineRtcCall(const QString &roomId, const QString &eventId);
+    void requestAcceptRtcCall(const QString &roomId);
     void requestJoinRtcRoom(const QString &roomId);
     void requestLeaveRtcRoom(const QString &roomId);
-    void requestRtcLiveKitCredentialsWorker(const QString &roomId);
+    void requestStartRtcAudio(const QString &roomId);
+    void requestStopRtcAudio(const QString &roomId);
+    void requestSetRtcAudioMuted(const QString &roomId, bool muted);
+
+   // ASTRO_RTC_VIDEO_STAGE3
+   void requestStartRtcVideo(const QString &roomId, int width, int height);
+   void requestStopRtcVideo(const QString &roomId);
+   void requestStartRtcBackgroundCamera(
+       const QString &roomId,
+       const QString &deviceId
+   );
+   void requestStopRtcBackgroundCamera(const QString &roomId);
+   void requestStartRtcScreenShare(const QString &roomId, int width, int height, bool includeDeviceAudio);
+   void requestStopRtcScreenShare(const QString &roomId);
+   void requestSwitchRtcCamera(const QString &roomId);
 
     void requestSendRoomAttachment(
         const QString &requestKey,
@@ -459,6 +554,8 @@ private:
     // ---------------------------------------------------------
 
     bool m_storageReady = false;
+    bool m_applicationActive = true;
+    int m_applicationState = 4; // Qt::ApplicationActive
     bool m_storageOperationInProgress = false;
     bool m_matrixResumeInProgress = false;
 
@@ -469,6 +566,14 @@ private:
     QThread *m_storageThread = nullptr;
     StorageWorker *m_storageWorker = nullptr;
     NotificationManager *m_notificationManager = nullptr;
+
+    // Direct libhybris preview callbacks remain independent of Qt Quick.
+    NativeAalCamera *m_nativeRtcCamera = nullptr;
+    QString m_rtcCameraRoomId;
+    QString m_nativeRtcCameraDeviceId;
+    bool m_rtcCameraSwitchPending = false;
+    int m_rtcCameraOutputWidth = 480;
+    int m_rtcCameraOutputHeight = 640;
 
     // ---------------------------------------------------------
     // Internal helpers

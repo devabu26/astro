@@ -316,116 +316,16 @@ Item {
                                      && root.selectedCategory !== "About Astro"
                         }
 
-                        // GENERAL
-                        Column {
-                            width: parent.width
-                            spacing: units.gu(1)
-                            visible: root.selectedCategory === "General"
-
-                            Text {
-                                width: parent.width
-                                text: "General preferences will be available here as Astro develops."
-                                color: root.secondaryText
-                                font.pixelSize: units.gu(1.6)
-                                wrapMode: Text.WordWrap
-                            }
-                        }
-
                         // ACCOUNT
-                        Column {
+                        Loader {
+                            id: accountSettingsLoader
                             width: parent.width
-                            spacing: units.gu(1)
-                            visible: root.selectedCategory === "Account"
+                            active: root.selectedCategory === "Account"
+                            source: Qt.resolvedUrl("AccountSettingsPage.qml")
 
-                            Text {
-                                text: "MATRIX ACCOUNT"
-                                color: root.accentColor
-                                font.pixelSize: units.gu(1.4)
-                                font.bold: true
-                            }
-
-                            Rectangle {
-                                width: parent.width
-                                height: units.gu(11)
-                                radius: units.gu(1.5)
-                                color: root.panelColor
-
-                                Column {
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.leftMargin: units.gu(2)
-                                    anchors.rightMargin: units.gu(2)
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    spacing: units.gu(0.7)
-
-                                    Text {
-                                        text: "Signed-in account"
-                                        color: root.primaryText
-                                        font.pixelSize: units.gu(1.8)
-                                        font.bold: true
-                                    }
-
-                                    Text {
-                                        width: parent.width
-                                        text: "Your Matrix account information will be displayed here."
-                                        color: root.secondaryText
-                                        font.pixelSize: units.gu(1.4)
-                                        wrapMode: Text.WordWrap
-                                    }
-                                }
-                            }
-
-                            Text {
-                                text: "SESSION"
-                                color: root.accentColor
-                                font.pixelSize: units.gu(1.4)
-                                font.bold: true
-                            }
-
-                            Rectangle {
-                                width: parent.width
-                                height: units.gu(8)
-                                radius: units.gu(1.5)
-                                color: root.panelColor
-
-                                Column {
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.leftMargin: units.gu(2)
-                                    anchors.rightMargin: units.gu(2)
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    spacing: units.gu(0.5)
-
-                                    Text {
-                                        text: "Matrix session"
-                                        color: root.primaryText
-                                        font.pixelSize: units.gu(1.8)
-                                    }
-
-                                    Text {
-                                        text: "Manage your current sign-in session."
-                                        color: root.secondaryText
-                                        font.pixelSize: units.gu(1.4)
-                                    }
-                                }
-                            }
-
-                            Button {
-                                width: parent.width
-                                text: "Log out of Matrix"
-
-                                onClicked: {
-                                    if (root.backend)
-                                        root.backend.logoutMatrix()
-                                }
-                            }
-
-                            Text {
-                                width: parent.width
-                                text: "Logging out ends your current Matrix session."
-                                color: root.secondaryText
-                                font.pixelSize: units.gu(1.35)
-                                wrapMode: Text.WordWrap
+                            onLoaded: {
+                                if (item)
+                                    item.backend = root.backend
                             }
                         }
 
