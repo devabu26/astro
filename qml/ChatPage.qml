@@ -160,6 +160,19 @@ function roomNameForId(id) {
     return id
 }
 
+function roomIsOneToOneDm(id) {
+    if (!id)
+        return false
+
+    for (var i = 0; i < roomModel.count; i++) {
+        var room = roomModel.get(i)
+        if (room.roomId === id)
+            return room.kind === "dm" && Number(room.memberCount || 0) === 2
+    }
+
+    return false
+}
+
 function roomIsEncrypted(id) {
     if (!id)
         return false
@@ -241,6 +254,7 @@ function roomDataForModel(room) {
         roomId: room.room_id || "",
         kind: kind,
         isEncrypted: room.is_encrypted === true,
+        memberCount: Number(room.member_count || 0),
         unreadCount: Number(room.unread_count || 0),
         mentionCount: Number(room.mention_count || 0),
         parentSpaceIds: JSON.stringify(room.parent_space_ids || []),
