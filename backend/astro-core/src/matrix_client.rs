@@ -842,9 +842,9 @@ impl MatrixClientManager {
             Client::builder()
                 .homeserver_url(homeserver)
                 .handle_refresh_tokens()
-                // Chat E2EE trust policy: only share room keys with devices
-                // signed by their owner's cross-signing identity, and only
-                // decrypt messages from cross-signed devices.
+                // Outgoing room-key sharing is restricted to devices signed
+                // by their owner's cross-signing identity. Incoming events are
+                // decrypted regardless of sender-device trust (see below).
                 .with_room_key_recipient_strategy(CollectStrategy::IdentityBasedStrategy)
                 .with_decryption_settings(DecryptionSettings {
                     sender_device_trust_requirement: TrustRequirement::Untrusted,
@@ -2473,6 +2473,98 @@ impl MatrixClientManager {
         })
     }
 
+    /// Retry decryption for already-open room timelines after this device
+    /// completes self-verification.
+    ///
+    /// A backup recovery key may arrive as an m.secret.send event after the
+    /// SAS flow completes. Wait for the SDK to enable that existing backup,
+    /// then fetch the backup keys for the timelines Astro already has loaded.
+    /// Importing those keys causes the SDK event cache to re-decrypt matching
+    /// events and publish the resulting timeline updates.
+    ///
+    /// This deliberately does not create a backup or change trust settings.
+    fn retry_loaded_room_decryption_after_self_verification(&self) {
+        let Some(client) = self.client.as_ref().cloned() else {
+            return;
+        };
+
+        let room_ids: Vec<String> = self.timelines.keys().cloned().collect();
+        if room_ids.is_empty() {
+            eprintln!(
+                "ASTRO E2EE: Self-verification completed; no loaded room timelines need a backup-key retry"
+            );
+            return;
+        }
+
+        self.runtime.spawn(async move {
+            let backups = client.encryption().backups();
+
+            // The verified device may receive its recovery key shortly after
+            // SAS completes. Subscribe to state changes instead of assuming
+            // the secret-send event has already been processed.
+            let backup_enabled = if backups.are_enabled().await {
+                true
+            } else {
+                let mut states = backups.state_stream();
+                tokio::time::timeout(Duration::from_secs(60), async {
+                    while let Some(update) = states.next().await {
+                        match update {
+                            Ok(matrix_sdk::encryption::backups::BackupState::Enabled) => {
+                                return true;
+                            }
+                            Ok(state) => {
+                                eprintln!(
+                                    "ASTRO E2EE: Waiting for recovery backup after self-verification; state={state:?}"
+                                );
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "ASTRO E2EE: Backup state stream reported an error while waiting for recovery: {error}"
+                                );
+                            }
+                        }
+                    }
+                    false
+                })
+                .await
+                .unwrap_or(false)
+            };
+
+            if !backup_enabled || !backups.are_enabled().await {
+                eprintln!(
+                    "ASTRO E2EE: No usable recovery backup became available within 60 seconds; leaving existing timeline events unchanged"
+                );
+                return;
+            }
+
+            eprintln!(
+                "ASTRO E2EE: Recovery backup is enabled; retrying room-key downloads for {} loaded timeline(s)",
+                room_ids.len()
+            );
+
+            for room_id in room_ids {
+                let parsed_room_id = match matrix_sdk::ruma::RoomId::parse(&room_id) {
+                    Ok(room_id) => room_id,
+                    Err(error) => {
+                        eprintln!(
+                            "ASTRO E2EE: Skipping backup-key retry for invalid room ID {room_id}: {error}"
+                        );
+                        continue;
+                    }
+                };
+
+                match backups.download_room_keys_for_room(&parsed_room_id).await {
+                    Ok(()) => eprintln!(
+                        "ASTRO E2EE: Requested backup room keys for {room_id}"
+                    ),
+                    Err(error) => eprintln!(
+                        "ASTRO E2EE: Could not download backup room keys for {room_id}: {error}"
+                    ),
+                }
+            }
+        });
+    }
+
     /// Drain timeline changes and report changed unread counts.
     pub fn poll_room_timeline_updates_json(&mut self) -> String {
         // A decline ends an outgoing one-to-one call for the caller. In a
@@ -2697,6 +2789,7 @@ impl MatrixClientManager {
             .collect();
 
         let mut finished_verifications = Vec::new();
+        let mut self_verification_completed = false;
 
         for (key, sas) in active_sas {
             let state = sas.state();
@@ -2742,6 +2835,16 @@ impl MatrixClientManager {
             }
 
             if is_finished {
+                // Only a completed self-verification can make this device
+                // eligible to receive the account's recovery key.
+                if state_name == "done"
+                    && self.active_verification_requests
+                        .get(&key)
+                        .is_some_and(|pending| pending.request.is_self_verification())
+                {
+                    self_verification_completed = true;
+                }
+
                 finished_verifications.push(key);
             }
         }
@@ -2750,6 +2853,10 @@ impl MatrixClientManager {
             self.active_verifications.remove(&key);
             self.active_verification_requests.remove(&key);
             self.last_verification_states.remove(&key);
+        }
+
+        if self_verification_completed {
+            self.retry_loaded_room_decryption_after_self_verification();
         }
 
         if should_check_unread {
