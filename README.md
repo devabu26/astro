@@ -1,6 +1,8 @@
-<img src="https://github.com/devabu26/astro/blob/main/assets/logo.svg" alt="Astro" width = 200 height = 200> <br>
-Astro
-
+<p align="center">
+  <img src="https://github.com/devabu26/astro/blob/main/assets/logo.svg" alt="Astro" width = 200 height = 200> <br>
+<h1>Astro</h1>
+</p>
+  
 <p align="center">
   <strong>A native Matrix client for Ubuntu Touch</strong><br>
   Private conversations, rich media and real-time calls — built for the Ubuntu Touch experience.
