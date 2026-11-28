@@ -58,7 +58,7 @@ Astro is actively developed. Some capabilities are not yet complete:
 - Additional customisation settings are planned.
 - Media playback, calling stability and performance continue to be refined.
 
-## 🛠️ Technology
+## Technology
 
 | Component | Technology |
 | --- | --- |
@@ -153,7 +153,7 @@ Filter for Astro messages:
 adb shell "journalctl -b --no-pager | grep -i astro"
 ```
 
-## 🤝 Contributing
+## Contributing
 
 Contributions, bug reports and testing feedback are welcome. Please fork! I am now super experienced, I would be happy for a fork to occur!! Astro is under active development, so please include useful diagnostic information when reporting a problem:
 
@@ -164,7 +164,7 @@ Contributions, bug reports and testing feedback are welcome. Please fork! I am n
 
 Please check the existing repository issues and discussions before opening a new report.
 
-## 📄 License
+## License
 
 Astro is free software released under the **GNU General Public License v3.0**.
 
