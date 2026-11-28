@@ -174,6 +174,32 @@ function roomIsEncrypted(id) {
     return false
 }
 
+function roomIsDirect(id) {
+    if (!id)
+        return false
+
+    for (var i = 0; i < roomModel.count; i++) {
+        var room = roomModel.get(i)
+        if (room.roomId === id)
+            return room.kind === "dm"
+    }
+
+    return false
+}
+
+function roomMemberCount(id) {
+    if (!id)
+        return 0
+
+    for (var i = 0; i < roomModel.count; i++) {
+        var room = roomModel.get(i)
+        if (room.roomId === id)
+            return Number(room.memberCount || 0)
+    }
+
+    return 0
+}
+
 function openNotification(roomId, eventId) {
     if (!roomId)
         return
