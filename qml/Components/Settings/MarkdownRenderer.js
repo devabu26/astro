@@ -25,7 +25,7 @@ function inlineMarkdown(value) {
     var text = String(value)
 
     // Protect links and images before escaping ordinary text.
-    text = text.replace(/!\\[([^\\]]*)\\]\\(([^ )]+)(?:\\s+"([^"]*)")?\\)/g,
+    text = text.replace(/!\[([^\]]*)\]\(([^ )]+)(?:\s+"([^"]*)")?\)/g,
         function(match, label, url, title) {
             var image = '<img src="' + escapeAttribute(url)
                 + '" alt="' + escapeAttribute(label) + '"'
@@ -34,7 +34,7 @@ function inlineMarkdown(value) {
             return protect(image + ' />')
         })
 
-    text = text.replace(/\\[([^\\]]+)\\]\\(([^ )]+)(?:\\s+"([^"]*)")?\\)/g,
+    text = text.replace(/\[([^\]]+)\]\(([^ )]+)(?:\s+"([^"]*)")?\)/g,
         function(match, label, url, title) {
             var link = '<a href="' + escapeAttribute(url) + '"'
             if (title)
@@ -46,13 +46,13 @@ function inlineMarkdown(value) {
 
     text = text.replace(/`([^`]+)`/g,
         '<code style="color:#d6c6ff;">$1</code>')
-    text = text.replace(/\\*\\*([^*]+)\\*\\*/g, '<b>$1</b>')
+    text = text.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
     text = text.replace(/__([^_]+)__/g, '<b>$1</b>')
     text = text.replace(/~~([^~]+)~~/g, '<s>$1</s>')
-    text = text.replace(/\\*([^*]+)\\*/g, '<i>$1</i>')
+    text = text.replace(/\*([^*]+)\*/g, '<i>$1</i>')
     text = text.replace(/_([^_]+)_/g, '<i>$1</i>')
 
-    text = text.replace(/\u0001(\\d+)\u0002/g,
+    text = text.replace(/\u0001(\d+)\u0002/g,
         function(match, index) {
             return tokens[Number(index)] || ""
         })
@@ -71,7 +71,7 @@ function splitTableRow(line) {
 }
 
 function isTableSeparator(line) {
-    return /^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$/.test(line)
+    return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line)
 }
 
 function isBlockStart(lines, index) {
@@ -79,19 +79,19 @@ function isBlockStart(lines, index) {
     if (!line || !line.trim())
         return true
 
-    return /^\\s{0,3}#{1,6}\\s+/.test(line)
-        || /^\\s{0,3}(```|~~~)/.test(line)
-        || /^\\s{0,3}>/.test(line)
-        || /^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$/.test(line)
-        || /^\\s{0,3}[-*+]\\s+/.test(line)
-        || /^\\s{0,3}\\d+[.)]\\s+/.test(line)
-        || /^\\s*</.test(line)
+    return /^\s{0,3}#{1,6}\s+/.test(line)
+        || /^\s{0,3}(```|~~~)/.test(line)
+        || /^\s{0,3}>/.test(line)
+        || /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)
+        || /^\s{0,3}[-*+]\s+/.test(line)
+        || /^\s{0,3}\d+[.)]\s+/.test(line)
+        || /^\s*</.test(line)
         || (index + 1 < lines.length && line.indexOf("|") !== -1
             && isTableSeparator(lines[index + 1]))
 }
 
 function markdownToHtml(markdown) {
-    var lines = String(markdown).replace(/\\r\\n?/g, "\\n").split("\\n")
+    var lines = String(markdown).replace(/\r\n?/g, "\n").split("\n")
     var output = []
     var i = 0
 
@@ -104,13 +104,13 @@ function markdownToHtml(markdown) {
         }
 
         // Fenced code blocks.
-        var fence = line.match(/^\\s{0,3}(```|~~~)(.*)$/)
+        var fence = line.match(/^\s{0,3}(```|~~~)(.*)$/)
         if (fence) {
             var fenceMarker = fence[1]
             var codeLines = []
             i++
             while (i < lines.length
-                    && !new RegExp("^\\\\s{0,3}" + fenceMarker + "+\\\\s*$").test(lines[i])) {
+                    && !new RegExp("^\\s{0,3}" + fenceMarker + "+\\s*$").test(lines[i])) {
                 codeLines.push(lines[i])
                 i++
             }
@@ -118,20 +118,20 @@ function markdownToHtml(markdown) {
                 i++
 
             output.push('<pre style="background-color:#17232d; color:#dce4eb; padding:8px;">'
-                + '<code>' + escapeHtml(codeLines.join("\\n")) + '</code></pre>')
+                + '<code>' + escapeHtml(codeLines.join("\n")) + '</code></pre>')
             continue
         }
 
         // Raw HTML blocks in the project README (logo, badges and centered intro).
-        if (/^\\s*</.test(line)) {
+        if (/^\s*</.test(line)) {
             var htmlLines = []
             while (i < lines.length && lines[i].trim()) {
                 htmlLines.push(lines[i])
                 i++
             }
-            var rawHtml = htmlLines.join("\\n")
+            var rawHtml = htmlLines.join("\n")
             rawHtml = rawHtml.replace(
-                /https:\\/\\/github\\.com\\/devabu26\\/astro\\/blob\\/main\\//g,
+                /https:\/\/github\.com\/devabu26\/astro\/blob\/main\//g,
                 "https://raw.githubusercontent.com/devabu26/astro/main/"
             )
             output.push(rawHtml)
@@ -139,7 +139,7 @@ function markdownToHtml(markdown) {
         }
 
         // ATX headings.
-        var heading = line.match(/^\\s{0,3}(#{1,6})\\s+(.+?)\\s*#*\\s*$/)
+        var heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/)
         if (heading) {
             var level = heading[1].length
             var headingSize = [ "xx-large", "x-large", "large", "medium", "small", "small" ][level - 1]
@@ -150,7 +150,7 @@ function markdownToHtml(markdown) {
         }
 
         // Horizontal rules.
-        if (/^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$/.test(line)) {
+        if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
             output.push('<hr />')
             i++
             continue
@@ -189,10 +189,10 @@ function markdownToHtml(markdown) {
         }
 
         // Blockquotes.
-        if (/^\\s{0,3}>/.test(line)) {
+        if (/^\s{0,3}>/.test(line)) {
             var quoteLines = []
-            while (i < lines.length && /^\\s{0,3}>/.test(lines[i])) {
-                quoteLines.push(lines[i].replace(/^\\s{0,3}>\\s?/, ""))
+            while (i < lines.length && /^\s{0,3}>/.test(lines[i])) {
+                quoteLines.push(lines[i].replace(/^\s{0,3}>\s?/, ""))
                 i++
             }
             output.push('<blockquote style="color:#a8b7c5;">'
@@ -201,13 +201,13 @@ function markdownToHtml(markdown) {
         }
 
         // Simple ordered and unordered lists.
-        var unordered = /^\\s{0,3}[-*+]\\s+/.test(line)
-        var ordered = /^\\s{0,3}\\d+[.)]\\s+/.test(line)
+        var unordered = /^\s{0,3}[-*+]\s+/.test(line)
+        var ordered = /^\s{0,3}\d+[.)]\s+/.test(line)
         if (unordered || ordered) {
             var listItems = []
             var listPattern = unordered
-                ? /^\\s{0,3}[-*+]\\s+(.*)$/
-                : /^\\s{0,3}\\d+[.)]\\s+(.*)$/
+                ? /^\s{0,3}[-*+]\s+(.*)$/
+                : /^\s{0,3}\d+[.)]\s+(.*)$/
             while (i < lines.length) {
                 var item = lines[i].match(listPattern)
                 if (!item)
@@ -232,6 +232,6 @@ function markdownToHtml(markdown) {
     }
 
     return '<html><body style="color:#dce4eb;">'
-        + output.join("\\n")
+        + output.join("\n")
         + '</body></html>'
 }
